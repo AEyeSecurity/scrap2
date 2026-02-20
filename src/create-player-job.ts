@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { chromium, type Page } from 'playwright';
+import { chromium, type Locator, type Page } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
@@ -13,7 +13,7 @@ import type {
 } from './types';
 
 const CREATE_PLAYER_CONFIRM_SELECTOR =
-  '[role="dialog"] button:has-text("Crear jugador"), [role="dialog"] button:has-text("Registrar"), .modal.show button:has-text("Crear jugador"), .modal.show button:has-text("Registrar"), .swal2-container button:has-text("Crear jugador"), .swal2-container button:has-text("Registrar"), .swal-modal button:has-text("Crear jugador"), .swal-modal button:has-text("Registrar"), .swal-overlay--show-modal button:has-text("Crear jugador"), .swal-overlay--show-modal button:has-text("Registrar")';
+  'div:has-text("crear un jugador con nombre de usuario") button:has-text("Crear jugador"), div:has-text("crear un jugador con nombre de usuario") button:has-text("Registrar"), div:has-text("deseas crear un jugador") button:has-text("Crear jugador"), div:has-text("deseas crear un jugador") button:has-text("Registrar")';
 
 const DEFAULT_CREATE_PLAYER_STEPS: StepAction[] = [
   {
@@ -90,6 +90,25 @@ async function waitBeforeCloseIfHeaded(page: Page, headless: boolean): Promise<v
   }
 
   await page.waitForTimeout(15_000);
+}
+
+async function findFirstVisibleLocator(page: Page, selector: string, timeoutMs: number): Promise<Locator> {
+  const startedAt = Date.now();
+  const locator = page.locator(selector);
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const count = await locator.count();
+    for (let i = 0; i < count; i += 1) {
+      const candidate = locator.nth(i);
+      if (await candidate.isVisible().catch(() => false)) {
+        return candidate;
+      }
+    }
+
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`No visible element found for selector: ${selector}`);
 }
 
 async function waitForCreatePlayerResult(
@@ -188,7 +207,7 @@ async function executeStep(
       if (!step.selector) {
         throw new Error('waitFor step requires selector');
       }
-      await page.locator(step.selector).first().waitFor({ state: 'visible', timeout: timeoutMs });
+      await findFirstVisibleLocator(page, step.selector, timeoutMs);
     } else if (step.type === 'fill') {
       if (!step.selector) {
         throw new Error('fill step requires selector');
@@ -197,16 +216,19 @@ async function executeStep(
         throw new Error('fill step requires value');
       }
       const value = applyVariables(step.value, request);
-      const locator = page.locator(step.selector).first();
-      await locator.waitFor({ state: 'visible', timeout: timeoutMs });
+      const locator = await findFirstVisibleLocator(page, step.selector, timeoutMs);
       await locator.fill(value, { timeout: timeoutMs });
     } else if (step.type === 'click') {
       if (!step.selector) {
         throw new Error('click step requires selector');
       }
-      const locator = page.locator(step.selector).first();
-      await locator.waitFor({ state: 'visible', timeout: timeoutMs });
-      await locator.click({ timeout: timeoutMs });
+      const locator = await findFirstVisibleLocator(page, step.selector, timeoutMs);
+      await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
+      try {
+        await locator.click({ timeout: timeoutMs });
+      } catch {
+        await locator.click({ timeout: timeoutMs, force: true });
+      }
     } else {
       const exhaustive: never = step.type;
       throw new Error(`Unsupported step type: ${exhaustive}`);
