@@ -19,18 +19,11 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 
 ```bash
 npm install
-cp .env.example .env
 ```
 
 ## Run mode (local, headed by default)
 
-Credentials from env:
-
-```bash
-npm run scraper -- run
-```
-
-Credentials from command line (takes precedence over env):
+Credentials from command line:
 
 ```bash
 npm run scraper -- run \
@@ -111,7 +104,6 @@ Run default `run` mode:
 
 ```bash
 docker run --rm \
-  --env-file .env \
   -v "$(pwd)/out:/app/out" \
   -v "$(pwd)/artifacts:/app/artifacts" \
   scrapsinoca:latest
@@ -121,7 +113,6 @@ Run API mode by overriding command:
 
 ```bash
 docker run --rm \
-  --env-file .env \
   -v "$(pwd)/artifacts:/app/artifacts" \
   scrapsinoca:latest server --host 127.0.0.1 --port 3000
 ```

@@ -1,5 +1,4 @@
 import { Command } from 'commander';
-import dotenv from 'dotenv';
 import {
   buildAppConfig,
   buildRunConfig,
@@ -12,8 +11,6 @@ import { createLogger } from './logging';
 import { runScraper } from './run';
 import { startServer } from './server';
 import type { CliOptions } from './types';
-
-dotenv.config();
 
 const program = new Command();
 program.name('scraper').description('Scraper for agents.reydeases.com');
