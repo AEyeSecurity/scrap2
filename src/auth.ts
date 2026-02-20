@@ -9,42 +9,67 @@ interface AuthSessionOptions {
 }
 
 async function firstVisibleSelector(page: Page, selectors: string[], timeoutMs: number): Promise<string | null> {
-  for (const selector of selectors) {
-    try {
-      const locator = page.locator(selector).first();
-      await locator.waitFor({ state: 'visible', timeout: Math.min(timeoutMs, 2_500) });
-      return selector;
-    } catch {
-      // ignore and continue
+  const startedAt = Date.now();
+  const maxWaitMs = Math.max(250, timeoutMs);
+
+  while (Date.now() - startedAt < maxWaitMs) {
+    for (const selector of selectors) {
+      const visible = await page
+        .locator(selector)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (visible) {
+        return selector;
+      }
     }
+
+    await page.waitForTimeout(80);
   }
 
   return null;
 }
 
 async function hasLoginForm(page: Page, cfg: AppConfig): Promise<boolean> {
-  const usernameSelector = await firstVisibleSelector(page, cfg.selectors.username, 2_500);
-  const passwordSelector = await firstVisibleSelector(page, cfg.selectors.password, 2_500);
+  const loginUrl = new URL(cfg.loginPath, `${cfg.baseUrl}/`);
+  let currentPath = '';
+
+  try {
+    currentPath = new URL(page.url()).pathname.toLowerCase();
+  } catch {
+    currentPath = page.url().toLowerCase();
+  }
+
+  const loginPath = loginUrl.pathname.toLowerCase();
+  if (!currentPath.includes(loginPath)) {
+    return false;
+  }
+
+  const usernameSelector = await firstVisibleSelector(page, cfg.selectors.username, 500);
+  const passwordSelector = await firstVisibleSelector(page, cfg.selectors.password, 500);
   return Boolean(usernameSelector && passwordSelector);
 }
 
 async function waitForAuthenticatedState(page: Page, cfg: AppConfig): Promise<void> {
   const tasks: Array<Promise<unknown>> = [];
+  const authTransitionTimeoutMs = Math.min(cfg.timeoutMs, 15_000);
 
   tasks.push(
     page.waitForURL(
       (url) => {
         return !url.pathname.toLowerCase().includes('login');
       },
-      { timeout: cfg.timeoutMs }
+      { timeout: authTransitionTimeoutMs }
     )
   );
 
   if (cfg.selectors.success) {
-    tasks.push(page.locator(cfg.selectors.success).first().waitFor({ state: 'visible', timeout: cfg.timeoutMs }));
+    tasks.push(
+      page.locator(cfg.selectors.success).first().waitFor({ state: 'visible', timeout: authTransitionTimeoutMs })
+    );
   }
 
-  tasks.push(page.waitForLoadState('networkidle', { timeout: cfg.timeoutMs }));
+  tasks.push(page.waitForLoadState('networkidle', { timeout: Math.min(authTransitionTimeoutMs, 7_500) }));
 
   await Promise.any(tasks);
 
@@ -71,6 +96,7 @@ export async function ensureAuthenticated(
 ): Promise<void> {
   const persistSession = sessionOptions.persistSession ?? true;
   const storageStatePath = sessionOptions.storageStatePath ?? cfg.storageStatePath;
+  const selectorDiscoveryTimeoutMs = Math.min(cfg.timeoutMs, 8_000);
   const loginUrl = new URL(cfg.loginPath, `${cfg.baseUrl}/`).toString();
   await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
 
@@ -80,9 +106,9 @@ export async function ensureAuthenticated(
     return;
   }
 
-  const usernameSelector = await firstVisibleSelector(page, cfg.selectors.username, cfg.timeoutMs);
-  const passwordSelector = await firstVisibleSelector(page, cfg.selectors.password, cfg.timeoutMs);
-  const submitSelector = await firstVisibleSelector(page, cfg.selectors.submit, cfg.timeoutMs);
+  const usernameSelector = await firstVisibleSelector(page, cfg.selectors.username, selectorDiscoveryTimeoutMs);
+  const passwordSelector = await firstVisibleSelector(page, cfg.selectors.password, selectorDiscoveryTimeoutMs);
+  const submitSelector = await firstVisibleSelector(page, cfg.selectors.submit, selectorDiscoveryTimeoutMs);
 
   if (!usernameSelector || !passwordSelector || !submitSelector) {
     throw new Error('Could not locate login form selectors. Override selector env vars.');
