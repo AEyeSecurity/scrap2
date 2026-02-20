@@ -14,6 +14,9 @@ import type {
 
 const CREATE_PLAYER_CONFIRM_SELECTOR =
   'div:has-text("crear un jugador con nombre de usuario") button:has-text("Crear jugador"), div:has-text("crear un jugador con nombre de usuario") button:has-text("Registrar"), div:has-text("deseas crear un jugador") button:has-text("Crear jugador"), div:has-text("deseas crear un jugador") button:has-text("Registrar")';
+const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
+const USERS_APPLY_FILTER_SELECTOR =
+  'button:has-text("Aceptar filtro"), button:has-text("Aplicar"), button:has-text("Filtrar"), button:has-text("Buscar")';
 
 const DEFAULT_CREATE_PLAYER_STEPS: StepAction[] = [
   {
@@ -111,10 +114,26 @@ async function findFirstVisibleLocator(page: Page, selector: string, timeoutMs: 
   throw new Error(`No visible element found for selector: ${selector}`);
 }
 
+async function findUsersFilterInput(page: Page, timeoutMs: number): Promise<Locator> {
+  try {
+    return await findFirstVisibleLocator(page, USERS_FILTER_INPUT_SELECTOR, timeoutMs);
+  } catch {
+    return findFirstVisibleLocator(
+      page,
+      'xpath=//*[contains(translate(normalize-space(.), "JUGADOR/AGENTE", "jugador/agente"), "jugador/agente")]/following::input[1]',
+      timeoutMs
+    );
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function waitForCreatePlayerResult(
   page: Page,
   timeoutMs: number
-): Promise<{ ok: boolean; reason: string }> {
+): Promise<{ state: 'success' | 'error' | 'unknown'; reason: string }> {
   const startedAt = Date.now();
   const successMessage = page.locator('text=/cread[oa]|registrad[oa]|correctamente|success|exito/i').first();
   const errorMessage = page
@@ -124,23 +143,23 @@ async function waitForCreatePlayerResult(
   while (Date.now() - startedAt < timeoutMs) {
     const currentUrl = page.url();
     if (!currentUrl.includes('/users/create-player')) {
-      return { ok: true, reason: `URL changed after submit: ${currentUrl}` };
+      return { state: 'success', reason: `URL changed after submit: ${currentUrl}` };
     }
 
     if (await errorMessage.isVisible().catch(() => false)) {
       const text = (await errorMessage.innerText().catch(() => '')).trim();
-      return { ok: false, reason: text || 'Error message detected after submit' };
+      return { state: 'error', reason: text || 'Error message detected after submit' };
     }
 
     if (await successMessage.isVisible().catch(() => false)) {
       const text = (await successMessage.innerText().catch(() => '')).trim();
-      return { ok: true, reason: text || 'Success message detected after submit' };
+      return { state: 'success', reason: text || 'Success message detected after submit' };
     }
 
     await page.waitForTimeout(250);
   }
 
-  return { ok: false, reason: 'No clear success signal detected after submit' };
+  return { state: 'unknown', reason: 'No clear success signal detected after submit' };
 }
 
 async function verifyCreatePlayerStep(
@@ -155,7 +174,7 @@ async function verifyCreatePlayerStep(
     const outcome = await waitForCreatePlayerResult(page, timeoutMs);
     const artifactPath = await captureStepScreenshot(page, artifactDir, stepName);
 
-    if (!outcome.ok) {
+    if (outcome.state === 'error') {
       return {
         name: stepName,
         status: 'failed',
@@ -163,6 +182,105 @@ async function verifyCreatePlayerStep(
         finishedAt: new Date().toISOString(),
         artifactPath,
         error: outcome.reason
+      };
+    }
+
+    if (outcome.state === 'unknown') {
+      return {
+        name: stepName,
+        status: 'skipped',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        artifactPath
+      };
+    }
+
+    return {
+      name: stepName,
+      status: 'ok',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      artifactPath
+    };
+  } catch (error) {
+    return {
+      name: stepName,
+      status: 'failed',
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function waitForUsernameVisibleInList(page: Page, username: string, timeoutMs: number): Promise<boolean> {
+  const startedAt = Date.now();
+  const usernamePattern = new RegExp(escapeRegex(username), 'i');
+  const fallbackPrefix = username.slice(0, Math.min(12, username.length));
+  const prefixPattern = new RegExp(escapeRegex(fallbackPrefix), 'i');
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const exactVisible = await page
+      .getByText(usernamePattern)
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (exactVisible) {
+      return true;
+    }
+
+    if (fallbackPrefix.length >= 8) {
+      const partialVisible = await page
+        .locator('[class*="user" i], [class*="usuario" i], div, span, td')
+        .filter({ hasText: prefixPattern })
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (partialVisible) {
+        return true;
+      }
+    }
+
+    await page.waitForTimeout(250);
+  }
+
+  return false;
+}
+
+async function verifyUserListedStep(
+  page: Page,
+  artifactDir: string,
+  username: string,
+  timeoutMs: number
+): Promise<JobStepResult> {
+  const startedAt = new Date().toISOString();
+  const stepName = '10-verify-user-listed';
+
+  try {
+    await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+
+    const filterInput = await findUsersFilterInput(page, timeoutMs);
+    await filterInput.fill('', { timeout: timeoutMs });
+    await filterInput.fill(username, { timeout: timeoutMs });
+
+    const applyFilterButton = await findFirstVisibleLocator(page, USERS_APPLY_FILTER_SELECTOR, timeoutMs);
+    await applyFilterButton.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
+    await applyFilterButton.click({ timeout: timeoutMs }).catch(async () => {
+      await applyFilterButton.click({ timeout: timeoutMs, force: true });
+    });
+
+    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10_000) }).catch(() => undefined);
+    const userVisible = await waitForUsernameVisibleInList(page, username, timeoutMs);
+    const artifactPath = await captureStepScreenshot(page, artifactDir, stepName);
+
+    if (!userVisible) {
+      return {
+        name: stepName,
+        status: 'failed',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        artifactPath,
+        error: `User "${username}" not found in users list after creation`
       };
     }
 
@@ -345,6 +463,20 @@ export async function runCreatePlayerJob(
     steps.push(verifyResult);
     if (verifyResult.status === 'failed') {
       throw new Error(`Step failed: ${verifyResult.name} (${verifyResult.error ?? 'unknown error'})`);
+    }
+
+    const verifyListedResult = await verifyUserListedStep(
+      page,
+      artifactDir,
+      request.payload.newUsername,
+      runtimeConfig.timeoutMs
+    );
+    if (verifyListedResult.artifactPath) {
+      artifactPaths.push(verifyListedResult.artifactPath);
+    }
+    steps.push(verifyListedResult);
+    if (verifyListedResult.status === 'failed') {
+      throw new Error(`Step failed: ${verifyListedResult.name} (${verifyListedResult.error ?? 'unknown error'})`);
     }
 
     const finalArtifact = await captureStepScreenshot(page, artifactDir, '99-final');
