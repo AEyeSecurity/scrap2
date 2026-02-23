@@ -154,6 +154,43 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/deposit enqueues balance job for consultar_saldo', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'consultar_saldo',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('balance');
+    if (queued?.jobType === 'balance') {
+      expect(queued.payload.operacion).toBe('consultar_saldo');
+      expect(queued.options.headless).toBe(false);
+      expect(queued.options.debug).toBe(false);
+      expect(queued.options.slowMo).toBe(0);
+      expect(queued.options.timeoutMs).toBe(15_000);
+    }
+
+    await server.close();
+  });
+
   it('POST /users/deposit keeps explicit execution overrides', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -191,6 +228,47 @@ describe('server routes', () => {
       expect(queued.options.debug).toBe(true);
       expect(queued.options.slowMo).toBe(55);
       expect(queued.options.timeoutMs).toBe(28_000);
+    }
+
+    await server.close();
+  });
+
+  it('POST /users/deposit keeps explicit execution overrides for consultar_saldo', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'consultar saldo',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret',
+        headless: true,
+        debug: true,
+        slowMo: 33,
+        timeoutMs: 18_000
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('balance');
+    if (queued?.jobType === 'balance') {
+      expect(queued.payload.operacion).toBe('consultar_saldo');
+      expect(queued.options.headless).toBe(true);
+      expect(queued.options.debug).toBe(true);
+      expect(queued.options.slowMo).toBe(33);
+      expect(queued.options.timeoutMs).toBe(18_000);
     }
 
     await server.close();
@@ -267,6 +345,44 @@ describe('server routes', () => {
       expect(totalAliasQueued.payload.cantidad).toBeUndefined();
     }
 
+    const balanceOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'consultar_saldo',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(balanceOperationResponse.statusCode).toBe(202);
+    const balanceBody = balanceOperationResponse.json();
+    const balanceQueued = queue.requests.find((item) => item.id === balanceBody.jobId);
+    expect(balanceQueued?.jobType).toBe('balance');
+    if (balanceQueued?.jobType === 'balance') {
+      expect(balanceQueued.payload.operacion).toBe('consultar_saldo');
+    }
+
+    const balanceAliasOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'consultar saldo',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(balanceAliasOperationResponse.statusCode).toBe(202);
+    const balanceAliasBody = balanceAliasOperationResponse.json();
+    const balanceAliasQueued = queue.requests.find((item) => item.id === balanceAliasBody.jobId);
+    expect(balanceAliasQueued?.jobType).toBe('balance');
+    if (balanceAliasQueued?.jobType === 'balance') {
+      expect(balanceAliasQueued.payload.operacion).toBe('consultar_saldo');
+    }
+
     const badOperationResponse = await server.inject({
       method: 'POST',
       url: '/users/deposit',
@@ -307,6 +423,19 @@ describe('server routes', () => {
     });
 
     expect(missingAmountForDescargaResponse.statusCode).toBe(400);
+
+    const missingAmountForCargaResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'carga',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(missingAmountForCargaResponse.statusCode).toBe(400);
 
     await server.close();
   });

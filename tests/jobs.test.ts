@@ -115,4 +115,36 @@ describe('JobManager', () => {
     expect(manager.getById(id)?.status).toBe('expired');
     await manager.shutdown();
   });
+
+  it('stores and returns job result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('read-balance')],
+        result: {
+          kind: 'balance',
+          usuario: 'pruebita',
+          saldoTexto: '1.234,56',
+          saldoNumero: 1234.56
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'balance',
+      usuario: 'pruebita',
+      saldoTexto: '1.234,56',
+      saldoNumero: 1234.56
+    });
+
+    await manager.shutdown();
+  });
 });

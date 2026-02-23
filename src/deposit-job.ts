@@ -5,7 +5,13 @@ import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
 import { normalizeDepositText, selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
-import type { AppConfig, DepositJobRequest, FundsOperation, JobExecutionResult, JobStepResult } from './types';
+import type {
+  AppConfig,
+  DepositJobRequest,
+  FundsTransactionOperation,
+  JobExecutionResult,
+  JobStepResult
+} from './types';
 
 const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
 const USERS_ROW_SELECTOR = '.users-table-item';
@@ -19,32 +25,32 @@ const NON_RETRYABLE_LOGIN_ERROR_REGEX =
 const FUNDS_AMOUNT_INPUT_SELECTOR =
   'input[name="amount"], input[type="number"], input[placeholder*="cantidad" i], input[aria-label*="cantidad" i]';
 const TOTAL_AMOUNT_TEXT_REGEX = /\btoda\b/i;
-const ACTION_LINK_BY_OPERATION: Record<FundsOperation, string> = {
+const ACTION_LINK_BY_OPERATION: Record<FundsTransactionOperation, string> = {
   carga: 'a[href*="/users/deposit/"]',
   descarga: 'a[href*="/users/withdraw/"]',
   descarga_total: 'a[href*="/users/withdraw/"]'
 };
-const ACTION_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
+const ACTION_TEXT_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
   carga: /dep[oó]sito/i,
   descarga: /retiro/i,
   descarga_total: /retiro/i
 };
-const SUBMIT_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
+const SUBMIT_TEXT_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
   carga: /dep[oó]sito/i,
   descarga: /retiro/i,
   descarga_total: /retiro/i
 };
-const TARGET_PATH_BY_OPERATION: Record<FundsOperation, string> = {
+const TARGET_PATH_BY_OPERATION: Record<FundsTransactionOperation, string> = {
   carga: '/users/deposit',
   descarga: '/users/withdraw',
   descarga_total: '/users/withdraw'
 };
-const TARGET_HEADING_BY_OPERATION: Record<FundsOperation, RegExp> = {
+const TARGET_HEADING_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
   carga: /dep[oó]sito/i,
   descarga: /retiro/i,
   descarga_total: /retiro/i
 };
-const SUCCESS_MESSAGE_BY_OPERATION: Record<FundsOperation, RegExp> = {
+const SUCCESS_MESSAGE_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
   carga: /depositad[oa]|acreditad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
   descarga: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
   descarga_total: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i
@@ -60,7 +66,7 @@ interface OperationStepNames {
   verifyResult: string;
 }
 
-function getOperationStepNames(operation: FundsOperation): OperationStepNames {
+function getOperationStepNames(operation: FundsTransactionOperation): OperationStepNames {
   if (operation === 'carga') {
     return {
       openAction: '04-open-user-deposit',
@@ -208,7 +214,7 @@ async function findDepositAmountInput(page: Page, timeoutMs: number): Promise<Lo
 
 async function waitForUsersFilterOutcome(
   page: Page,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   username: string,
   timeoutMs: number,
   pollingMs: number
@@ -245,7 +251,10 @@ async function waitForUsersFilterOutcome(
   throw new Error('Users table did not refresh after applying filter');
 }
 
-function getOperationActions(scope: { locator: (selector: string) => Locator }, operation: FundsOperation): Locator {
+function getOperationActions(
+  scope: { locator: (selector: string) => Locator },
+  operation: FundsTransactionOperation
+): Locator {
   return scope.locator(USER_ACTION_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
 }
 
@@ -279,7 +288,10 @@ async function findFirstVisibleInLocator(locator: Locator, timeoutMs: number, po
   throw new Error('No visible candidate found in locator');
 }
 
-async function collectDepositRowCandidates(page: Page, operation: FundsOperation): Promise<DepositRowCandidate[]> {
+async function collectDepositRowCandidates(
+  page: Page,
+  operation: FundsTransactionOperation
+): Promise<DepositRowCandidate[]> {
   const rows = page.locator(USERS_ROW_SELECTOR);
   const count = await rows.count();
   const candidates: DepositRowCandidate[] = [];
@@ -309,7 +321,7 @@ async function collectDepositRowCandidates(page: Page, operation: FundsOperation
 
 async function findDepositActionInRow(
   row: Locator,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   timeoutMs: number,
   pollingMs: number
 ): Promise<Locator> {
@@ -331,7 +343,7 @@ async function findDepositActionInRow(
 
 async function findSubmitDepositAction(
   page: Page,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   timeoutMs: number,
   pollingMs: number
 ): Promise<Locator> {
@@ -428,7 +440,7 @@ async function authenticateWithRetry(
 
 async function findUniqueUserDepositButton(
   page: Page,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   username: string,
   timeoutMs: number,
   pollingMs: number
@@ -453,7 +465,12 @@ async function findUniqueUserDepositButton(
   throw new Error(lastError);
 }
 
-async function waitForDepositPage(page: Page, operation: FundsOperation, timeoutMs: number, pollingMs: number): Promise<void> {
+async function waitForDepositPage(
+  page: Page,
+  operation: FundsTransactionOperation,
+  timeoutMs: number,
+  pollingMs: number
+): Promise<void> {
   const startedAt = Date.now();
   const targetPath = TARGET_PATH_BY_OPERATION[operation];
   const headingRegex = TARGET_HEADING_BY_OPERATION[operation];
@@ -501,7 +518,7 @@ async function waitForUserVisibleInDepositPage(
 
 async function waitForDepositResult(
   page: Page,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   submittedUrl: string,
   timeoutMs: number,
   pollingMs: number
@@ -535,7 +552,7 @@ async function waitForDepositResult(
 
 async function verifyDepositResultStep(
   page: Page,
-  operation: FundsOperation,
+  operation: FundsTransactionOperation,
   artifactDir: string,
   stepName: string,
   submittedUrl: string,

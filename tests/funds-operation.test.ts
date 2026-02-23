@@ -6,6 +6,7 @@ describe('funds-operation helpers', () => {
     expect(normalizeFundsOperation('carga')).toBe('carga');
     expect(normalizeFundsOperation('descarga')).toBe('descarga');
     expect(normalizeFundsOperation('descarga_total')).toBe('descarga_total');
+    expect(normalizeFundsOperation('consultar_saldo')).toBe('consultar_saldo');
   });
 
   it('normalizes alias and trims/case-folds values', () => {
@@ -14,6 +15,8 @@ describe('funds-operation helpers', () => {
     expect(normalizeFundsOperation(' retiro_total ')).toBe('descarga_total');
     expect(normalizeFundsOperation(' Descarga Total ')).toBe('descarga_total');
     expect(normalizeFundsOperation(' Retiro Total ')).toBe('descarga_total');
+    expect(normalizeFundsOperation(' consultar saldo ')).toBe('consultar_saldo');
+    expect(normalizeFundsOperation(' CONSULTAR_SALDO ')).toBe('consultar_saldo');
     expect(normalizeFundsOperation(' CARGA ')).toBe('carga');
   });
 
@@ -29,6 +32,8 @@ describe('funds-operation helpers', () => {
     expect(fundsOperationSchema.parse('descarga_total')).toBe('descarga_total');
     expect(fundsOperationSchema.parse('retiro_total')).toBe('descarga_total');
     expect(fundsOperationSchema.parse('descarga total')).toBe('descarga_total');
+    expect(fundsOperationSchema.parse('consultar_saldo')).toBe('consultar_saldo');
+    expect(fundsOperationSchema.parse('consultar saldo')).toBe('consultar_saldo');
   });
 
   it('schema rejects unsupported values', () => {

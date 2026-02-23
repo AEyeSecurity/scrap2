@@ -105,7 +105,7 @@ export interface RunMetadata {
   outputCsv: string;
 }
 
-export type JobType = 'login' | 'create-player' | 'deposit';
+export type JobType = 'login' | 'create-player' | 'deposit' | 'balance';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'expired';
 export type JobStepStatus = 'ok' | 'failed' | 'skipped';
 
@@ -149,10 +149,11 @@ export interface CreatePlayerJobPayload {
   stepsOverride?: StepAction[];
 }
 
-export type FundsOperation = 'carga' | 'descarga' | 'descarga_total';
+export type FundsOperation = 'carga' | 'descarga' | 'descarga_total' | 'consultar_saldo';
+export type FundsTransactionOperation = Exclude<FundsOperation, 'consultar_saldo'>;
 
 interface DepositJobPayloadBase {
-  operacion: FundsOperation;
+  operacion: FundsTransactionOperation;
   usuario: string;
   agente: string;
   contrasena_agente: string;
@@ -169,6 +170,14 @@ export interface DepositJobPayloadTotal extends DepositJobPayloadBase {
 }
 
 export type DepositJobPayload = DepositJobPayloadWithAmount | DepositJobPayloadTotal;
+
+export interface BalanceJobPayload {
+  operacion: 'consultar_saldo';
+  usuario: string;
+  agente: string;
+  contrasena_agente: string;
+  cantidad?: number;
+}
 
 export interface LoginJobRequest {
   id: string;
@@ -194,11 +203,29 @@ export interface DepositJobRequest {
   createdAt: string;
 }
 
-export type JobRequest = LoginJobRequest | CreatePlayerJobRequest | DepositJobRequest;
+export interface BalanceJobRequest {
+  id: string;
+  jobType: 'balance';
+  payload: BalanceJobPayload;
+  options: JobExecutionOptions;
+  createdAt: string;
+}
+
+export interface BalanceJobResult {
+  kind: 'balance';
+  usuario: string;
+  saldoTexto: string;
+  saldoNumero: number;
+}
+
+export type JobResult = BalanceJobResult;
+
+export type JobRequest = LoginJobRequest | CreatePlayerJobRequest | DepositJobRequest | BalanceJobRequest;
 
 export interface JobExecutionResult {
   artifactPaths: string[];
   steps: JobStepResult[];
+  result?: JobResult;
 }
 
 export interface JobStoreEntry {
@@ -211,4 +238,5 @@ export interface JobStoreEntry {
   error?: string;
   artifactPaths: string[];
   steps: JobStepResult[];
+  result?: JobResult;
 }

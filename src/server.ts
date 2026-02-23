@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
+import { runBalanceJob } from './balance-job';
 import { runCreatePlayerJob } from './create-player-job';
 import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
@@ -9,8 +10,10 @@ import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
 import type {
   AppConfig,
+  BalanceJobRequest,
   CreatePlayerJobRequest,
   DepositJobRequest,
+  FundsOperation,
   JobExecutionOptions,
   JobRequest,
   JobStoreEntry,
@@ -67,7 +70,7 @@ const depositBodySchema = z
   })
   .merge(executionOverridesSchema)
   .superRefine((value, ctx) => {
-    if (value.operacion !== 'descarga_total' && typeof value.cantidad !== 'number') {
+    if (DEPOSIT_AMOUNT_REQUIRED_OPERATIONS.includes(value.operacion) && typeof value.cantidad !== 'number') {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['cantidad'],
@@ -81,6 +84,7 @@ const jobParamsSchema = z.object({
 });
 
 const DEPOSIT_TURBO_TIMEOUT_MS = 15_000;
+const DEPOSIT_AMOUNT_REQUIRED_OPERATIONS: FundsOperation[] = ['carga', 'descarga'];
 
 function resolveExecutionOptions(
   appConfig: AppConfig,
@@ -132,6 +136,10 @@ export function createServer(
 
         if (request.jobType === 'deposit') {
           return runDepositJob(request, appConfig, logger);
+        }
+
+        if (request.jobType === 'balance') {
+          return runBalanceJob(request, appConfig, logger);
         }
 
         throw new Error('Unsupported job type');
@@ -217,30 +225,43 @@ export function createServer(
     const payload = parsed.data;
     const createdAt = new Date().toISOString();
     const id = randomUUID();
-    const depositPayload: DepositJobRequest['payload'] =
-      payload.operacion === 'descarga_total'
+    const jobRequest: DepositJobRequest | BalanceJobRequest =
+      payload.operacion === 'consultar_saldo'
         ? {
-            operacion: 'descarga_total',
-            usuario: payload.usuario,
-            agente: payload.agente,
-            contrasena_agente: payload.contrasena_agente,
-            ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+            id,
+            jobType: 'balance',
+            createdAt,
+            payload: {
+              operacion: 'consultar_saldo',
+              usuario: payload.usuario,
+              agente: payload.agente,
+              contrasena_agente: payload.contrasena_agente,
+              ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+            },
+            options: resolveDepositExecutionOptions(appConfig, payload)
           }
         : {
-            operacion: payload.operacion,
-            usuario: payload.usuario,
-            agente: payload.agente,
-            contrasena_agente: payload.contrasena_agente,
-            cantidad: payload.cantidad as number
+            id,
+            jobType: 'deposit',
+            createdAt,
+            payload:
+              payload.operacion === 'descarga_total'
+                ? {
+                    operacion: 'descarga_total',
+                    usuario: payload.usuario,
+                    agente: payload.agente,
+                    contrasena_agente: payload.contrasena_agente,
+                    ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+                  }
+                : {
+                    operacion: payload.operacion,
+                    usuario: payload.usuario,
+                    agente: payload.agente,
+                    contrasena_agente: payload.contrasena_agente,
+                    cantidad: payload.cantidad as number
+                  },
+            options: resolveDepositExecutionOptions(appConfig, payload)
           };
-
-    const jobRequest: DepositJobRequest = {
-      id,
-      jobType: 'deposit',
-      createdAt,
-      payload: depositPayload,
-      options: resolveDepositExecutionOptions(appConfig, payload)
-    };
 
     internalQueue.enqueue(jobRequest);
 

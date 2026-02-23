@@ -1,6 +1,6 @@
 import pLimit from 'p-limit';
 import type { Logger } from 'pino';
-import type { JobExecutionResult, JobRequest, JobStatus, JobStoreEntry } from './types';
+import type { JobExecutionResult, JobRequest, JobResult, JobStatus, JobStoreEntry } from './types';
 
 interface JobManagerOptions {
   concurrency: number;
@@ -20,6 +20,14 @@ function toMillis(isoDate: string | undefined): number | null {
 
   const value = Date.parse(isoDate);
   return Number.isNaN(value) ? null : value;
+}
+
+function cloneJobResult(result: JobResult | undefined): JobResult | undefined {
+  if (!result) {
+    return undefined;
+  }
+
+  return { ...result };
 }
 
 export class JobManager {
@@ -64,7 +72,8 @@ export class JobManager {
           status: 'succeeded',
           finishedAt,
           artifactPaths: result.artifactPaths,
-          steps: result.steps
+          steps: result.steps,
+          result: cloneJobResult(result.result)
         });
       } catch (error) {
         const finishedAt = new Date().toISOString();
@@ -81,7 +90,8 @@ export class JobManager {
           artifactPaths: Array.isArray(errorWithContext.artifactPaths)
             ? [...errorWithContext.artifactPaths]
             : [],
-          steps: Array.isArray(errorWithContext.steps) ? [...errorWithContext.steps] : []
+          steps: Array.isArray(errorWithContext.steps) ? [...errorWithContext.steps] : [],
+          result: undefined
         });
       }
     }).catch((error: unknown) => {
@@ -102,7 +112,8 @@ export class JobManager {
     return {
       ...maybeExpired,
       artifactPaths: [...maybeExpired.artifactPaths],
-      steps: maybeExpired.steps.map((step) => ({ ...step }))
+      steps: maybeExpired.steps.map((step) => ({ ...step })),
+      result: cloneJobResult(maybeExpired.result)
     };
   }
 

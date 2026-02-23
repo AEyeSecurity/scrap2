@@ -8,7 +8,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
 - Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
-- Funds jobs (`carga`/`descarga`/`descarga_total`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
+- Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
 ## Requirements
@@ -83,7 +83,7 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
-Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`):
+Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`, `consultar_saldo`, `consultar saldo`):
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/users/deposit \
@@ -151,7 +151,33 @@ curl -s -X POST http://127.0.0.1:3000/users/deposit \
   }'
 ```
 
-Note: `cantidad` is required for `carga` and `descarga`; for `descarga_total`/`retiro_total` it is optional and ignored because the flow clicks `Toda`.
+Consult balance job (`consultar_saldo`):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"consultar_saldo",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass"
+  }'
+```
+
+Alias example (`consultar saldo` is normalized to `consultar_saldo`):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"consultar saldo",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass"
+  }'
+```
+
+Note: `cantidad` is required for `carga` and `descarga`; for `descarga_total`/`retiro_total`/`consultar_saldo` it is optional and ignored.
 
 Force visual/debug mode for a funds job:
 
@@ -174,12 +200,26 @@ curl -s -X POST http://127.0.0.1:3000/users/deposit \
 Returned fields:
 
 - `id`
-- `jobType` (`login|create-player|deposit`)
+- `jobType` (`login|create-player|deposit|balance`)
 - `status` (`queued|running|succeeded|failed|expired`)
 - `createdAt`, `startedAt`, `finishedAt`
 - `error`
 - `artifactPaths`
 - `steps`
+- `result` (optional, for `balance` jobs)
+
+Example result payload for `balance` jobs:
+
+```json
+{
+  "result": {
+    "kind": "balance",
+    "usuario": "player_1",
+    "saldoTexto": "12.345,67",
+    "saldoNumero": 12345.67
+  }
+}
+```
 
 ## Docker
 
