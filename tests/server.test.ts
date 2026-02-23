@@ -144,6 +144,7 @@ describe('server routes', () => {
     const queued = queue.requests.find((item) => item.id === body.jobId);
     expect(queued?.jobType).toBe('deposit');
     if (queued?.jobType === 'deposit') {
+      expect(queued.payload.operacion).toBe('carga');
       expect(queued.options.headless).toBe(false);
       expect(queued.options.debug).toBe(false);
       expect(queued.options.slowMo).toBe(0);
@@ -168,7 +169,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
-        operacion: 'carga',
+        operacion: ' DescARGA ',
         usuario: 'pruebita',
         agente: 'agent',
         contrasena_agente: 'secret',
@@ -185,6 +186,7 @@ describe('server routes', () => {
     const queued = queue.requests.find((item) => item.id === body.jobId);
     expect(queued?.jobType).toBe('deposit');
     if (queued?.jobType === 'deposit') {
+      expect(queued.payload.operacion).toBe('descarga');
       expect(queued.options.headless).toBe(false);
       expect(queued.options.debug).toBe(true);
       expect(queued.options.slowMo).toBe(55);
@@ -205,11 +207,31 @@ describe('server routes', () => {
       queue
     );
 
-    const badOperationResponse = await server.inject({
+    const aliasOperationResponse = await server.inject({
       method: 'POST',
       url: '/users/deposit',
       payload: {
         operacion: 'retiro',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret',
+        cantidad: 500
+      }
+    });
+
+    expect(aliasOperationResponse.statusCode).toBe(202);
+    const aliasBody = aliasOperationResponse.json();
+    const aliasQueued = queue.requests.find((item) => item.id === aliasBody.jobId);
+    expect(aliasQueued?.jobType).toBe('deposit');
+    if (aliasQueued?.jobType === 'deposit') {
+      expect(aliasQueued.payload.operacion).toBe('descarga');
+    }
+
+    const badOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'transferencia',
         usuario: 'pruebita',
         agente: 'agent',
         contrasena_agente: 'secret',

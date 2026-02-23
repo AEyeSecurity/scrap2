@@ -8,7 +8,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
 - Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
-- Deposit jobs run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
+- Funds jobs (`carga`/`descarga`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
 ## Requirements
@@ -83,7 +83,7 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
-Create deposit job:
+Create funds job (`operacion` supports `carga`, `descarga`, `retiro`):
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/users/deposit \
@@ -97,7 +97,35 @@ curl -s -X POST http://127.0.0.1:3000/users/deposit \
   }'
 ```
 
-Force visual/debug mode for a deposit job:
+Create withdraw job (descarga):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"descarga",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass",
+    "cantidad":500
+  }'
+```
+
+Alias example (`retiro` is normalized to `descarga`):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"retiro",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass",
+    "cantidad":500
+  }'
+```
+
+Force visual/debug mode for a funds job:
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/users/deposit \

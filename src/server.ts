@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Logger } from 'pino';
 import { runCreatePlayerJob } from './create-player-job';
 import { runDepositJob } from './deposit-job';
+import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
 import type {
@@ -58,7 +59,7 @@ const createPlayerBodySchema = z
 
 const depositBodySchema = z
   .object({
-    operacion: z.literal('carga'),
+    operacion: fundsOperationSchema,
     usuario: z.string().trim().min(1),
     agente: z.string().trim().min(1),
     contrasena_agente: z.string().trim().min(1),

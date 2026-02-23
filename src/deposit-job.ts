@@ -5,24 +5,89 @@ import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
 import { normalizeDepositText, selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
-import type { AppConfig, DepositJobRequest, JobExecutionResult, JobStepResult } from './types';
+import type { AppConfig, DepositJobRequest, FundsOperation, JobExecutionResult, JobStepResult } from './types';
 
 const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
 const USERS_ROW_SELECTOR = '.users-table-item';
 const USERS_USERNAME_SELECTOR = '.role-bar__user-block11, .ellipsis-text, .role-bar__user-block1, .users-table-item__user-info';
 const USERS_APPLY_FILTER_SELECTOR =
   'button:has-text("Aceptar filtro"), button:has-text("Aplicar"), button:has-text("Filtrar"), button:has-text("Buscar")';
-const DEPOSIT_ACTION_SELECTOR = 'div.users-table-item__button, a.button-desktop, a, button, [role="button"]';
-const DEPOSIT_CLICKABLE_SELECTOR = 'a.button-desktop, a, button, [role="button"]';
-const DEPOSIT_ROW_LINK_SELECTOR = 'a[href*="/users/deposit/"]';
-const DEPOSIT_TEXT_REGEX = /dep/i;
+const USER_ACTION_SELECTOR = 'div.users-table-item__button, a.button-desktop, a, button, [role="button"]';
+const USER_ACTION_CLICKABLE_SELECTOR = 'a.button-desktop, a, button, [role="button"]';
 const NON_RETRYABLE_LOGIN_ERROR_REGEX =
   /usuario no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas|password/i;
-const DEPOSIT_AMOUNT_INPUT_SELECTOR =
+const FUNDS_AMOUNT_INPUT_SELECTOR =
   'input[name="amount"], input[type="number"], input[placeholder*="cantidad" i], input[aria-label*="cantidad" i]';
+const ACTION_LINK_BY_OPERATION: Record<FundsOperation, string> = {
+  carga: 'a[href*="/users/deposit/"]',
+  descarga: 'a[href*="/users/withdraw/"]'
+};
+const ACTION_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
+  carga: /dep[oó]sito/i,
+  descarga: /retiro/i
+};
+const SUBMIT_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
+  carga: /dep[oó]sito/i,
+  descarga: /retiro/i
+};
+const TARGET_PATH_BY_OPERATION: Record<FundsOperation, string> = {
+  carga: '/users/deposit',
+  descarga: '/users/withdraw'
+};
+const TARGET_HEADING_BY_OPERATION: Record<FundsOperation, RegExp> = {
+  carga: /dep[oó]sito/i,
+  descarga: /retiro/i
+};
+const SUCCESS_MESSAGE_BY_OPERATION: Record<FundsOperation, RegExp> = {
+  carga: /depositad[oa]|acreditad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
+  descarga: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i
+};
+const ERROR_MESSAGE_REGEX =
+  /saldo insuficiente|error|fall[oó]|fallid[oa]|invalido|invalid|no se pudo|incorrect[oa]|rechazad[oa]/i;
+
+interface OperationStepNames {
+  openAction: string;
+  waitOperationPage: string;
+  clickSubmit: string;
+  verifyResult: string;
+}
+
+function getOperationStepNames(operation: FundsOperation): OperationStepNames {
+  if (operation === 'carga') {
+    return {
+      openAction: '04-open-user-deposit',
+      waitOperationPage: '05-wait-deposit-page',
+      clickSubmit: '07-click-deposit-submit',
+      verifyResult: '08-verify-deposit-result'
+    };
+  }
+
+  return {
+    openAction: '04-open-user-withdraw',
+    waitOperationPage: '05-wait-withdraw-page',
+    clickSubmit: '07-click-withdraw-submit',
+    verifyResult: '08-verify-withdraw-result'
+  };
+}
 
 function sanitizeFileName(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function parseEnvBoolean(input: string | undefined): boolean | undefined {
+  if (input == null) {
+    return undefined;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return undefined;
 }
 
 function escapeRegex(value: string): string {
@@ -111,7 +176,7 @@ async function findUsersFilterInput(page: Page, timeoutMs: number): Promise<Loca
 
 async function findDepositAmountInput(page: Page, timeoutMs: number): Promise<Locator> {
   try {
-    return await findFirstVisibleLocator(page, DEPOSIT_AMOUNT_INPUT_SELECTOR, timeoutMs);
+    return await findFirstVisibleLocator(page, FUNDS_AMOUNT_INPUT_SELECTOR, timeoutMs);
   } catch {
     return findFirstVisibleLocator(
       page,
@@ -123,6 +188,7 @@ async function findDepositAmountInput(page: Page, timeoutMs: number): Promise<Lo
 
 async function waitForUsersFilterOutcome(
   page: Page,
+  operation: FundsOperation,
   username: string,
   timeoutMs: number,
   pollingMs: number
@@ -134,7 +200,7 @@ async function waitForUsersFilterOutcome(
     .first();
 
   while (Date.now() - startedAt < timeoutMs) {
-    const visibleActions = await countVisibleInLocator(getDepositActions(page));
+    const visibleActions = await countVisibleInLocator(getOperationActions(page, operation));
     if (visibleActions > 0) {
       return;
     }
@@ -159,8 +225,8 @@ async function waitForUsersFilterOutcome(
   throw new Error('Users table did not refresh after applying filter');
 }
 
-function getDepositActions(scope: { locator: (selector: string) => Locator }): Locator {
-  return scope.locator(DEPOSIT_ACTION_SELECTOR).filter({ hasText: DEPOSIT_TEXT_REGEX });
+function getOperationActions(scope: { locator: (selector: string) => Locator }, operation: FundsOperation): Locator {
+  return scope.locator(USER_ACTION_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
 }
 
 async function countVisibleInLocator(locator: Locator): Promise<number> {
@@ -193,7 +259,7 @@ async function findFirstVisibleInLocator(locator: Locator, timeoutMs: number, po
   throw new Error('No visible candidate found in locator');
 }
 
-async function collectDepositRowCandidates(page: Page): Promise<DepositRowCandidate[]> {
+async function collectDepositRowCandidates(page: Page, operation: FundsOperation): Promise<DepositRowCandidate[]> {
   const rows = page.locator(USERS_ROW_SELECTOR);
   const count = await rows.count();
   const candidates: DepositRowCandidate[] = [];
@@ -208,7 +274,7 @@ async function collectDepositRowCandidates(page: Page): Promise<DepositRowCandid
     const usernamesRaw = await row.locator(USERS_USERNAME_SELECTOR).allInnerTexts().catch(() => []);
     const usernames = usernamesRaw.map((value) => value.trim()).filter(Boolean);
     const rowTextRaw = await row.innerText().catch(() => '');
-    const hasAction = (await countVisibleInLocator(getDepositActions(row))) > 0;
+    const hasAction = (await countVisibleInLocator(getOperationActions(row, operation))) > 0;
 
     candidates.push({
       index: i,
@@ -221,25 +287,35 @@ async function collectDepositRowCandidates(page: Page): Promise<DepositRowCandid
   return candidates;
 }
 
-async function findDepositActionInRow(row: Locator, timeoutMs: number, pollingMs: number): Promise<Locator> {
-  const byHref = row.locator(DEPOSIT_ROW_LINK_SELECTOR);
+async function findDepositActionInRow(
+  row: Locator,
+  operation: FundsOperation,
+  timeoutMs: number,
+  pollingMs: number
+): Promise<Locator> {
+  const byHref = row.locator(ACTION_LINK_BY_OPERATION[operation]);
   const hrefVisible = await findFirstVisibleInLocator(byHref, timeoutMs, pollingMs).catch(() => undefined);
   if (hrefVisible) {
     return hrefVisible;
   }
 
-  const preferred = row.locator(DEPOSIT_CLICKABLE_SELECTOR).filter({ hasText: DEPOSIT_TEXT_REGEX });
+  const preferred = row.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
   const preferredVisible = await findFirstVisibleInLocator(preferred, timeoutMs, pollingMs).catch(() => undefined);
   if (preferredVisible) {
     return preferredVisible;
   }
 
-  const fallback = row.locator('div.users-table-item__button').filter({ hasText: DEPOSIT_TEXT_REGEX });
+  const fallback = row.locator('div.users-table-item__button').filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
   return findFirstVisibleInLocator(fallback, timeoutMs, pollingMs);
 }
 
-async function findSubmitDepositAction(page: Page, timeoutMs: number, pollingMs: number): Promise<Locator> {
-  const candidates = page.locator(DEPOSIT_CLICKABLE_SELECTOR).filter({ hasText: DEPOSIT_TEXT_REGEX });
+async function findSubmitDepositAction(
+  page: Page,
+  operation: FundsOperation,
+  timeoutMs: number,
+  pollingMs: number
+): Promise<Locator> {
+  const candidates = page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: SUBMIT_TEXT_BY_OPERATION[operation] });
   return findFirstEnabledVisibleInLocator(candidates, timeoutMs, pollingMs);
 }
 
@@ -314,6 +390,7 @@ async function authenticateWithRetry(
 
 async function findUniqueUserDepositButton(
   page: Page,
+  operation: FundsOperation,
   username: string,
   timeoutMs: number,
   pollingMs: number
@@ -324,10 +401,10 @@ async function findUniqueUserDepositButton(
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const candidates = await collectDepositRowCandidates(page);
+      const candidates = await collectDepositRowCandidates(page, operation);
       const selectedIndex = selectDepositRowIndex(candidates, username);
       const selectedRow = rows.nth(selectedIndex);
-      return await findDepositActionInRow(selectedRow, pollingMs * 2, pollingMs);
+      return await findDepositActionInRow(selectedRow, operation, pollingMs * 2, pollingMs);
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
@@ -338,8 +415,25 @@ async function findUniqueUserDepositButton(
   throw new Error(lastError);
 }
 
-async function waitForDepositPage(page: Page, timeoutMs: number): Promise<void> {
-  await page.waitForURL((url) => url.pathname.includes('/users/deposit'), { timeout: timeoutMs });
+async function waitForDepositPage(page: Page, operation: FundsOperation, timeoutMs: number, pollingMs: number): Promise<void> {
+  const startedAt = Date.now();
+  const targetPath = TARGET_PATH_BY_OPERATION[operation];
+  const headingRegex = TARGET_HEADING_BY_OPERATION[operation];
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (page.url().includes(targetPath)) {
+      return;
+    }
+
+    const headingVisible = await page.getByRole('heading', { name: headingRegex }).first().isVisible().catch(() => false);
+    if (headingVisible) {
+      return;
+    }
+
+    await page.waitForTimeout(pollingMs);
+  }
+
+  throw new Error(`Operation page did not open for "${operation}" within timeout`);
 }
 
 async function waitForUserVisibleInDepositPage(
@@ -369,53 +463,52 @@ async function waitForUserVisibleInDepositPage(
 
 async function waitForDepositResult(
   page: Page,
+  operation: FundsOperation,
   submittedUrl: string,
   timeoutMs: number,
   pollingMs: number
 ): Promise<{ state: 'success' | 'error' | 'unknown'; reason: string }> {
   const startedAt = Date.now();
-  const successMessage = page.locator(
-    'text=/depositad[oa]|acreditad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i'
-  );
-  const errorMessage = page.locator(
-    'text=/saldo insuficiente|error|fall[o\u00f3]|fallid[oa]|invalido|invalid|no se pudo|incorrect[oa]|rechazad[oa]/i'
-  );
+  const targetPath = TARGET_PATH_BY_OPERATION[operation];
+  const successMessage = page.locator('body').getByText(SUCCESS_MESSAGE_BY_OPERATION[operation]).first();
+  const errorMessage = page.locator('body').getByText(ERROR_MESSAGE_REGEX).first();
 
   while (Date.now() - startedAt < timeoutMs) {
     if (await errorMessage.first().isVisible().catch(() => false)) {
       const text = (await errorMessage.first().innerText().catch(() => '')).trim();
-      return { state: 'error', reason: text || 'Error message detected after deposit submit' };
+      return { state: 'error', reason: text || `Error message detected after ${operation} submit` };
     }
 
     if (await successMessage.first().isVisible().catch(() => false)) {
       const text = (await successMessage.first().innerText().catch(() => '')).trim();
-      return { state: 'success', reason: text || 'Success message detected after deposit submit' };
+      return { state: 'success', reason: text || `Success message detected after ${operation} submit` };
     }
 
     const currentUrl = page.url();
-    if (currentUrl !== submittedUrl && !currentUrl.includes('/users/deposit')) {
+    if (currentUrl !== submittedUrl && !currentUrl.includes(targetPath)) {
       return { state: 'success', reason: `URL changed after submit: ${currentUrl}` };
     }
 
     await page.waitForTimeout(pollingMs);
   }
 
-  return { state: 'unknown', reason: 'No clear success signal detected after deposit submit' };
+  return { state: 'unknown', reason: `No clear success signal detected after ${operation} submit` };
 }
 
 async function verifyDepositResultStep(
   page: Page,
+  operation: FundsOperation,
   artifactDir: string,
+  stepName: string,
   submittedUrl: string,
   timeoutMs: number,
   pollingMs: number,
   captureOnSuccess: boolean
 ): Promise<JobStepResult> {
   const startedAt = new Date().toISOString();
-  const stepName = '08-verify-deposit-result';
 
   try {
-    const outcome = await waitForDepositResult(page, submittedUrl, timeoutMs, pollingMs);
+    const outcome = await waitForDepositResult(page, operation, submittedUrl, timeoutMs, pollingMs);
     const artifactPath = captureOnSuccess ? await captureStepScreenshot(page, artifactDir, stepName) : undefined;
 
     if (outcome.state === 'success') {
@@ -448,7 +541,9 @@ async function verifyDepositResultStep(
 }
 
 export async function runDepositJob(request: DepositJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
-  const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType });
+  const operation = request.payload.operacion;
+  const stepNames = getOperationStepNames(operation);
+  const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType, operation });
   const artifactDir = path.join(appConfig.artifactsDir, 'jobs', request.id);
   const runtimeConfig: AppConfig = {
     ...appConfig,
@@ -458,7 +553,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     timeoutMs: request.options.timeoutMs
   };
   const isTurbo = !runtimeConfig.debug && runtimeConfig.slowMo === 0;
-  const captureSuccessArtifacts = !isTurbo;
+  const captureSuccessArtifacts = parseEnvBoolean(process.env.DEPOSIT_CAPTURE_SUCCESS_ARTIFACTS) ?? false;
   const pollingMs = isTurbo ? 100 : 250;
   const filterOutcomeTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 4_000) : Math.min(runtimeConfig.timeoutMs, 10_000);
   const depositSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
@@ -564,7 +659,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
         const filterInput = usersFilterInput ?? (await findUsersFilterInput(page, runtimeConfig.timeoutMs));
         await filterInput.press('Enter', { timeout: runtimeConfig.timeoutMs }).catch(() => undefined);
       }
-      await waitForUsersFilterOutcome(page, request.payload.usuario, filterOutcomeTimeoutMs, pollingMs);
+      await waitForUsersFilterOutcome(page, operation, request.payload.usuario, filterOutcomeTimeoutMs, pollingMs);
     }, captureSuccessArtifacts);
     if (applyFilterStep.artifactPath) {
       artifactPaths.push(applyFilterStep.artifactPath);
@@ -574,9 +669,10 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       throw new Error(`Step failed: ${applyFilterStep.name} (${applyFilterStep.error ?? 'unknown error'})`);
     }
 
-    const openDepositStep = await executeActionStep(page, artifactDir, '04-open-user-deposit', async () => {
+    const openDepositStep = await executeActionStep(page, artifactDir, stepNames.openAction, async () => {
       const depositButton = await findUniqueUserDepositButton(
         page,
+        operation,
         request.payload.usuario,
         depositSearchTimeoutMs,
         pollingMs
@@ -591,8 +687,8 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       throw new Error(`Step failed: ${openDepositStep.name} (${openDepositStep.error ?? 'unknown error'})`);
     }
 
-    const waitDepositPageStep = await executeActionStep(page, artifactDir, '05-wait-deposit-page', async () => {
-      await waitForDepositPage(page, depositPageTimeoutMs);
+    const waitDepositPageStep = await executeActionStep(page, artifactDir, stepNames.waitOperationPage, async () => {
+      await waitForDepositPage(page, operation, depositPageTimeoutMs, pollingMs);
       const userVisible = await waitForUserVisibleInDepositPage(
         page,
         request.payload.usuario,
@@ -600,7 +696,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
         pollingMs
       );
       if (!userVisible) {
-        throw new Error(`User "${request.payload.usuario}" is not visible in deposit target panel`);
+        throw new Error(`User "${request.payload.usuario}" is not visible in ${operation} target panel`);
       }
     }, captureSuccessArtifacts);
     if (waitDepositPageStep.artifactPath) {
@@ -625,8 +721,8 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     }
 
     const submittedUrl = page.url();
-    const clickDepositStep = await executeActionStep(page, artifactDir, '07-click-deposit-submit', async () => {
-      const submitButton = await findSubmitDepositAction(page, runtimeConfig.timeoutMs, pollingMs);
+    const clickDepositStep = await executeActionStep(page, artifactDir, stepNames.clickSubmit, async () => {
+      const submitButton = await findSubmitDepositAction(page, operation, runtimeConfig.timeoutMs, pollingMs);
       await clickLocator(submitButton, runtimeConfig.timeoutMs);
     }, captureSuccessArtifacts);
     if (clickDepositStep.artifactPath) {
@@ -639,7 +735,9 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
 
     const verifyStep = await verifyDepositResultStep(
       page,
+      operation,
       artifactDir,
+      stepNames.verifyResult,
       submittedUrl,
       verifyTimeoutMs,
       pollingMs,

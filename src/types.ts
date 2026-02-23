@@ -149,8 +149,10 @@ export interface CreatePlayerJobPayload {
   stepsOverride?: StepAction[];
 }
 
+export type FundsOperation = 'carga' | 'descarga';
+
 export interface DepositJobPayload {
-  operacion: 'carga';
+  operacion: FundsOperation;
   usuario: string;
   agente: string;
   contrasena_agente: string;
