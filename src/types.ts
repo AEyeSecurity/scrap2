@@ -105,7 +105,7 @@ export interface RunMetadata {
   outputCsv: string;
 }
 
-export type JobType = 'login' | 'create-player';
+export type JobType = 'login' | 'create-player' | 'deposit';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'expired';
 export type JobStepStatus = 'ok' | 'failed' | 'skipped';
 
@@ -149,6 +149,14 @@ export interface CreatePlayerJobPayload {
   stepsOverride?: StepAction[];
 }
 
+export interface DepositJobPayload {
+  operacion: 'carga';
+  usuario: string;
+  agente: string;
+  contrasena_agente: string;
+  cantidad: number;
+}
+
 export interface LoginJobRequest {
   id: string;
   jobType: 'login';
@@ -165,7 +173,15 @@ export interface CreatePlayerJobRequest {
   createdAt: string;
 }
 
-export type JobRequest = LoginJobRequest | CreatePlayerJobRequest;
+export interface DepositJobRequest {
+  id: string;
+  jobType: 'deposit';
+  payload: DepositJobPayload;
+  options: JobExecutionOptions;
+  createdAt: string;
+}
+
+export type JobRequest = LoginJobRequest | CreatePlayerJobRequest | DepositJobRequest;
 
 export interface JobExecutionResult {
   artifactPaths: string[];

@@ -3,11 +3,13 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import { runCreatePlayerJob } from './create-player-job';
+import { runDepositJob } from './deposit-job';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
 import type {
   AppConfig,
   CreatePlayerJobRequest,
+  DepositJobRequest,
   JobExecutionOptions,
   JobRequest,
   JobStoreEntry,
@@ -54,9 +56,21 @@ const createPlayerBodySchema = z
   })
   .merge(executionOverridesSchema);
 
+const depositBodySchema = z
+  .object({
+    operacion: z.literal('carga'),
+    usuario: z.string().trim().min(1),
+    agente: z.string().trim().min(1),
+    contrasena_agente: z.string().trim().min(1),
+    cantidad: z.number().int().positive()
+  })
+  .merge(executionOverridesSchema);
+
 const jobParamsSchema = z.object({
   id: z.string().min(1)
 });
+
+const DEPOSIT_TURBO_TIMEOUT_MS = 15_000;
 
 function resolveExecutionOptions(
   appConfig: AppConfig,
@@ -67,6 +81,19 @@ function resolveExecutionOptions(
     debug: overrides.debug ?? appConfig.debug,
     slowMo: overrides.slowMo ?? appConfig.slowMo,
     timeoutMs: overrides.timeoutMs ?? appConfig.timeoutMs
+  };
+}
+
+function resolveDepositExecutionOptions(
+  appConfig: AppConfig,
+  overrides: Partial<Pick<JobExecutionOptions, 'headless' | 'debug' | 'slowMo' | 'timeoutMs'>>
+): JobExecutionOptions {
+  const turboTimeout = Math.min(appConfig.timeoutMs, DEPOSIT_TURBO_TIMEOUT_MS);
+  return {
+    headless: overrides.headless ?? false,
+    debug: overrides.debug ?? false,
+    slowMo: overrides.slowMo ?? 0,
+    timeoutMs: overrides.timeoutMs ?? turboTimeout
   };
 }
 
@@ -91,6 +118,10 @@ export function createServer(
 
         if (request.jobType === 'create-player') {
           return runCreatePlayerJob(request, appConfig, logger);
+        }
+
+        if (request.jobType === 'deposit') {
+          return runDepositJob(request, appConfig, logger);
         }
 
         throw new Error('Unsupported job type');
@@ -153,6 +184,41 @@ export function createServer(
         stepsOverride: payload.stepsOverride
       },
       options: resolveExecutionOptions(appConfig, payload)
+    };
+
+    internalQueue.enqueue(jobRequest);
+
+    return reply.code(202).send({
+      jobId: id,
+      status: 'queued',
+      statusUrl: `/jobs/${id}`
+    });
+  });
+
+  fastify.post('/users/deposit', async (request, reply) => {
+    const parsed = depositBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    const payload = parsed.data;
+    const createdAt = new Date().toISOString();
+    const id = randomUUID();
+    const jobRequest: DepositJobRequest = {
+      id,
+      jobType: 'deposit',
+      createdAt,
+      payload: {
+        operacion: payload.operacion,
+        usuario: payload.usuario,
+        agente: payload.agente,
+        contrasena_agente: payload.contrasena_agente,
+        cantidad: payload.cantidad
+      },
+      options: resolveDepositExecutionOptions(appConfig, payload)
     };
 
     internalQueue.enqueue(jobRequest);

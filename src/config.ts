@@ -84,8 +84,8 @@ export function buildAppConfig(cli: CliOptions, env = process.env): AppConfig {
     loginPath: optionalString(env.AGENT_LOGIN_PATH) ?? '/login',
     selectors: {
       username: parseSelectors(env.AGENT_USERNAME_SELECTORS, [
-        'input[name="login"]',
         'input[name="username"]',
+        'input[name="login"]',
         'input[autocomplete="username"]',
         'input[type="text"]'
       ]),

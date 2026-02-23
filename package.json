@@ -9,7 +9,8 @@
     "scraper": "tsx src/index.ts",
     "start": "tsx src/index.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "benchmark:deposit": "tsx scripts/benchmark-deposit.ts"
   },
   "engines": {
     "node": ">=20"

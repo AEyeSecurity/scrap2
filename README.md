@@ -7,7 +7,8 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Login automation (UI) with reusable session (`storageState`) in `run` mode.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
-- Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `GET /jobs/:id`).
+- Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
+- Deposit jobs run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
 ## Requirements
@@ -82,10 +83,42 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
+Create deposit job:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"carga",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass",
+    "cantidad":500
+  }'
+```
+
+Force visual/debug mode for a deposit job:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"carga",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass",
+    "cantidad":500,
+    "headless":false,
+    "debug":true,
+    "slowMo":120,
+    "timeoutMs":120000
+  }'
+```
+
 Returned fields:
 
 - `id`
-- `jobType` (`login|create-player`)
+- `jobType` (`login|create-player|deposit`)
 - `status` (`queued|running|succeeded|failed|expired`)
 - `createdAt`, `startedAt`, `finishedAt`
 - `error`
@@ -170,4 +203,10 @@ Server mode (job artifacts):
 
 ```bash
 npm test
+```
+
+## Benchmark (deposit)
+
+```bash
+npm run benchmark:deposit -- --agent monchi30 --password 123mon --user pruebita --amount 1 --turbo-runs 5 --visual-runs 3
 ```
