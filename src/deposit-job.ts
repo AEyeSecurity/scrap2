@@ -18,29 +18,36 @@ const NON_RETRYABLE_LOGIN_ERROR_REGEX =
   /usuario no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas|password/i;
 const FUNDS_AMOUNT_INPUT_SELECTOR =
   'input[name="amount"], input[type="number"], input[placeholder*="cantidad" i], input[aria-label*="cantidad" i]';
+const TOTAL_AMOUNT_TEXT_REGEX = /\btoda\b/i;
 const ACTION_LINK_BY_OPERATION: Record<FundsOperation, string> = {
   carga: 'a[href*="/users/deposit/"]',
-  descarga: 'a[href*="/users/withdraw/"]'
+  descarga: 'a[href*="/users/withdraw/"]',
+  descarga_total: 'a[href*="/users/withdraw/"]'
 };
 const ACTION_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
   carga: /dep[oó]sito/i,
-  descarga: /retiro/i
+  descarga: /retiro/i,
+  descarga_total: /retiro/i
 };
 const SUBMIT_TEXT_BY_OPERATION: Record<FundsOperation, RegExp> = {
   carga: /dep[oó]sito/i,
-  descarga: /retiro/i
+  descarga: /retiro/i,
+  descarga_total: /retiro/i
 };
 const TARGET_PATH_BY_OPERATION: Record<FundsOperation, string> = {
   carga: '/users/deposit',
-  descarga: '/users/withdraw'
+  descarga: '/users/withdraw',
+  descarga_total: '/users/withdraw'
 };
 const TARGET_HEADING_BY_OPERATION: Record<FundsOperation, RegExp> = {
   carga: /dep[oó]sito/i,
-  descarga: /retiro/i
+  descarga: /retiro/i,
+  descarga_total: /retiro/i
 };
 const SUCCESS_MESSAGE_BY_OPERATION: Record<FundsOperation, RegExp> = {
   carga: /depositad[oa]|acreditad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
-  descarga: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i
+  descarga: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
+  descarga_total: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i
 };
 const ERROR_MESSAGE_REGEX =
   /saldo insuficiente|error|fall[oó]|fallid[oa]|invalido|invalid|no se pudo|incorrect[oa]|rechazad[oa]/i;
@@ -48,6 +55,7 @@ const ERROR_MESSAGE_REGEX =
 interface OperationStepNames {
   openAction: string;
   waitOperationPage: string;
+  amountAction: string;
   clickSubmit: string;
   verifyResult: string;
 }
@@ -57,14 +65,26 @@ function getOperationStepNames(operation: FundsOperation): OperationStepNames {
     return {
       openAction: '04-open-user-deposit',
       waitOperationPage: '05-wait-deposit-page',
+      amountAction: '06-fill-amount',
       clickSubmit: '07-click-deposit-submit',
       verifyResult: '08-verify-deposit-result'
+    };
+  }
+
+  if (operation === 'descarga_total') {
+    return {
+      openAction: '04-open-user-withdraw',
+      waitOperationPage: '05-wait-withdraw-page',
+      amountAction: '06-click-total-amount',
+      clickSubmit: '07-click-withdraw-submit',
+      verifyResult: '08-verify-withdraw-result'
     };
   }
 
   return {
     openAction: '04-open-user-withdraw',
     waitOperationPage: '05-wait-withdraw-page',
+    amountAction: '06-fill-amount',
     clickSubmit: '07-click-withdraw-submit',
     verifyResult: '08-verify-withdraw-result'
   };
@@ -317,6 +337,24 @@ async function findSubmitDepositAction(
 ): Promise<Locator> {
   const candidates = page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: SUBMIT_TEXT_BY_OPERATION[operation] });
   return findFirstEnabledVisibleInLocator(candidates, timeoutMs, pollingMs);
+}
+
+async function clickTotalAmountAction(page: Page, timeoutMs: number, pollingMs: number): Promise<void> {
+  const totalCandidates = page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: TOTAL_AMOUNT_TEXT_REGEX });
+  const totalButton = await findFirstEnabledVisibleInLocator(totalCandidates, timeoutMs, pollingMs).catch(() => undefined);
+  if (!totalButton) {
+    throw new Error('Could not find enabled "Toda" button for total withdraw');
+  }
+
+  await clickLocator(totalButton, timeoutMs);
+
+  const amountInput = await findDepositAmountInput(page, Math.min(timeoutMs, 2_000)).catch(() => undefined);
+  if (amountInput) {
+    const value = (await amountInput.inputValue().catch(() => '')).trim();
+    if (!/[1-9]/.test(value)) {
+      throw new Error('Total withdraw did not populate a non-zero amount after clicking "Toda"');
+    }
+  }
 }
 
 async function executeActionStep(
@@ -707,17 +745,26 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       throw new Error(`Step failed: ${waitDepositPageStep.name} (${waitDepositPageStep.error ?? 'unknown error'})`);
     }
 
-    const fillAmountStep = await executeActionStep(page, artifactDir, '06-fill-amount', async () => {
+    const amountStep = await executeActionStep(page, artifactDir, stepNames.amountAction, async () => {
+      if (operation === 'descarga_total') {
+        await clickTotalAmountAction(page, runtimeConfig.timeoutMs, pollingMs);
+        return;
+      }
+
+      if (typeof request.payload.cantidad !== 'number') {
+        throw new Error(`cantidad is required for "${operation}" operation`);
+      }
+
       const amountInput = await findDepositAmountInput(page, runtimeConfig.timeoutMs);
       await amountInput.fill('', { timeout: runtimeConfig.timeoutMs });
       await amountInput.fill(String(request.payload.cantidad), { timeout: runtimeConfig.timeoutMs });
     }, captureSuccessArtifacts);
-    if (fillAmountStep.artifactPath) {
-      artifactPaths.push(fillAmountStep.artifactPath);
+    if (amountStep.artifactPath) {
+      artifactPaths.push(amountStep.artifactPath);
     }
-    steps.push(fillAmountStep);
-    if (fillAmountStep.status === 'failed') {
-      throw new Error(`Step failed: ${fillAmountStep.name} (${fillAmountStep.error ?? 'unknown error'})`);
+    steps.push(amountStep);
+    if (amountStep.status === 'failed') {
+      throw new Error(`Step failed: ${amountStep.name} (${amountStep.error ?? 'unknown error'})`);
     }
 
     const submittedUrl = page.url();

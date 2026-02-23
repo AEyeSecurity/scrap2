@@ -227,6 +227,46 @@ describe('server routes', () => {
       expect(aliasQueued.payload.operacion).toBe('descarga');
     }
 
+    const totalOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'descarga_total',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(totalOperationResponse.statusCode).toBe(202);
+    const totalBody = totalOperationResponse.json();
+    const totalQueued = queue.requests.find((item) => item.id === totalBody.jobId);
+    expect(totalQueued?.jobType).toBe('deposit');
+    if (totalQueued?.jobType === 'deposit') {
+      expect(totalQueued.payload.operacion).toBe('descarga_total');
+      expect(totalQueued.payload.cantidad).toBeUndefined();
+    }
+
+    const totalAliasOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'retiro_total',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(totalAliasOperationResponse.statusCode).toBe(202);
+    const totalAliasBody = totalAliasOperationResponse.json();
+    const totalAliasQueued = queue.requests.find((item) => item.id === totalAliasBody.jobId);
+    expect(totalAliasQueued?.jobType).toBe('deposit');
+    if (totalAliasQueued?.jobType === 'deposit') {
+      expect(totalAliasQueued.payload.operacion).toBe('descarga_total');
+      expect(totalAliasQueued.payload.cantidad).toBeUndefined();
+    }
+
     const badOperationResponse = await server.inject({
       method: 'POST',
       url: '/users/deposit',
@@ -254,6 +294,19 @@ describe('server routes', () => {
     });
 
     expect(badAmountResponse.statusCode).toBe(400);
+
+    const missingAmountForDescargaResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'descarga',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(missingAmountForDescargaResponse.statusCode).toBe(400);
 
     await server.close();
   });

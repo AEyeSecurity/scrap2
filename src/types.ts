@@ -149,15 +149,26 @@ export interface CreatePlayerJobPayload {
   stepsOverride?: StepAction[];
 }
 
-export type FundsOperation = 'carga' | 'descarga';
+export type FundsOperation = 'carga' | 'descarga' | 'descarga_total';
 
-export interface DepositJobPayload {
+interface DepositJobPayloadBase {
   operacion: FundsOperation;
   usuario: string;
   agente: string;
   contrasena_agente: string;
+}
+
+export interface DepositJobPayloadWithAmount extends DepositJobPayloadBase {
+  operacion: 'carga' | 'descarga';
   cantidad: number;
 }
+
+export interface DepositJobPayloadTotal extends DepositJobPayloadBase {
+  operacion: 'descarga_total';
+  cantidad?: number;
+}
+
+export type DepositJobPayload = DepositJobPayloadWithAmount | DepositJobPayloadTotal;
 
 export interface LoginJobRequest {
   id: string;

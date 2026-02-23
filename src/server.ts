@@ -63,9 +63,18 @@ const depositBodySchema = z
     usuario: z.string().trim().min(1),
     agente: z.string().trim().min(1),
     contrasena_agente: z.string().trim().min(1),
-    cantidad: z.number().int().positive()
+    cantidad: z.number().int().positive().optional()
   })
-  .merge(executionOverridesSchema);
+  .merge(executionOverridesSchema)
+  .superRefine((value, ctx) => {
+    if (value.operacion !== 'descarga_total' && typeof value.cantidad !== 'number') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cantidad'],
+        message: 'cantidad is required for carga/descarga operations'
+      });
+    }
+  });
 
 const jobParamsSchema = z.object({
   id: z.string().min(1)
@@ -208,17 +217,28 @@ export function createServer(
     const payload = parsed.data;
     const createdAt = new Date().toISOString();
     const id = randomUUID();
+    const depositPayload: DepositJobRequest['payload'] =
+      payload.operacion === 'descarga_total'
+        ? {
+            operacion: 'descarga_total',
+            usuario: payload.usuario,
+            agente: payload.agente,
+            contrasena_agente: payload.contrasena_agente,
+            ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+          }
+        : {
+            operacion: payload.operacion,
+            usuario: payload.usuario,
+            agente: payload.agente,
+            contrasena_agente: payload.contrasena_agente,
+            cantidad: payload.cantidad as number
+          };
+
     const jobRequest: DepositJobRequest = {
       id,
       jobType: 'deposit',
       createdAt,
-      payload: {
-        operacion: payload.operacion,
-        usuario: payload.usuario,
-        agente: payload.agente,
-        contrasena_agente: payload.contrasena_agente,
-        cantidad: payload.cantidad
-      },
+      payload: depositPayload,
       options: resolveDepositExecutionOptions(appConfig, payload)
     };
 

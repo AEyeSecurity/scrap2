@@ -8,7 +8,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
 - Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
-- Funds jobs (`carga`/`descarga`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
+- Funds jobs (`carga`/`descarga`/`descarga_total`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
 ## Requirements
@@ -83,7 +83,7 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
-Create funds job (`operacion` supports `carga`, `descarga`, `retiro`):
+Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`):
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/users/deposit \
@@ -124,6 +124,34 @@ curl -s -X POST http://127.0.0.1:3000/users/deposit \
     "cantidad":500
   }'
 ```
+
+Create total withdraw job (`descarga_total` uses button `Toda` and ignores manual amount fill):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"descarga_total",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass"
+  }'
+```
+
+Alias example (`retiro_total` is normalized to `descarga_total`):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/deposit \
+  -H 'content-type: application/json' \
+  -d '{
+    "operacion":"retiro_total",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "contrasena_agente":"agent_pass"
+  }'
+```
+
+Note: `cantidad` is required for `carga` and `descarga`; for `descarga_total`/`retiro_total` it is optional and ignored because the flow clicks `Toda`.
 
 Force visual/debug mode for a funds job:
 
