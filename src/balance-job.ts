@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { chromium, type BrowserContext, type Locator, type Page } from 'playwright';
+import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
-import { configureContext } from './browser';
 import { selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
+import { acquireFundsSessionLease } from './funds-session-pool';
 import type { AppConfig, BalanceJobRequest, BalanceJobResult, JobExecutionResult, JobStepResult } from './types';
 
 const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
@@ -276,26 +276,9 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
   const userSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
 
   await fs.mkdir(artifactDir, { recursive: true });
-
-  const browser = await chromium.launch({
-    headless: runtimeConfig.headless,
-    slowMo: runtimeConfig.slowMo,
-    args: runtimeConfig.headless ? undefined : ['--start-maximized']
-  });
-
-  const context = await browser.newContext({
-    baseURL: runtimeConfig.baseUrl,
-    viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,
-    recordVideo: runtimeConfig.debug
-      ? {
-          dir: path.join(artifactDir, 'video')
-        }
-      : undefined
-  });
-
-  await configureContext(context, runtimeConfig, jobLogger);
-
-  const page = await context.newPage();
+  const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger);
+  const context = lease.context;
+  const page = lease.page;
   const artifactPaths: string[] = [];
   const steps: JobStepResult[] = [];
   const tracePath = path.join(artifactDir, 'trace.zip');
@@ -462,8 +445,7 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
-    await context.close();
-    await browser.close();
+    await lease.release();
 
     if (!balanceResult) {
       throw new Error('Balance result was not captured');
@@ -495,8 +477,7 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug).catch(() => undefined);
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    await lease.invalidate().catch(() => undefined);
 
     const wrapped = new Error(message);
     (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
