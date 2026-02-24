@@ -82,6 +82,8 @@ export function buildAppConfig(cli: CliOptions, env = process.env): AppConfig {
     reuseSession: cli.reuseSession ?? envReuseSession ?? true,
     apiEndpoints: parseList(env.AGENT_API_ENDPOINTS),
     loginPath: optionalString(env.AGENT_LOGIN_PATH) ?? '/login',
+    postLoginWarmupPath: optionalString(env.AGENT_POST_LOGIN_WARMUP_PATH) ?? '/users/all',
+    loginSubmitDelayMs: Number(env.AGENT_LOGIN_SUBMIT_DELAY_MS ?? 1500),
     selectors: {
       username: parseSelectors(env.AGENT_USERNAME_SELECTORS, [
         'input[name="username"]',
@@ -122,6 +124,8 @@ export function buildAppConfig(cli: CliOptions, env = process.env): AppConfig {
       reuseSession: z.boolean(),
       apiEndpoints: z.array(z.string().min(1)),
       loginPath: z.string().min(1),
+      postLoginWarmupPath: z.string().min(1).optional(),
+      loginSubmitDelayMs: z.number().min(0).optional(),
       selectors: z.object({
         username: z.array(z.string().min(1)).min(1),
         password: z.array(z.string().min(1)).min(1),

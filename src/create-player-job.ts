@@ -4,6 +4,8 @@ import { chromium, type Locator, type Page } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
+import { runCreatePlayerAsnJob } from './create-player-asn';
+import { resolveSiteAppConfig } from './site-profile';
 import type {
   AppConfig,
   CreatePlayerJobRequest,
@@ -376,10 +378,15 @@ export async function runCreatePlayerJob(
   appConfig: AppConfig,
   logger: Logger
 ): Promise<JobExecutionResult> {
+  if (request.payload.pagina === 'ASN') {
+    return runCreatePlayerAsnJob(request, appConfig, logger);
+  }
+
   const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType });
   const artifactDir = path.join(appConfig.artifactsDir, 'jobs', request.id);
+  const siteConfig = resolveSiteAppConfig(appConfig, request.payload.pagina);
   const runtimeConfig: AppConfig = {
-    ...appConfig,
+    ...siteConfig,
     headless: request.options.headless,
     debug: request.options.debug,
     slowMo: request.options.slowMo,

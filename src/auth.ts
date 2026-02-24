@@ -176,7 +176,7 @@ export async function ensureAuthenticated(
 
   await usernameControl.locator.fill(credentials.username, { timeout: cfg.timeoutMs });
   await passwordControl.locator.fill(credentials.password, { timeout: cfg.timeoutMs });
-  await page.waitForTimeout(LOGIN_SUBMIT_DELAY_MS);
+  await page.waitForTimeout(cfg.loginSubmitDelayMs ?? LOGIN_SUBMIT_DELAY_MS);
 
   await Promise.all([
     waitForAuthenticatedState(page, cfg),
@@ -189,8 +189,8 @@ export async function ensureAuthenticated(
     })()
   ]);
 
-  if (await hasAuthenticatedShell(page)) {
-    await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs }).catch(() => undefined);
+  if (cfg.postLoginWarmupPath && (await hasAuthenticatedShell(page))) {
+    await page.goto(cfg.postLoginWarmupPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs }).catch(() => undefined);
   }
 
   if (persistSession) {

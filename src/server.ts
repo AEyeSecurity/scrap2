@@ -8,6 +8,7 @@ import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
+import { paginaCodeSchema } from './site-profile';
 import type {
   AppConfig,
   BalanceJobRequest,
@@ -52,6 +53,7 @@ const loginBodySchema = z
 
 const createPlayerBodySchema = z
   .object({
+    pagina: paginaCodeSchema,
     loginUsername: z.string().min(1),
     loginPassword: z.string().min(1),
     newUsername: z.string().min(1),
@@ -62,6 +64,7 @@ const createPlayerBodySchema = z
 
 const depositBodySchema = z
   .object({
+    pagina: paginaCodeSchema,
     operacion: fundsOperationSchema,
     usuario: z.string().trim().min(1),
     agente: z.string().trim().min(1),
@@ -195,6 +198,7 @@ export function createServer(
       jobType: 'create-player',
       createdAt,
       payload: {
+        pagina: payload.pagina,
         loginUsername: payload.loginUsername,
         loginPassword: payload.loginPassword,
         newUsername: payload.newUsername,
@@ -223,6 +227,11 @@ export function createServer(
     }
 
     const payload = parsed.data;
+    if (payload.pagina === 'ASN') {
+      return reply.code(501).send({
+        message: 'ASN funds operations are not implemented yet'
+      });
+    }
     const createdAt = new Date().toISOString();
     const id = randomUUID();
     const jobRequest: DepositJobRequest | BalanceJobRequest =
@@ -233,6 +242,7 @@ export function createServer(
             createdAt,
             payload: {
               operacion: 'consultar_saldo',
+              pagina: payload.pagina,
               usuario: payload.usuario,
               agente: payload.agente,
               contrasena_agente: payload.contrasena_agente,
@@ -248,6 +258,7 @@ export function createServer(
               payload.operacion === 'descarga_total'
                 ? {
                     operacion: 'descarga_total',
+                    pagina: payload.pagina,
                     usuario: payload.usuario,
                     agente: payload.agente,
                     contrasena_agente: payload.contrasena_agente,
@@ -255,6 +266,7 @@ export function createServer(
                   }
                 : {
                     operacion: payload.operacion,
+                    pagina: payload.pagina,
                     usuario: payload.usuario,
                     agente: payload.agente,
                     contrasena_agente: payload.contrasena_agente,
