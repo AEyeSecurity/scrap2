@@ -48,6 +48,8 @@ export interface AppConfig {
   storageStatePath: string;
   apiEndpoints: string[];
   loginPath: string;
+  postLoginWarmupPath?: string;
+  loginSubmitDelayMs?: number;
   selectors: SelectorsConfig;
 }
 
@@ -142,6 +144,7 @@ export interface LoginJobPayload {
 }
 
 export interface CreatePlayerJobPayload {
+  pagina: PaginaCode;
   loginUsername: string;
   loginPassword: string;
   newUsername: string;
@@ -149,10 +152,12 @@ export interface CreatePlayerJobPayload {
   stepsOverride?: StepAction[];
 }
 
+export type PaginaCode = 'RdA' | 'ASN';
 export type FundsOperation = 'carga' | 'descarga' | 'descarga_total' | 'consultar_saldo';
 export type FundsTransactionOperation = Exclude<FundsOperation, 'consultar_saldo'>;
 
 interface DepositJobPayloadBase {
+  pagina: PaginaCode;
   operacion: FundsTransactionOperation;
   usuario: string;
   agente: string;
@@ -172,6 +177,7 @@ export interface DepositJobPayloadTotal extends DepositJobPayloadBase {
 export type DepositJobPayload = DepositJobPayloadWithAmount | DepositJobPayloadTotal;
 
 export interface BalanceJobPayload {
+  pagina: PaginaCode;
   operacion: 'consultar_saldo';
   usuario: string;
   agente: string;

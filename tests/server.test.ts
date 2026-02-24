@@ -76,6 +76,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/create-player',
       payload: {
+        pagina: 'RdA',
         loginUsername: 'agent',
         loginPassword: 'secret',
         newUsername: 'player_1',
@@ -88,6 +89,11 @@ describe('server routes', () => {
     expect(body.status).toBe('queued');
     expect(body.statusUrl).toBe(`/jobs/${body.jobId}`);
     expect(queue.getById(body.jobId)?.jobType).toBe('create-player');
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('create-player');
+    if (queued?.jobType === 'create-player') {
+      expect(queued.payload.pagina).toBe('RdA');
+    }
 
     await server.close();
   });
@@ -113,6 +119,67 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/create-player normalizes pagina aliases', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/create-player',
+      payload: {
+        pagina: 'asn',
+        loginUsername: 'Abigail759',
+        loginPassword: 'abigail123',
+        newUsername: 'player_asn_alias',
+        newPassword: 'player_secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('create-player');
+    if (queued?.jobType === 'create-player') {
+      expect(queued.payload.pagina).toBe('ASN');
+    }
+
+    await server.close();
+  });
+
+  it('POST /users/create-player requires pagina', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/create-player',
+      payload: {
+        loginUsername: 'Abigail759',
+        loginPassword: 'abigail123',
+        newUsername: 'player_missing_pagina',
+        newPassword: 'player_secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().issues.some((issue: { path: string }) => issue.path === 'pagina')).toBe(true);
+    await server.close();
+  });
+
   it('POST /users/deposit returns 202 with job id', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -128,6 +195,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'carga',
         usuario: 'pruebita',
         agente: 'agent',
@@ -144,6 +212,7 @@ describe('server routes', () => {
     const queued = queue.requests.find((item) => item.id === body.jobId);
     expect(queued?.jobType).toBe('deposit');
     if (queued?.jobType === 'deposit') {
+      expect(queued.payload.pagina).toBe('RdA');
       expect(queued.payload.operacion).toBe('carga');
       expect(queued.options.headless).toBe(false);
       expect(queued.options.debug).toBe(false);
@@ -169,6 +238,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'consultar_saldo',
         usuario: 'pruebita',
         agente: 'agent',
@@ -181,6 +251,7 @@ describe('server routes', () => {
     const queued = queue.requests.find((item) => item.id === body.jobId);
     expect(queued?.jobType).toBe('balance');
     if (queued?.jobType === 'balance') {
+      expect(queued.payload.pagina).toBe('RdA');
       expect(queued.payload.operacion).toBe('consultar_saldo');
       expect(queued.options.headless).toBe(false);
       expect(queued.options.debug).toBe(false);
@@ -206,6 +277,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: ' DescARGA ',
         usuario: 'pruebita',
         agente: 'agent',
@@ -233,6 +305,37 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/deposit returns 501 for ASN funds operations', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'carga',
+        usuario: 'pruebita',
+        agente: 'agent',
+        contrasena_agente: 'secret',
+        cantidad: 10
+      }
+    });
+
+    expect(response.statusCode).toBe(501);
+    expect(response.json().message).toMatch(/ASN funds operations/i);
+    expect(queue.requests).toHaveLength(0);
+
+    await server.close();
+  });
+
   it('POST /users/deposit keeps explicit execution overrides for consultar_saldo', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -248,6 +351,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'consultar saldo',
         usuario: 'pruebita',
         agente: 'agent',
@@ -289,6 +393,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'retiro',
         usuario: 'pruebita',
         agente: 'agent',
@@ -309,6 +414,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'descarga_total',
         usuario: 'pruebita',
         agente: 'agent',
@@ -329,6 +435,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'retiro_total',
         usuario: 'pruebita',
         agente: 'agent',
@@ -349,6 +456,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'consultar_saldo',
         usuario: 'pruebita',
         agente: 'agent',
@@ -368,6 +476,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'consultar saldo',
         usuario: 'pruebita',
         agente: 'agent',
@@ -387,6 +496,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'transferencia',
         usuario: 'pruebita',
         agente: 'agent',
@@ -401,6 +511,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'carga',
         usuario: 'pruebita',
         agente: 'agent',
@@ -415,6 +526,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'descarga',
         usuario: 'pruebita',
         agente: 'agent',
@@ -428,6 +540,7 @@ describe('server routes', () => {
       method: 'POST',
       url: '/users/deposit',
       payload: {
+        pagina: 'RdA',
         operacion: 'carga',
         usuario: 'pruebita',
         agente: 'agent',
@@ -437,6 +550,68 @@ describe('server routes', () => {
 
     expect(missingAmountForCargaResponse.statusCode).toBe(400);
 
+    await server.close();
+  });
+
+  it('POST /users/deposit normalizes pagina aliases', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'rda',
+        operacion: 'consultar_saldo',
+        usuario: 'pruebita',
+        agente: 'monchi30',
+        contrasena_agente: '123mon'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('balance');
+    if (queued?.jobType === 'balance') {
+      expect(queued.payload.pagina).toBe('RdA');
+    }
+
+    await server.close();
+  });
+
+  it('POST /users/deposit requires pagina', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        operacion: 'carga',
+        usuario: 'pruebita',
+        agente: 'monchi30',
+        contrasena_agente: '123mon',
+        cantidad: 100
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().issues.some((issue: { path: string }) => issue.path === 'pagina')).toBe(true);
     await server.close();
   });
 
@@ -460,3 +635,5 @@ describe('server routes', () => {
     await server.close();
   });
 });
+
+
