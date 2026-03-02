@@ -33,7 +33,7 @@ describe('config', () => {
     expect(cfg.password).toBe('cli-pass');
   });
 
-  it('defaults to headed mode locally when env not set (app config)', () => {
+  it('defaults to headless mode locally when env not set (app config)', () => {
     const cfg = buildAppConfig(
       {},
       {
@@ -41,7 +41,7 @@ describe('config', () => {
       }
     );
 
-    expect(cfg.headless).toBe(false);
+    expect(cfg.headless).toBe(true);
   });
 
   it('throws when fromDate is greater than toDate', () => {

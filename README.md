@@ -8,7 +8,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
 - Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
-- Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headed, debug off, no slow-mo, timeout <= 15s) unless overridden.
+- Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headless, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
 ## Requirements
@@ -22,7 +22,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 npm install
 ```
 
-## Run mode (local, headed by default)
+## Run mode (local, headless by default)
 
 Credentials from command line:
 

@@ -66,7 +66,7 @@ export function buildAppConfig(cli: CliOptions, env = process.env): AppConfig {
 
   const raw = {
     baseUrl: env.AGENT_BASE_URL ?? 'https://agents.reydeases.com',
-    headless: cli.headless ?? envHeadless ?? false,
+    headless: cli.headless ?? envHeadless ?? true,
     debug: cli.debug ?? envDebug ?? false,
     slowMo: cli.slowMo ?? Number(env.SCRAPER_SLOW_MO ?? 0),
     timeoutMs: cli.timeoutMs ?? Number(env.SCRAPER_TIMEOUT_MS ?? 30_000),

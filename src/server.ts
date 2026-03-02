@@ -109,7 +109,7 @@ function resolveDepositExecutionOptions(
 ): JobExecutionOptions {
   const turboTimeout = Math.min(appConfig.timeoutMs, DEPOSIT_TURBO_TIMEOUT_MS);
   return {
-    headless: overrides.headless ?? false,
+    headless: overrides.headless ?? appConfig.headless,
     debug: overrides.debug ?? false,
     slowMo: overrides.slowMo ?? 0,
     timeoutMs: overrides.timeoutMs ?? turboTimeout

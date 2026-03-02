@@ -214,7 +214,7 @@ describe('server routes', () => {
     if (queued?.jobType === 'deposit') {
       expect(queued.payload.pagina).toBe('RdA');
       expect(queued.payload.operacion).toBe('carga');
-      expect(queued.options.headless).toBe(false);
+      expect(queued.options.headless).toBe(true);
       expect(queued.options.debug).toBe(false);
       expect(queued.options.slowMo).toBe(0);
       expect(queued.options.timeoutMs).toBe(15_000);
@@ -253,7 +253,7 @@ describe('server routes', () => {
     if (queued?.jobType === 'balance') {
       expect(queued.payload.pagina).toBe('RdA');
       expect(queued.payload.operacion).toBe('consultar_saldo');
-      expect(queued.options.headless).toBe(false);
+      expect(queued.options.headless).toBe(true);
       expect(queued.options.debug).toBe(false);
       expect(queued.options.slowMo).toBe(0);
       expect(queued.options.timeoutMs).toBe(15_000);
@@ -293,7 +293,7 @@ describe('server routes', () => {
       expect(queued.payload.pagina).toBe('ASN');
       expect(queued.payload.operacion).toBe('reporte');
       expect(queued.payload.usuario).toBe('Ariel728');
-      expect(queued.options.headless).toBe(false);
+      expect(queued.options.headless).toBe(true);
       expect(queued.options.debug).toBe(false);
       expect(queued.options.slowMo).toBe(0);
       expect(queued.options.timeoutMs).toBe(15_000);
