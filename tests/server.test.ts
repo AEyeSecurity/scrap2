@@ -262,6 +262,46 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/deposit enqueues ASN report job for reporte', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'reporte',
+        usuario: 'Ariel728',
+        agente: 'luuucas10',
+        contrasena_agente: 'australopitecus12725'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('report');
+    if (queued?.jobType === 'report') {
+      expect(queued.payload.pagina).toBe('ASN');
+      expect(queued.payload.operacion).toBe('reporte');
+      expect(queued.payload.usuario).toBe('Ariel728');
+      expect(queued.options.headless).toBe(false);
+      expect(queued.options.debug).toBe(false);
+      expect(queued.options.slowMo).toBe(0);
+      expect(queued.options.timeoutMs).toBe(15_000);
+    }
+
+    await server.close();
+  });
+
   it('POST /users/deposit keeps explicit execution overrides', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -331,6 +371,36 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(501);
     expect(response.json().message).toMatch(/ASN funds operations/i);
+    expect(queue.requests).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /users/deposit returns 501 for reporte on non-ASN pagina', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'RdA',
+        operacion: 'reporte',
+        usuario: 'Ariel728',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(501);
+    expect(response.json().message).toMatch(/only for ASN/i);
     expect(queue.requests).toHaveLength(0);
 
     await server.close();
@@ -490,6 +560,26 @@ describe('server routes', () => {
     expect(balanceAliasQueued?.jobType).toBe('balance');
     if (balanceAliasQueued?.jobType === 'balance') {
       expect(balanceAliasQueued.payload.operacion).toBe('consultar_saldo');
+    }
+
+    const reportOperationResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'report',
+        usuario: 'Ariel728',
+        agente: 'luuucas10',
+        contrasena_agente: 'australopitecus12725'
+      }
+    });
+
+    expect(reportOperationResponse.statusCode).toBe(202);
+    const reportBody = reportOperationResponse.json();
+    const reportQueued = queue.requests.find((item) => item.id === reportBody.jobId);
+    expect(reportQueued?.jobType).toBe('report');
+    if (reportQueued?.jobType === 'report') {
+      expect(reportQueued.payload.operacion).toBe('reporte');
     }
 
     const badOperationResponse = await server.inject({
@@ -680,5 +770,52 @@ describe('server routes', () => {
 
     await server.close();
   });
-});
 
+  it('GET /jobs/:id returns ASN report result payload when available', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const id = 'job-asn-report-result';
+    queue.entries.set(id, {
+      id,
+      jobType: 'report',
+      status: 'succeeded',
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPaths: [],
+      steps: [],
+      result: {
+        kind: 'asn-reporte-cargado-mes',
+        pagina: 'ASN',
+        usuario: 'Ariel728',
+        mesActual: '2026-03',
+        cargadoTexto: '40.000,00',
+        cargadoNumero: 40000
+      }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/jobs/${id}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toEqual({
+      kind: 'asn-reporte-cargado-mes',
+      pagina: 'ASN',
+      usuario: 'Ariel728',
+      mesActual: '2026-03',
+      cargadoTexto: '40.000,00',
+      cargadoNumero: 40000
+    });
+
+    await server.close();
+  });
+});
