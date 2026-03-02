@@ -258,7 +258,35 @@ export interface AsnReportJobResult {
   cargadoNumero: number;
 }
 
-export type JobResult = BalanceJobResult | CreatePlayerJobResult | AsnReportJobResult;
+export interface AsnFundsOperationResult {
+  kind: 'asn-funds-operation';
+  pagina: 'ASN';
+  operacion: 'carga' | 'descarga' | 'descarga_total';
+  usuario: string;
+  montoSolicitado: number;
+  montoAplicado: number;
+  montoAplicadoTexto: string;
+  saldoAntesNumero: number;
+  saldoAntesTexto: string;
+  saldoDespuesNumero: number;
+  saldoDespuesTexto: string;
+}
+
+export interface AsnBalanceJobResult {
+  kind: 'asn-balance';
+  pagina: 'ASN';
+  operacion: 'consultar_saldo';
+  usuario: string;
+  saldoTexto: string;
+  saldoNumero: number;
+}
+
+export type JobResult =
+  | BalanceJobResult
+  | CreatePlayerJobResult
+  | AsnReportJobResult
+  | AsnFundsOperationResult
+  | AsnBalanceJobResult;
 
 export type JobRequest =
   | LoginJobRequest

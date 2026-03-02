@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
+import { runAsnDepositJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
 import { normalizeDepositText, selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
@@ -983,6 +984,10 @@ async function verifyWithRetryAndBalanceFallback(
 }
 
 export async function runDepositJob(request: DepositJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
+  if (request.payload.pagina === 'ASN') {
+    return runAsnDepositJob(request, appConfig, logger);
+  }
+
   const operation = request.payload.operacion;
   const stepNames = getOperationStepNames(operation);
   const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType, operation });

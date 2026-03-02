@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
+import { runAsnBalanceJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
 import { selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
@@ -261,6 +262,10 @@ function extractBalanceTextFromRowText(rowText: string): string {
 }
 
 export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
+  if (request.payload.pagina === 'ASN') {
+    return runAsnBalanceJob(request, appConfig, logger);
+  }
+
   const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType, operation: request.payload.operacion });
   const artifactDir = path.join(appConfig.artifactsDir, 'jobs', request.id);
   const runtimeConfig: AppConfig = {

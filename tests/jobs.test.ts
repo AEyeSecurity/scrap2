@@ -217,4 +217,86 @@ describe('JobManager', () => {
 
     await manager.shutdown();
   });
+
+  it('stores and returns ASN funds operation result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('asn-funds')],
+        result: {
+          kind: 'asn-funds-operation',
+          pagina: 'ASN',
+          operacion: 'descarga_total',
+          usuario: 'Monica626',
+          montoSolicitado: 1234.56,
+          montoAplicado: 1234.56,
+          montoAplicadoTexto: '1.234,56',
+          saldoAntesNumero: 1234.56,
+          saldoAntesTexto: '1.234,56',
+          saldoDespuesNumero: 0,
+          saldoDespuesTexto: '0,00'
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'asn-funds-operation',
+      pagina: 'ASN',
+      operacion: 'descarga_total',
+      usuario: 'Monica626',
+      montoSolicitado: 1234.56,
+      montoAplicado: 1234.56,
+      montoAplicadoTexto: '1.234,56',
+      saldoAntesNumero: 1234.56,
+      saldoAntesTexto: '1.234,56',
+      saldoDespuesNumero: 0,
+      saldoDespuesTexto: '0,00'
+    });
+
+    await manager.shutdown();
+  });
+
+  it('stores and returns ASN balance result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('asn-balance')],
+        result: {
+          kind: 'asn-balance',
+          pagina: 'ASN',
+          operacion: 'consultar_saldo',
+          usuario: 'Carolina225',
+          saldoTexto: '30.525,35',
+          saldoNumero: 30525.35
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'asn-balance',
+      pagina: 'ASN',
+      operacion: 'consultar_saldo',
+      usuario: 'Carolina225',
+      saldoTexto: '30.525,35',
+      saldoNumero: 30525.35
+    });
+
+    await manager.shutdown();
+  });
 });

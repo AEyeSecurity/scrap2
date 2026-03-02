@@ -266,11 +266,6 @@ export function createServer(
       });
     }
 
-    if (payload.pagina === 'ASN') {
-      return reply.code(501).send({
-        message: 'ASN funds operations are not implemented yet'
-      });
-    }
     const createdAt = new Date().toISOString();
     const id = randomUUID();
     const jobRequest: DepositJobRequest | BalanceJobRequest =

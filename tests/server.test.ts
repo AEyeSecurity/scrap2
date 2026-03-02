@@ -345,7 +345,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/deposit returns 501 for ASN funds operations', async () => {
+  it('POST /users/deposit enqueues ASN deposit job for carga', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -369,9 +369,94 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json().message).toMatch(/ASN funds operations/i);
-    expect(queue.requests).toHaveLength(0);
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('deposit');
+    if (queued?.jobType === 'deposit') {
+      expect(queued.payload.pagina).toBe('ASN');
+      expect(queued.payload.operacion).toBe('carga');
+      expect(queued.payload.cantidad).toBe(10);
+    }
+
+    await server.close();
+  });
+
+  it('POST /users/deposit enqueues ASN deposit and balance jobs for remaining operations', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const descargaResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'descarga',
+        usuario: 'usuario1',
+        agente: 'agent',
+        contrasena_agente: 'secret',
+        cantidad: 5
+      }
+    });
+
+    const descargaTotalResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'descarga_total',
+        usuario: 'usuario1',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    const balanceResponse = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'consultar_saldo',
+        usuario: 'usuario1',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(descargaResponse.statusCode).toBe(202);
+    expect(descargaTotalResponse.statusCode).toBe(202);
+    expect(balanceResponse.statusCode).toBe(202);
+
+    const descargaJob = queue.requests.find((item) => item.id === descargaResponse.json().jobId);
+    const descargaTotalJob = queue.requests.find((item) => item.id === descargaTotalResponse.json().jobId);
+    const balanceJob = queue.requests.find((item) => item.id === balanceResponse.json().jobId);
+
+    expect(descargaJob?.jobType).toBe('deposit');
+    if (descargaJob?.jobType === 'deposit') {
+      expect(descargaJob.payload.pagina).toBe('ASN');
+      expect(descargaJob.payload.operacion).toBe('descarga');
+      expect(descargaJob.payload.cantidad).toBe(5);
+    }
+
+    expect(descargaTotalJob?.jobType).toBe('deposit');
+    if (descargaTotalJob?.jobType === 'deposit') {
+      expect(descargaTotalJob.payload.pagina).toBe('ASN');
+      expect(descargaTotalJob.payload.operacion).toBe('descarga_total');
+      expect(descargaTotalJob.payload.cantidad).toBeUndefined();
+    }
+
+    expect(balanceJob?.jobType).toBe('balance');
+    if (balanceJob?.jobType === 'balance') {
+      expect(balanceJob.payload.pagina).toBe('ASN');
+      expect(balanceJob.payload.operacion).toBe('consultar_saldo');
+    }
 
     await server.close();
   });
@@ -814,6 +899,112 @@ describe('server routes', () => {
       mesActual: '2026-03',
       cargadoTexto: '40.000,00',
       cargadoNumero: 40000
+    });
+
+    await server.close();
+  });
+
+  it('GET /jobs/:id returns ASN funds operation result payload when available', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const id = 'job-asn-funds-result';
+    queue.entries.set(id, {
+      id,
+      jobType: 'deposit',
+      status: 'succeeded',
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPaths: [],
+      steps: [],
+      result: {
+        kind: 'asn-funds-operation',
+        pagina: 'ASN',
+        operacion: 'carga',
+        usuario: 'Monica626',
+        montoSolicitado: 500,
+        montoAplicado: 500,
+        montoAplicadoTexto: '500,00',
+        saldoAntesNumero: 1000,
+        saldoAntesTexto: '1.000,00',
+        saldoDespuesNumero: 1500,
+        saldoDespuesTexto: '1.500,00'
+      }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/jobs/${id}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toEqual({
+      kind: 'asn-funds-operation',
+      pagina: 'ASN',
+      operacion: 'carga',
+      usuario: 'Monica626',
+      montoSolicitado: 500,
+      montoAplicado: 500,
+      montoAplicadoTexto: '500,00',
+      saldoAntesNumero: 1000,
+      saldoAntesTexto: '1.000,00',
+      saldoDespuesNumero: 1500,
+      saldoDespuesTexto: '1.500,00'
+    });
+
+    await server.close();
+  });
+
+  it('GET /jobs/:id returns ASN balance result payload when available', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const id = 'job-asn-balance-result';
+    queue.entries.set(id, {
+      id,
+      jobType: 'balance',
+      status: 'succeeded',
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPaths: [],
+      steps: [],
+      result: {
+        kind: 'asn-balance',
+        pagina: 'ASN',
+        operacion: 'consultar_saldo',
+        usuario: 'Carolina225',
+        saldoTexto: '30.525,35',
+        saldoNumero: 30525.35
+      }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/jobs/${id}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toEqual({
+      kind: 'asn-balance',
+      pagina: 'ASN',
+      operacion: 'consultar_saldo',
+      usuario: 'Carolina225',
+      saldoTexto: '30.525,35',
+      saldoNumero: 30525.35
     });
 
     await server.close();
