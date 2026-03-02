@@ -224,7 +224,15 @@ export interface BalanceJobResult {
   saldoNumero: number;
 }
 
-export type JobResult = BalanceJobResult;
+export interface CreatePlayerJobResult {
+  kind: 'create-player';
+  pagina: PaginaCode;
+  requestedUsername: string;
+  createdUsername: string;
+  attempts: number;
+}
+
+export type JobResult = BalanceJobResult | CreatePlayerJobResult;
 
 export type JobRequest = LoginJobRequest | CreatePlayerJobRequest | DepositJobRequest | BalanceJobRequest;
 

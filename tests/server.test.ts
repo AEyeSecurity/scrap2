@@ -634,6 +634,51 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(404);
     await server.close();
   });
-});
 
+  it('GET /jobs/:id returns create-player result payload when available', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const id = 'job-create-player-result';
+    queue.entries.set(id, {
+      id,
+      jobType: 'create-player',
+      status: 'succeeded',
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPaths: [],
+      steps: [],
+      result: {
+        kind: 'create-player',
+        pagina: 'ASN',
+        requestedUsername: 'Pepito47',
+        createdUsername: 'Pepito471',
+        attempts: 2
+      }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/jobs/${id}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toEqual({
+      kind: 'create-player',
+      pagina: 'ASN',
+      requestedUsername: 'Pepito47',
+      createdUsername: 'Pepito471',
+      attempts: 2
+    });
+
+    await server.close();
+  });
+});
 

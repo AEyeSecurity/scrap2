@@ -147,4 +147,38 @@ describe('JobManager', () => {
 
     await manager.shutdown();
   });
+
+  it('stores and returns create-player result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('create-player')],
+        result: {
+          kind: 'create-player',
+          pagina: 'ASN',
+          requestedUsername: 'Pepito47',
+          createdUsername: 'Pepito471',
+          attempts: 2
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'create-player',
+      pagina: 'ASN',
+      requestedUsername: 'Pepito47',
+      createdUsername: 'Pepito471',
+      attempts: 2
+    });
+
+    await manager.shutdown();
+  });
 });
