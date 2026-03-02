@@ -4,6 +4,11 @@ import { chromium, type BrowserContext, type Locator, type Page } from 'playwrig
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
+import {
+  buildExhaustedUsernameError,
+  buildUsernameCandidates,
+  isDuplicateUsernameError
+} from './create-player-username';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig, CreatePlayerJobRequest, JobExecutionResult, JobStepResult } from './types';
 
@@ -23,6 +28,53 @@ export function buildAsnCreateDefaults(username: string): AsnCreateDefaults {
     apellido: 'Bot',
     email: `${username}@example.com`
   };
+}
+
+function buildRequestForCandidateUsername(
+  request: CreatePlayerJobRequest,
+  candidateUsername: string
+): CreatePlayerJobRequest {
+  return {
+    ...request,
+    payload: {
+      ...request.payload,
+      newUsername: candidateUsername
+    }
+  };
+}
+
+function withAttemptPrefix(steps: JobStepResult[], attempt: number): JobStepResult[] {
+  return steps.map((step) => ({
+    ...step,
+    name: `A${attempt}-${step.name}`
+  }));
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractAttemptContext(error: unknown): { steps: JobStepResult[]; artifactPaths: string[] } {
+  if (!error || typeof error !== 'object') {
+    return { steps: [], artifactPaths: [] };
+  }
+
+  const errorWithContext = error as { steps?: JobStepResult[]; artifactPaths?: string[] };
+  return {
+    steps: Array.isArray(errorWithContext.steps) ? errorWithContext.steps : [],
+    artifactPaths: Array.isArray(errorWithContext.artifactPaths) ? errorWithContext.artifactPaths : []
+  };
+}
+
+function throwWithCreatePlayerContext(
+  baseError: Error,
+  steps: JobStepResult[],
+  artifactPaths: string[]
+): never {
+  const wrapped = new Error(baseError.message);
+  (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
+  (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths = artifactPaths;
+  throw wrapped;
 }
 
 async function captureStepScreenshot(page: Page, artifactDir: string, name: string): Promise<string> {
@@ -459,17 +511,175 @@ async function verifyAsnUserInPlayersList(page: Page, username: string, timeoutM
   return false;
 }
 
+type AsnAttemptOutcome =
+  | { status: 'success'; steps: JobStepResult[]; artifactPaths: string[] }
+  | { status: 'duplicate'; steps: JobStepResult[]; artifactPaths: string[]; error: string };
+
+async function executeAsnCreateAttempt(
+  page: Page,
+  request: CreatePlayerJobRequest,
+  runtimeConfig: AppConfig,
+  artifactDir: string,
+  isTurbo: boolean,
+  captureSuccessArtifacts: boolean
+): Promise<AsnAttemptOutcome> {
+  const steps: JobStepResult[] = [];
+  const artifactPaths: string[] = [];
+
+  const gotoJugadoresStep = await executeActionStep(
+    page,
+    artifactDir,
+    '02-goto-jugadores',
+    async () => {
+      await page.goto('/NewAdmin/Jugadores.php', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
+    },
+    captureSuccessArtifacts
+  );
+  if (gotoJugadoresStep.artifactPath) artifactPaths.push(gotoJugadoresStep.artifactPath);
+  steps.push(gotoJugadoresStep);
+  if (gotoJugadoresStep.status === 'failed') {
+    throw new Error(`Step failed: ${gotoJugadoresStep.name} (${gotoJugadoresStep.error ?? 'unknown error'})`);
+  }
+
+  const openNewStep = await executeActionStep(
+    page,
+    artifactDir,
+    '03-open-new-player',
+    async () => {
+      await openAsnNewPlayerDialog(page, runtimeConfig.timeoutMs);
+    },
+    captureSuccessArtifacts
+  );
+  if (openNewStep.artifactPath) artifactPaths.push(openNewStep.artifactPath);
+  steps.push(openNewStep);
+  if (openNewStep.status === 'failed') {
+    throw new Error(`Step failed: ${openNewStep.name} (${openNewStep.error ?? 'unknown error'})`);
+  }
+
+  const waitFormStep = await executeActionStep(
+    page,
+    artifactDir,
+    '04-wait-create-form',
+    async () => {
+      await waitForAsnCreateForm(page, isTurbo ? Math.min(runtimeConfig.timeoutMs, 2_000) : runtimeConfig.timeoutMs);
+    },
+    captureSuccessArtifacts
+  );
+  if (waitFormStep.artifactPath) artifactPaths.push(waitFormStep.artifactPath);
+  steps.push(waitFormStep);
+  if (waitFormStep.status === 'failed') {
+    throw new Error(`Step failed: ${waitFormStep.name} (${waitFormStep.error ?? 'unknown error'})`);
+  }
+
+  const fillFormStep = await executeActionStep(
+    page,
+    artifactDir,
+    '05-fill-create-form',
+    async () => {
+      await fillAsnCreateForm(page, request, runtimeConfig.timeoutMs);
+    },
+    captureSuccessArtifacts
+  );
+  if (fillFormStep.artifactPath) artifactPaths.push(fillFormStep.artifactPath);
+  steps.push(fillFormStep);
+  if (fillFormStep.status === 'failed') {
+    throw new Error(`Step failed: ${fillFormStep.name} (${fillFormStep.error ?? 'unknown error'})`);
+  }
+
+  const clickCreateStep = await executeActionStep(
+    page,
+    artifactDir,
+    '06-click-create-user',
+    async () => {
+      if (isTurbo) {
+        await page.waitForTimeout(250);
+      }
+      await clickAsnCreateUser(page, runtimeConfig.timeoutMs);
+    },
+    captureSuccessArtifacts
+  );
+  if (clickCreateStep.artifactPath) artifactPaths.push(clickCreateStep.artifactPath);
+  steps.push(clickCreateStep);
+  if (clickCreateStep.status === 'failed') {
+    throw new Error(`Step failed: ${clickCreateStep.name} (${clickCreateStep.error ?? 'unknown error'})`);
+  }
+
+  const verifyUiStepStarted = new Date().toISOString();
+  const uiOutcome = await waitAsnCreateUiOutcome(
+    page,
+    isTurbo ? Math.min(runtimeConfig.timeoutMs, 3_000) : Math.min(runtimeConfig.timeoutMs, 5_000)
+  );
+  steps.push({
+    name: '07-verify-create-ui',
+    status: uiOutcome.state === 'error' ? 'failed' : uiOutcome.state === 'success' ? 'ok' : 'skipped',
+    startedAt: verifyUiStepStarted,
+    finishedAt: new Date().toISOString(),
+    ...(uiOutcome.state === 'error' ? { error: uiOutcome.reason } : {})
+  });
+
+  if (uiOutcome.state === 'error') {
+    if (isDuplicateUsernameError(uiOutcome.reason)) {
+      return { status: 'duplicate', steps, artifactPaths, error: uiOutcome.reason };
+    }
+    throw new Error(`Step failed: 07-verify-create-ui (${uiOutcome.reason})`);
+  }
+
+  const verifyListStep = await executeActionStep(
+    page,
+    artifactDir,
+    '08-verify-user-listed',
+    async () => {
+      await page.waitForTimeout(isTurbo ? 600 : 0);
+      await page.goto('/NewAdmin/Jugadores.php', {
+        waitUntil: 'domcontentloaded',
+        timeout: runtimeConfig.timeoutMs
+      });
+      const found = await verifyAsnUserInPlayersList(
+        page,
+        request.payload.newUsername,
+        isTurbo ? Math.min(runtimeConfig.timeoutMs, 6_000) : Math.min(runtimeConfig.timeoutMs, 8_000)
+      );
+      if (!found) {
+        await page.goto('/NewAdmin/Jugadores.php', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
+      }
+      const foundAfterFallback = found
+        ? true
+        : await verifyAsnUserInPlayersList(
+            page,
+            request.payload.newUsername,
+            isTurbo ? Math.min(runtimeConfig.timeoutMs, 4_000) : Math.min(runtimeConfig.timeoutMs, 8_000)
+          );
+      if (!foundAfterFallback) {
+        throw new Error(`User "${request.payload.newUsername}" not found in ASN players list after creation`);
+      }
+    },
+    captureSuccessArtifacts
+  );
+  if (verifyListStep.artifactPath) artifactPaths.push(verifyListStep.artifactPath);
+  steps.push(verifyListStep);
+  if (verifyListStep.status === 'failed') {
+    throw new Error(`Step failed: ${verifyListStep.name} (${verifyListStep.error ?? 'unknown error'})`);
+  }
+
+  steps.push({
+    name: '99-final',
+    status: 'ok',
+    startedAt: new Date().toISOString(),
+    finishedAt: new Date().toISOString()
+  });
+
+  return { status: 'success', steps, artifactPaths };
+}
+
 export async function runCreatePlayerAsnJob(
   request: CreatePlayerJobRequest,
   appConfig: AppConfig,
   logger: Logger
 ): Promise<JobExecutionResult> {
-  if (request.payload.newUsername.trim().length > 12) {
-    throw new Error(
-      `ASN newUsername must be 12 characters or fewer for exact verification (received ${request.payload.newUsername.length})`
-    );
-  }
-
+  const requestedUsername = request.payload.newUsername;
+  const candidates = buildUsernameCandidates(requestedUsername, request.payload.pagina);
+  const allSteps: JobStepResult[] = [];
+  const allArtifactPaths: string[] = [];
   const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType, pagina: request.payload.pagina });
   const artifactDir = path.join(appConfig.artifactsDir, 'jobs', request.id);
   const siteConfig = resolveSiteAppConfig(appConfig, 'ASN');
@@ -479,8 +689,6 @@ export async function runCreatePlayerAsnJob(
     debug: request.options.debug,
     slowMo: request.options.slowMo,
     timeoutMs: request.options.timeoutMs,
-    // ASN players screens are image-heavy but can render inconsistently if images are aborted.
-    // For create-player turbo, prioritize end-to-end reliability over image blocking.
     blockResources: false
   };
   const isTurbo = !runtimeConfig.debug && runtimeConfig.slowMo === 0;
@@ -502,8 +710,6 @@ export async function runCreatePlayerAsnJob(
   await configureContext(context, runtimeConfig, jobLogger);
 
   const page = await context.newPage();
-  const artifactPaths: string[] = [];
-  const steps: JobStepResult[] = [];
   const tracePath = path.join(artifactDir, 'trace.zip');
   const traceFailurePath = path.join(artifactDir, 'trace-failure.zip');
   const screenshotFailurePath = path.join(artifactDir, 'error.png');
@@ -525,8 +731,8 @@ export async function runCreatePlayerAsnJob(
       { persistSession: false }
     );
     const loginArtifact = captureSuccessArtifacts ? await captureStepScreenshot(page, artifactDir, '00-login') : undefined;
-    if (loginArtifact) artifactPaths.push(loginArtifact);
-    steps.push({
+    if (loginArtifact) allArtifactPaths.push(loginArtifact);
+    allSteps.push({
       name: '00-login',
       status: 'ok',
       startedAt: loginStartedAt,
@@ -535,180 +741,76 @@ export async function runCreatePlayerAsnJob(
     });
 
     const continueStartedAt = new Date().toISOString();
-    try {
-      const continueState = await tryHandleAsnContinue(
-        page,
-        isTurbo ? 800 : Math.min(runtimeConfig.timeoutMs, 2_000)
-      );
-      steps.push({
-        name: '01b-continue-intermediate',
-        status: continueState === 'ok' ? 'ok' : 'skipped',
-        startedAt: continueStartedAt,
-        finishedAt: new Date().toISOString()
-      });
-    } catch (error) {
-      const continueError = error instanceof Error ? error.message : String(error);
-      steps.push({
-        name: '01b-continue-intermediate',
-        status: 'failed',
-        startedAt: continueStartedAt,
-        finishedAt: new Date().toISOString(),
-        error: continueError
-      });
-      throw new Error(`Step failed: 01b-continue-intermediate (${continueError})`);
-    }
-
-    const gotoJugadoresStep = await executeActionStep(
-      page,
-      artifactDir,
-      '02-goto-jugadores',
-      async () => {
-        await page.goto('/NewAdmin/Jugadores.php', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(gotoJugadoresStep);
-    if (gotoJugadoresStep.status === 'failed') {
-      throw new Error(`Step failed: ${gotoJugadoresStep.name} (${gotoJugadoresStep.error ?? 'unknown error'})`);
-    }
-
-    const openNewStep = await executeActionStep(
-      page,
-      artifactDir,
-      '03-open-new-player',
-      async () => {
-        await openAsnNewPlayerDialog(page, runtimeConfig.timeoutMs);
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(openNewStep);
-    if (openNewStep.status === 'failed') {
-      throw new Error(`Step failed: ${openNewStep.name} (${openNewStep.error ?? 'unknown error'})`);
-    }
-
-    const waitFormStep = await executeActionStep(
-      page,
-      artifactDir,
-      '04-wait-create-form',
-      async () => {
-        await waitForAsnCreateForm(page, isTurbo ? Math.min(runtimeConfig.timeoutMs, 2_000) : runtimeConfig.timeoutMs);
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(waitFormStep);
-    if (waitFormStep.status === 'failed') {
-      throw new Error(`Step failed: ${waitFormStep.name} (${waitFormStep.error ?? 'unknown error'})`);
-    }
-
-    const fillFormStep = await executeActionStep(
-      page,
-      artifactDir,
-      '05-fill-create-form',
-      async () => {
-        await fillAsnCreateForm(page, request, runtimeConfig.timeoutMs);
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(fillFormStep);
-    if (fillFormStep.status === 'failed') {
-      throw new Error(`Step failed: ${fillFormStep.name} (${fillFormStep.error ?? 'unknown error'})`);
-    }
-
-    const clickCreateStep = await executeActionStep(
-      page,
-      artifactDir,
-      '06-click-create-user',
-      async () => {
-        if (isTurbo) {
-          // The ASN form uses legacy JS validation on an image/link submit.
-          // A tiny settle delay after fills avoids intermittent no-op submits.
-          await page.waitForTimeout(250);
-        }
-        await clickAsnCreateUser(page, runtimeConfig.timeoutMs);
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(clickCreateStep);
-    if (clickCreateStep.status === 'failed') {
-      throw new Error(`Step failed: ${clickCreateStep.name} (${clickCreateStep.error ?? 'unknown error'})`);
-    }
-
-    const verifyUiStepStarted = new Date().toISOString();
-    const uiOutcome = await waitAsnCreateUiOutcome(
-      page,
-      isTurbo ? Math.min(runtimeConfig.timeoutMs, 3_000) : Math.min(runtimeConfig.timeoutMs, 5_000)
-    );
-    steps.push({
-      name: '07-verify-create-ui',
-      status: uiOutcome.state === 'error' ? 'failed' : uiOutcome.state === 'success' ? 'ok' : 'skipped',
-      startedAt: verifyUiStepStarted,
-      finishedAt: new Date().toISOString(),
-      ...(uiOutcome.state === 'error' ? { error: uiOutcome.reason } : {})
-    });
-    if (uiOutcome.state === 'error') {
-      throw new Error(`Step failed: 07-verify-create-ui (${uiOutcome.reason})`);
-    }
-
-    const verifyListStep = await executeActionStep(
-      page,
-      artifactDir,
-      '08-verify-user-listed',
-      async () => {
-        await page.waitForTimeout(isTurbo ? 600 : 0);
-        await page.goto('/NewAdmin/Jugadores.php', {
-          waitUntil: 'domcontentloaded',
-          timeout: runtimeConfig.timeoutMs
-        });
-        const found = await verifyAsnUserInPlayersList(
-          page,
-          request.payload.newUsername,
-          isTurbo ? Math.min(runtimeConfig.timeoutMs, 6_000) : Math.min(runtimeConfig.timeoutMs, 8_000)
-        );
-        if (!found) {
-          await page.goto('/NewAdmin/Jugadores.php', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
-        }
-        const foundAfterFallback = found
-          ? true
-          : await verifyAsnUserInPlayersList(
-              page,
-              request.payload.newUsername,
-              isTurbo ? Math.min(runtimeConfig.timeoutMs, 4_000) : Math.min(runtimeConfig.timeoutMs, 8_000)
-            );
-        if (!foundAfterFallback) {
-          throw new Error(`User "${request.payload.newUsername}" not found in ASN players list after creation`);
-        }
-      },
-      captureSuccessArtifacts
-    );
-    steps.push(verifyListStep);
-    if (verifyListStep.status === 'failed') {
-      throw new Error(`Step failed: ${verifyListStep.name} (${verifyListStep.error ?? 'unknown error'})`);
-    }
-
-    steps.push({
-      name: '99-final',
-      status: 'ok',
-      startedAt: new Date().toISOString(),
+    const continueState = await tryHandleAsnContinue(page, isTurbo ? 800 : Math.min(runtimeConfig.timeoutMs, 2_000));
+    allSteps.push({
+      name: '01b-continue-intermediate',
+      status: continueState === 'ok' ? 'ok' : 'skipped',
+      startedAt: continueStartedAt,
       finishedAt: new Date().toISOString()
     });
 
-    if (tracingStarted) {
-      await context.tracing.stop({ path: tracePath });
-      artifactPaths.push(tracePath);
-      tracingStarted = false;
+    for (let i = 0; i < candidates.length; i += 1) {
+      const attemptNumber = i + 1;
+      const candidateUsername = candidates[i] as string;
+      const attemptRequest = buildRequestForCandidateUsername(request, candidateUsername);
+
+      if (candidateUsername.trim().length > 12) {
+        throw new Error(
+          `ASN candidate username must be 12 characters or fewer for exact verification (received ${candidateUsername.length})`
+        );
+      }
+
+      const outcome = await executeAsnCreateAttempt(
+        page,
+        attemptRequest,
+        runtimeConfig,
+        artifactDir,
+        isTurbo,
+        captureSuccessArtifacts
+      );
+      allSteps.push(...withAttemptPrefix(outcome.steps, attemptNumber));
+      allArtifactPaths.push(...outcome.artifactPaths);
+
+      if (outcome.status === 'success') {
+        if (tracingStarted) {
+          await context.tracing.stop({ path: tracePath });
+          allArtifactPaths.push(tracePath);
+          tracingStarted = false;
+        }
+
+        await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
+        await context.close();
+        await browser.close();
+
+        return {
+          artifactPaths: allArtifactPaths,
+          steps: allSteps,
+          result: {
+            kind: 'create-player',
+            pagina: request.payload.pagina,
+            requestedUsername,
+            createdUsername: candidateUsername,
+            attempts: attemptNumber
+          }
+        };
+      }
+
+      if (outcome.status === 'duplicate') {
+        continue;
+      }
     }
 
-    await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
-    await context.close();
-    await browser.close();
-    return { artifactPaths, steps };
+    throw buildExhaustedUsernameError(requestedUsername, candidates);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = normalizeErrorMessage(error);
+    const contextData = extractAttemptContext(error);
+    allSteps.push(...contextData.steps);
+    allArtifactPaths.push(...contextData.artifactPaths);
     jobLogger.error({ error }, 'ASN create-player job failed');
 
     try {
       await page.screenshot({ path: screenshotFailurePath, fullPage: true });
-      artifactPaths.push(screenshotFailurePath);
+      allArtifactPaths.push(screenshotFailurePath);
     } catch {
       jobLogger.warn('Could not capture ASN create-player failure screenshot');
     }
@@ -716,7 +818,7 @@ export async function runCreatePlayerAsnJob(
     if (tracingStarted) {
       try {
         await context.tracing.stop({ path: traceFailurePath });
-        artifactPaths.push(traceFailurePath);
+        allArtifactPaths.push(traceFailurePath);
       } catch {
         jobLogger.warn('Could not persist ASN create-player failure trace');
       }
@@ -726,9 +828,6 @@ export async function runCreatePlayerAsnJob(
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
 
-    const wrapped = new Error(message);
-    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
-    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths = artifactPaths;
-    throw wrapped;
+    throwWithCreatePlayerContext(new Error(message), allSteps, allArtifactPaths);
   }
 }

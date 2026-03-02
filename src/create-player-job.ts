@@ -5,6 +5,11 @@ import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
 import { runCreatePlayerAsnJob } from './create-player-asn';
+import {
+  buildExhaustedUsernameError,
+  buildUsernameCandidates,
+  isDuplicateUsernameError
+} from './create-player-username';
 import { resolveSiteAppConfig } from './site-profile';
 import type {
   AppConfig,
@@ -80,6 +85,53 @@ function applyVariables(value: string, request: CreatePlayerJobRequest): string 
     .replaceAll('{{newPassword}}', request.payload.newPassword)
     .replaceAll('{{loginUsername}}', request.payload.loginUsername)
     .replaceAll('{{loginPassword}}', request.payload.loginPassword);
+}
+
+function buildRequestForCandidateUsername(
+  request: CreatePlayerJobRequest,
+  candidateUsername: string
+): CreatePlayerJobRequest {
+  return {
+    ...request,
+    payload: {
+      ...request.payload,
+      newUsername: candidateUsername
+    }
+  };
+}
+
+function withAttemptPrefix(steps: JobStepResult[], attempt: number): JobStepResult[] {
+  return steps.map((step) => ({
+    ...step,
+    name: `A${attempt}-${step.name}`
+  }));
+}
+
+function normalizeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function extractAttemptContext(error: unknown): { steps: JobStepResult[]; artifactPaths: string[] } {
+  if (!error || typeof error !== 'object') {
+    return { steps: [], artifactPaths: [] };
+  }
+
+  const errorWithContext = error as { steps?: JobStepResult[]; artifactPaths?: string[] };
+  return {
+    steps: Array.isArray(errorWithContext.steps) ? errorWithContext.steps : [],
+    artifactPaths: Array.isArray(errorWithContext.artifactPaths) ? errorWithContext.artifactPaths : []
+  };
+}
+
+function throwWithCreatePlayerContext(
+  baseError: Error,
+  steps: JobStepResult[],
+  artifactPaths: string[]
+): never {
+  const wrapped = new Error(baseError.message);
+  (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
+  (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths = artifactPaths;
+  throw wrapped;
 }
 
 async function captureStepScreenshot(page: Page, artifactDir: string, name: string): Promise<string> {
@@ -373,6 +425,75 @@ async function executeStep(
   }
 }
 
+type RdaAttemptOutcome =
+  | { status: 'success'; steps: JobStepResult[]; artifactPaths: string[] }
+  | { status: 'duplicate'; steps: JobStepResult[]; artifactPaths: string[]; error: string };
+
+async function executeRdaCreateAttempt(
+  page: Page,
+  request: CreatePlayerJobRequest,
+  artifactDir: string,
+  timeoutMs: number
+): Promise<RdaAttemptOutcome> {
+  const steps: JobStepResult[] = [];
+  const artifactPaths: string[] = [];
+
+  try {
+    const stepsToRun = request.payload.stepsOverride?.length ? request.payload.stepsOverride : DEFAULT_CREATE_PLAYER_STEPS;
+    for (let i = 0; i < stepsToRun.length; i += 1) {
+      const result = await executeStep(page, stepsToRun[i] as StepAction, i, artifactDir, request, timeoutMs);
+      if (result.artifactPath) {
+        artifactPaths.push(result.artifactPath);
+      }
+      steps.push(result);
+
+      if (result.status === 'failed') {
+        throw new Error(`Step failed: ${result.name} (${result.error ?? 'unknown error'})`);
+      }
+    }
+
+    const verifyResult = await verifyCreatePlayerStep(page, artifactDir, timeoutMs);
+    if (verifyResult.artifactPath) {
+      artifactPaths.push(verifyResult.artifactPath);
+    }
+    steps.push(verifyResult);
+    if (verifyResult.status === 'failed') {
+      if (isDuplicateUsernameError(verifyResult.error ?? '')) {
+        return {
+          status: 'duplicate',
+          steps,
+          artifactPaths,
+          error: verifyResult.error ?? 'Duplicate username detected'
+        };
+      }
+      throw new Error(`Step failed: ${verifyResult.name} (${verifyResult.error ?? 'unknown error'})`);
+    }
+
+    const verifyListedResult = await verifyUserListedStep(page, artifactDir, request.payload.newUsername, timeoutMs);
+    if (verifyListedResult.artifactPath) {
+      artifactPaths.push(verifyListedResult.artifactPath);
+    }
+    steps.push(verifyListedResult);
+    if (verifyListedResult.status === 'failed') {
+      throw new Error(`Step failed: ${verifyListedResult.name} (${verifyListedResult.error ?? 'unknown error'})`);
+    }
+
+    const finalArtifact = await captureStepScreenshot(page, artifactDir, '99-final');
+    artifactPaths.push(finalArtifact);
+    steps.push({
+      name: '99-final',
+      status: 'ok',
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPath: finalArtifact
+    });
+
+    return { status: 'success', steps, artifactPaths };
+  } catch (error) {
+    throwWithCreatePlayerContext(new Error(normalizeErrorMessage(error)), steps, artifactPaths);
+  }
+}
+
 export async function runCreatePlayerJob(
   request: CreatePlayerJobRequest,
   appConfig: AppConfig,
@@ -382,7 +503,11 @@ export async function runCreatePlayerJob(
     return runCreatePlayerAsnJob(request, appConfig, logger);
   }
 
-  const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType });
+  const requestedUsername = request.payload.newUsername;
+  const candidates = buildUsernameCandidates(requestedUsername, request.payload.pagina);
+  const allSteps: JobStepResult[] = [];
+  const allArtifactPaths: string[] = [];
+  const jobLogger = logger.child({ jobId: request.id, jobType: request.jobType, pagina: request.payload.pagina });
   const artifactDir = path.join(appConfig.artifactsDir, 'jobs', request.id);
   const siteConfig = resolveSiteAppConfig(appConfig, request.payload.pagina);
   const runtimeConfig: AppConfig = {
@@ -412,14 +537,10 @@ export async function runCreatePlayerJob(
   });
 
   await configureContext(context, runtimeConfig, jobLogger);
-
   const page = await context.newPage();
-  const artifactPaths: string[] = [];
-  const steps: JobStepResult[] = [];
   const tracePath = path.join(artifactDir, 'trace.zip');
   const traceFailurePath = path.join(artifactDir, 'trace-failure.zip');
   const screenshotFailurePath = path.join(artifactDir, 'error.png');
-
   let tracingStarted = false;
 
   try {
@@ -441,8 +562,8 @@ export async function runCreatePlayerJob(
       { persistSession: false }
     );
     const loginArtifact = await captureStepScreenshot(page, artifactDir, '00-login');
-    artifactPaths.push(loginArtifact);
-    steps.push({
+    allArtifactPaths.push(loginArtifact);
+    allSteps.push({
       name: '00-login',
       status: 'ok',
       startedAt: loginStartedAt,
@@ -450,73 +571,65 @@ export async function runCreatePlayerJob(
       artifactPath: loginArtifact
     });
 
-    const stepsToRun = request.payload.stepsOverride?.length ? request.payload.stepsOverride : DEFAULT_CREATE_PLAYER_STEPS;
-    for (let i = 0; i < stepsToRun.length; i += 1) {
-      const result = await executeStep(page, stepsToRun[i] as StepAction, i, artifactDir, request, runtimeConfig.timeoutMs);
-      if (result.artifactPath) {
-        artifactPaths.push(result.artifactPath);
+    for (let i = 0; i < candidates.length; i += 1) {
+      const attemptNumber = i + 1;
+      const candidateUsername = candidates[i] as string;
+      const attemptRequest = buildRequestForCandidateUsername(request, candidateUsername);
+
+      try {
+        const outcome = await executeRdaCreateAttempt(page, attemptRequest, artifactDir, runtimeConfig.timeoutMs);
+        allSteps.push(...withAttemptPrefix(outcome.steps, attemptNumber));
+        allArtifactPaths.push(...outcome.artifactPaths);
+
+        if (outcome.status === 'success') {
+          if (tracingStarted) {
+            await context.tracing.stop({ path: tracePath });
+            allArtifactPaths.push(tracePath);
+            tracingStarted = false;
+          }
+
+          await waitBeforeCloseIfHeaded(page, runtimeConfig.headless);
+          await context.close();
+          await browser.close();
+
+          return {
+            artifactPaths: allArtifactPaths,
+            steps: allSteps,
+            result: {
+              kind: 'create-player',
+              pagina: request.payload.pagina,
+              requestedUsername,
+              createdUsername: candidateUsername,
+              attempts: attemptNumber
+            }
+          };
+        }
+
+        if (outcome.status === 'duplicate') {
+          continue;
+        }
+      } catch (error) {
+        const message = normalizeErrorMessage(error);
+        const contextData = extractAttemptContext(error);
+        allSteps.push(...withAttemptPrefix(contextData.steps, attemptNumber));
+        allArtifactPaths.push(...contextData.artifactPaths);
+
+        if (isDuplicateUsernameError(message)) {
+          continue;
+        }
+
+        throwWithCreatePlayerContext(new Error(message), allSteps, allArtifactPaths);
       }
-      steps.push(result);
-
-      if (result.status === 'failed') {
-        throw new Error(`Step failed: ${result.name} (${result.error ?? 'unknown error'})`);
-      }
     }
 
-    const verifyResult = await verifyCreatePlayerStep(page, artifactDir, runtimeConfig.timeoutMs);
-    if (verifyResult.artifactPath) {
-      artifactPaths.push(verifyResult.artifactPath);
-    }
-    steps.push(verifyResult);
-    if (verifyResult.status === 'failed') {
-      throw new Error(`Step failed: ${verifyResult.name} (${verifyResult.error ?? 'unknown error'})`);
-    }
-
-    const verifyListedResult = await verifyUserListedStep(
-      page,
-      artifactDir,
-      request.payload.newUsername,
-      runtimeConfig.timeoutMs
-    );
-    if (verifyListedResult.artifactPath) {
-      artifactPaths.push(verifyListedResult.artifactPath);
-    }
-    steps.push(verifyListedResult);
-    if (verifyListedResult.status === 'failed') {
-      throw new Error(`Step failed: ${verifyListedResult.name} (${verifyListedResult.error ?? 'unknown error'})`);
-    }
-
-    const finalArtifact = await captureStepScreenshot(page, artifactDir, '99-final');
-    artifactPaths.push(finalArtifact);
-    steps.push({
-      name: '99-final',
-      status: 'ok',
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-      artifactPath: finalArtifact
-    });
-
-    if (tracingStarted) {
-      await context.tracing.stop({ path: tracePath });
-      artifactPaths.push(tracePath);
-      tracingStarted = false;
-    }
-
-    await waitBeforeCloseIfHeaded(page, runtimeConfig.headless);
-    await context.close();
-    await browser.close();
-
-    return {
-      artifactPaths,
-      steps
-    };
+    throw buildExhaustedUsernameError(requestedUsername, candidates);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = normalizeErrorMessage(error);
     jobLogger.error({ error }, 'Create-player job failed');
 
     try {
       await page.screenshot({ path: screenshotFailurePath, fullPage: true });
-      artifactPaths.push(screenshotFailurePath);
+      allArtifactPaths.push(screenshotFailurePath);
     } catch {
       jobLogger.warn('Could not capture create-player failure screenshot');
     }
@@ -524,7 +637,7 @@ export async function runCreatePlayerJob(
     if (tracingStarted) {
       try {
         await context.tracing.stop({ path: traceFailurePath });
-        artifactPaths.push(traceFailurePath);
+        allArtifactPaths.push(traceFailurePath);
       } catch {
         jobLogger.warn('Could not persist create-player failure trace');
       }
@@ -534,9 +647,6 @@ export async function runCreatePlayerJob(
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
 
-    const wrapped = new Error(message);
-    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
-    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths = artifactPaths;
-    throw wrapped;
+    throwWithCreatePlayerContext(new Error(message), allSteps, allArtifactPaths);
   }
 }
