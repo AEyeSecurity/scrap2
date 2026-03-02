@@ -835,6 +835,7 @@ describe('server routes', () => {
         pagina: 'ASN',
         requestedUsername: 'Pepito47',
         createdUsername: 'Pepito471',
+        createdPassword: 'PepitoPass123',
         attempts: 2
       }
     });
@@ -850,6 +851,7 @@ describe('server routes', () => {
       pagina: 'ASN',
       requestedUsername: 'Pepito47',
       createdUsername: 'Pepito471',
+      createdPassword: 'PepitoPass123',
       attempts: 2
     });
 

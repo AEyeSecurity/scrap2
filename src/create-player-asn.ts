@@ -790,6 +790,7 @@ export async function runCreatePlayerAsnJob(
             pagina: request.payload.pagina,
             requestedUsername,
             createdUsername: candidateUsername,
+            createdPassword: request.payload.newPassword,
             attempts: attemptNumber
           }
         };

@@ -161,6 +161,7 @@ describe('JobManager', () => {
           pagina: 'ASN',
           requestedUsername: 'Pepito47',
           createdUsername: 'Pepito471',
+          createdPassword: 'PepitoPass123',
           attempts: 2
         }
       })
@@ -176,6 +177,7 @@ describe('JobManager', () => {
       pagina: 'ASN',
       requestedUsername: 'Pepito47',
       createdUsername: 'Pepito471',
+      createdPassword: 'PepitoPass123',
       attempts: 2
     });
 

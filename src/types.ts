@@ -246,6 +246,7 @@ export interface CreatePlayerJobResult {
   pagina: PaginaCode;
   requestedUsername: string;
   createdUsername: string;
+  createdPassword: string;
   attempts: number;
 }
 

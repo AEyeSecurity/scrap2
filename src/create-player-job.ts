@@ -600,6 +600,7 @@ export async function runCreatePlayerJob(
               pagina: request.payload.pagina,
               requestedUsername,
               createdUsername: candidateUsername,
+              createdPassword: request.payload.newPassword,
               attempts: attemptNumber
             }
           };
