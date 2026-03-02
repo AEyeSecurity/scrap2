@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
+import { runAsnReportJob } from './asn-report-job';
 import { runBalanceJob } from './balance-job';
 import { runCreatePlayerJob } from './create-player-job';
 import { runDepositJob } from './deposit-job';
@@ -11,6 +12,7 @@ import { runLoginJob } from './login-job';
 import { paginaCodeSchema } from './site-profile';
 import type {
   AppConfig,
+  AsnReportJobRequest,
   BalanceJobRequest,
   CreatePlayerJobRequest,
   DepositJobRequest,
@@ -145,6 +147,10 @@ export function createServer(
           return runBalanceJob(request, appConfig, logger);
         }
 
+        if (request.jobType === 'report') {
+          return runAsnReportJob(request, appConfig, logger);
+        }
+
         throw new Error('Unsupported job type');
       }
     });
@@ -227,6 +233,39 @@ export function createServer(
     }
 
     const payload = parsed.data;
+    if (payload.operacion === 'reporte') {
+      if (payload.pagina !== 'ASN') {
+        return reply.code(501).send({
+          message: 'report operation is implemented only for ASN'
+        });
+      }
+
+      const createdAt = new Date().toISOString();
+      const id = randomUUID();
+      const reportRequest: AsnReportJobRequest = {
+        id,
+        jobType: 'report',
+        createdAt,
+        payload: {
+          pagina: 'ASN',
+          operacion: 'reporte',
+          usuario: payload.usuario,
+          agente: payload.agente,
+          contrasena_agente: payload.contrasena_agente,
+          ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+        },
+        options: resolveDepositExecutionOptions(appConfig, payload)
+      };
+
+      internalQueue.enqueue(reportRequest);
+
+      return reply.code(202).send({
+        jobId: id,
+        status: 'queued',
+        statusUrl: `/jobs/${id}`
+      });
+    }
+
     if (payload.pagina === 'ASN') {
       return reply.code(501).send({
         message: 'ASN funds operations are not implemented yet'

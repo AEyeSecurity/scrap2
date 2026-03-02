@@ -181,4 +181,40 @@ describe('JobManager', () => {
 
     await manager.shutdown();
   });
+
+  it('stores and returns ASN report result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('read-asn-month-total')],
+        result: {
+          kind: 'asn-reporte-cargado-mes',
+          pagina: 'ASN',
+          usuario: 'Ariel728',
+          mesActual: '2026-03',
+          cargadoTexto: '40.000,00',
+          cargadoNumero: 40000
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'asn-reporte-cargado-mes',
+      pagina: 'ASN',
+      usuario: 'Ariel728',
+      mesActual: '2026-03',
+      cargadoTexto: '40.000,00',
+      cargadoNumero: 40000
+    });
+
+    await manager.shutdown();
+  });
 });

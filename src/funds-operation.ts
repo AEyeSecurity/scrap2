@@ -19,6 +19,10 @@ export function normalizeFundsOperation(value: string): FundsOperation | null {
     return 'consultar_saldo';
   }
 
+  if (normalized === 'reporte' || normalized === 'report') {
+    return 'reporte';
+  }
+
   return null;
 }
 
@@ -28,7 +32,7 @@ export const fundsOperationSchema = z.string().trim().min(1).transform((value, c
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message:
-        'operacion must be one of: carga, descarga, retiro, descarga_total, retiro_total, consultar_saldo, consultar saldo'
+        'operacion must be one of: carga, descarga, retiro, descarga_total, retiro_total, consultar_saldo, consultar saldo, reporte, report'
     });
     return z.NEVER;
   }

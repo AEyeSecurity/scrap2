@@ -107,7 +107,7 @@ export interface RunMetadata {
   outputCsv: string;
 }
 
-export type JobType = 'login' | 'create-player' | 'deposit' | 'balance';
+export type JobType = 'login' | 'create-player' | 'deposit' | 'balance' | 'report';
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'expired';
 export type JobStepStatus = 'ok' | 'failed' | 'skipped';
 
@@ -153,8 +153,8 @@ export interface CreatePlayerJobPayload {
 }
 
 export type PaginaCode = 'RdA' | 'ASN';
-export type FundsOperation = 'carga' | 'descarga' | 'descarga_total' | 'consultar_saldo';
-export type FundsTransactionOperation = Exclude<FundsOperation, 'consultar_saldo'>;
+export type FundsOperation = 'carga' | 'descarga' | 'descarga_total' | 'consultar_saldo' | 'reporte';
+export type FundsTransactionOperation = Exclude<FundsOperation, 'consultar_saldo' | 'reporte'>;
 
 interface DepositJobPayloadBase {
   pagina: PaginaCode;
@@ -179,6 +179,15 @@ export type DepositJobPayload = DepositJobPayloadWithAmount | DepositJobPayloadT
 export interface BalanceJobPayload {
   pagina: PaginaCode;
   operacion: 'consultar_saldo';
+  usuario: string;
+  agente: string;
+  contrasena_agente: string;
+  cantidad?: number;
+}
+
+export interface AsnReportJobPayload {
+  pagina: 'ASN';
+  operacion: 'reporte';
   usuario: string;
   agente: string;
   contrasena_agente: string;
@@ -217,6 +226,14 @@ export interface BalanceJobRequest {
   createdAt: string;
 }
 
+export interface AsnReportJobRequest {
+  id: string;
+  jobType: 'report';
+  payload: AsnReportJobPayload;
+  options: JobExecutionOptions;
+  createdAt: string;
+}
+
 export interface BalanceJobResult {
   kind: 'balance';
   usuario: string;
@@ -232,9 +249,23 @@ export interface CreatePlayerJobResult {
   attempts: number;
 }
 
-export type JobResult = BalanceJobResult | CreatePlayerJobResult;
+export interface AsnReportJobResult {
+  kind: 'asn-reporte-cargado-mes';
+  pagina: 'ASN';
+  usuario: string;
+  mesActual: string;
+  cargadoTexto: string;
+  cargadoNumero: number;
+}
 
-export type JobRequest = LoginJobRequest | CreatePlayerJobRequest | DepositJobRequest | BalanceJobRequest;
+export type JobResult = BalanceJobResult | CreatePlayerJobResult | AsnReportJobResult;
+
+export type JobRequest =
+  | LoginJobRequest
+  | CreatePlayerJobRequest
+  | DepositJobRequest
+  | BalanceJobRequest
+  | AsnReportJobRequest;
 
 export interface JobExecutionResult {
   artifactPaths: string[];
