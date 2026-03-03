@@ -134,6 +134,25 @@ function extractBalanceTokenNearLabel(text: string): string | null {
   return null;
 }
 
+function extractTransferBalanceTokenNearLabel(text: string): string | null {
+  const normalized = normalizeSpaces(text);
+  const transferLabelMatch = normalized.match(
+    /saldo disponible para transferir.{0,120}?fichas\s*:\s*(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?)/i
+  );
+  if (transferLabelMatch?.[1]) {
+    return transferLabelMatch[1];
+  }
+
+  const directFichasMatch = normalized.match(
+    /(?:^|\b)fichas\s*:\s*(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?)/i
+  );
+  if (directFichasMatch?.[1]) {
+    return directFichasMatch[1];
+  }
+
+  return null;
+}
+
 async function captureStepScreenshot(page: Page, artifactDir: string, name: string): Promise<string> {
   const filePath = path.join(artifactDir, `${sanitizeFileName(name)}.png`);
   await page.screenshot({ path: filePath, fullPage: true });
@@ -303,6 +322,38 @@ async function readAsnAvailableBalance(page: Page, timeoutMs: number): Promise<A
   }
 
   throw new Error('Could not read ASN "Saldo disponible actual"');
+}
+
+async function tryReadAsnTransferBalance(page: Page): Promise<AsnBalanceSnapshot | null> {
+  const locator = page.locator('body').first();
+  const text = normalizeSpaces(await locator.innerText().catch(() => ''));
+  if (!text) {
+    return null;
+  }
+
+  const token = extractTransferBalanceTokenNearLabel(text);
+  if (!token) {
+    return null;
+  }
+
+  return {
+    saldoTexto: token,
+    saldoNumero: parseAsnMoney(token)
+  };
+}
+
+async function readAsnTransferBalance(page: Page, timeoutMs: number): Promise<AsnBalanceSnapshot> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const balance = await tryReadAsnTransferBalance(page);
+    if (balance) {
+      return balance;
+    }
+
+    await page.waitForTimeout(120);
+  }
+
+  throw new Error('Could not read ASN transfer balance ("Fichas")');
 }
 function getAsnActionSelectors(operation: FundsTransactionOperation): string[] {
   if (operation === 'carga') {
@@ -587,6 +638,10 @@ export function computeExpectedAsnBalance(
   return 0;
 }
 
+function computeExpectedAsnTransferBalance(saldoAntesNumero: number, montoAplicado: number): number {
+  return roundToTwoDecimals(saldoAntesNumero - montoAplicado);
+}
+
 export function computeAsnAppliedAmount(
   operation: FundsTransactionOperation,
   saldoAntesNumero: number,
@@ -596,6 +651,10 @@ export function computeAsnAppliedAmount(
     return roundToTwoDecimals(saldoDespuesNumero - saldoAntesNumero);
   }
 
+  return roundToTwoDecimals(saldoAntesNumero - saldoDespuesNumero);
+}
+
+function computeAsnTransferAppliedAmount(saldoAntesNumero: number, saldoDespuesNumero: number): number {
   return roundToTwoDecimals(saldoAntesNumero - saldoDespuesNumero);
 }
 
@@ -654,6 +713,44 @@ async function waitForExpectedAsnBalance(
   }
 
   throw new Error(`ASN balance did not reach expected value ${formatAsnMoney(targetBalance)}`);
+}
+
+async function waitForExpectedAsnTransferBalance(
+  page: Page,
+  targetBalance: number,
+  timeoutMs: number,
+  refreshPath: string
+): Promise<AsnBalanceSnapshot> {
+  const startedAt = Date.now();
+  let lastSnapshot: AsnBalanceSnapshot | null = null;
+  let refreshed = false;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const snapshot = await readAsnTransferBalance(page, Math.min(timeoutMs, 1_200));
+      lastSnapshot = snapshot;
+      if (Math.abs(snapshot.saldoNumero - targetBalance) <= 0.01) {
+        return snapshot;
+      }
+    } catch {
+      // Keep polling.
+    }
+
+    if (!refreshed && Date.now() - startedAt > timeoutMs / 2) {
+      await page.goto(refreshPath, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => undefined);
+      refreshed = true;
+    }
+
+    await page.waitForTimeout(150);
+  }
+
+  if (lastSnapshot) {
+    throw new Error(
+      `ASN transfer balance did not reach expected value ${formatAsnMoney(targetBalance)} (last=${lastSnapshot.saldoTexto})`
+    );
+  }
+
+  throw new Error(`ASN transfer balance did not reach expected value ${formatAsnMoney(targetBalance)}`);
 }
 
 function isNavigationAbortedError(error: unknown): boolean {
@@ -867,6 +964,7 @@ export async function runAsnDepositJob(
       const entryPath = resolveAsnDepositEntryPath(request.payload.operacion, request.payload.usuario, isTurbo);
       const isWithdrawOperation =
         request.payload.operacion === 'descarga' || request.payload.operacion === 'descarga_total';
+      const useTransferBalanceValidation = request.payload.operacion === 'carga';
 
       const gotoStep = await executeActionStep(
         page,
@@ -911,7 +1009,9 @@ export async function runAsnDepositJob(
           if (request.payload.operacion === 'carga' && isTurbo) {
             await gotoWithRetry(page, userPath, cfg.timeoutMs);
           }
-          saldoAntes = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
+          saldoAntes = useTransferBalanceValidation
+            ? await readAsnTransferBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500))
+            : await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
         },
         captureSuccessArtifacts
       );
@@ -983,7 +1083,9 @@ export async function runAsnDepositJob(
       }
 
       let saldoDespues: AsnBalanceSnapshot | undefined;
-      const expectedBalance = computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
+      const expectedBalance = useTransferBalanceValidation
+        ? computeExpectedAsnTransferBalance(saldoAntes.saldoNumero, montoSolicitado)
+        : computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
       const refreshPath = isWithdrawOperation ? withdrawPath : userPath;
       const readAfterStep = await executeActionStep(
         page,
@@ -999,12 +1101,19 @@ export async function runAsnDepositJob(
             await gotoWithRetry(page, userPath, cfg.timeoutMs);
           }
 
-          saldoDespues = await waitForExpectedAsnBalance(
-            page,
-            expectedBalance,
-            isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
-            refreshPath
-          );
+          saldoDespues = useTransferBalanceValidation
+            ? await waitForExpectedAsnTransferBalance(
+                page,
+                expectedBalance,
+                isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
+                refreshPath
+              )
+            : await waitForExpectedAsnBalance(
+                page,
+                expectedBalance,
+                isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
+                refreshPath
+              );
         },
         captureSuccessArtifacts
       );
@@ -1025,19 +1134,19 @@ export async function runAsnDepositJob(
         artifactDir,
         '07-verify-delta',
         async () => {
-          const appliedAmount = computeAsnAppliedAmount(
-            request.payload.operacion,
-            saldoAntes?.saldoNumero ?? 0,
-            saldoDespues?.saldoNumero ?? 0
-          );
+          const appliedAmount = useTransferBalanceValidation
+            ? computeAsnTransferAppliedAmount(saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0)
+            : computeAsnAppliedAmount(request.payload.operacion, saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0);
           const appliedDeltaMatches = Math.abs(appliedAmount - montoSolicitado) <= 0.01;
-          const expectedDeltaMatches = isExpectedAsnDelta(
-            request.payload.operacion,
-            saldoAntes?.saldoNumero ?? 0,
-            saldoDespues?.saldoNumero ?? 0,
-            montoSolicitado,
-            0.01
-          );
+          const expectedDeltaMatches = useTransferBalanceValidation
+            ? Math.abs((saldoDespues?.saldoNumero ?? 0) - expectedBalance) <= 0.01
+            : isExpectedAsnDelta(
+                request.payload.operacion,
+                saldoAntes?.saldoNumero ?? 0,
+                saldoDespues?.saldoNumero ?? 0,
+                montoSolicitado,
+                0.01
+              );
           if (!appliedDeltaMatches || !expectedDeltaMatches) {
             throw new Error(
               `Unexpected ASN balance delta: operacion=${request.payload.operacion}, saldoAntes=${saldoAntes?.saldoTexto}, saldoDespues=${saldoDespues?.saldoTexto}, montoSolicitado=${montoSolicitado}`
@@ -1059,6 +1168,9 @@ export async function runAsnDepositJob(
         saldoAntes.saldoNumero,
         saldoDespues.saldoNumero
       );
+      const montoAplicadoFinal = useTransferBalanceValidation
+        ? computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero)
+        : montoAplicado;
 
       const resultPayload: AsnFundsOperationResult = {
         kind: 'asn-funds-operation',
@@ -1066,8 +1178,8 @@ export async function runAsnDepositJob(
         operacion: request.payload.operacion,
         usuario: request.payload.usuario,
         montoSolicitado: roundToTwoDecimals(montoSolicitado),
-        montoAplicado: roundToTwoDecimals(montoAplicado),
-        montoAplicadoTexto: formatAsnMoney(montoAplicado),
+        montoAplicado: roundToTwoDecimals(montoAplicadoFinal),
+        montoAplicadoTexto: formatAsnMoney(montoAplicadoFinal),
         saldoAntesNumero: roundToTwoDecimals(saldoAntes.saldoNumero),
         saldoAntesTexto: saldoAntes.saldoTexto,
         saldoDespuesNumero: roundToTwoDecimals(saldoDespues.saldoNumero),
