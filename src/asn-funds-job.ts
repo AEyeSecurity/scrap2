@@ -113,6 +113,20 @@ function extractBalanceTokenNearLabel(text: string): string | null {
     return labelMatch[1];
   }
 
+  const withdrawViewMatch = normalized.match(
+    /\bjugador\b.{0,140}?\bdisponible\b[^0-9-]*(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?)/i
+  );
+  if (withdrawViewMatch?.[1]) {
+    return withdrawViewMatch[1];
+  }
+
+  const directDisponibleMatch = normalized.match(
+    /\bdisponible\s*:[^0-9-]*(-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?)/i
+  );
+  if (directDisponibleMatch?.[1]) {
+    return directDisponibleMatch[1];
+  }
+
   if (/saldo disponible actual/i.test(normalized)) {
     return extractFirstMoneyToken(normalized);
   }
@@ -497,9 +511,13 @@ async function submitAsnFundsForm(
   const formPath = getAsnFundsFormPath(operation, usuario);
   await page.goto(formPath, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
 
+  const amountAsText = amountToAsnInputString(monto);
   const amountInput = await findVisibleBySelectors(page, ['input#importe', 'input[name="importe"]'], timeoutMs);
-  await amountInput.fill('', { timeout: timeoutMs });
-  await amountInput.fill(amountToAsnInputString(monto), { timeout: timeoutMs });
+  await amountInput.click({ timeout: timeoutMs });
+  await amountInput.press('Control+A', { timeout: timeoutMs }).catch(() => undefined);
+  await amountInput.press('Backspace', { timeout: timeoutMs }).catch(() => undefined);
+  await amountInput.pressSequentially(amountAsText, { timeout: timeoutMs, delay: 40 });
+  await amountInput.press('Tab', { timeout: timeoutMs }).catch(() => undefined);
 
   const submitButton = await findVisibleBySelectors(
     page,
@@ -799,14 +817,27 @@ export async function runAsnDepositJob(
     captureSuccessArtifacts,
     onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps, isTurbo }) => {
       const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+      const isWithdrawOperation =
+        request.payload.operacion === 'descarga' || request.payload.operacion === 'descarga_total';
+      const withdrawPath = `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+      const entryPath = isWithdrawOperation ? withdrawPath : userPath;
 
       const gotoStep = await executeActionStep(
         page,
         artifactDir,
         '02-goto-user-cd',
         async () => {
-          await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
-          await findFirstVisibleLocator(page, 'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo/i', cfg.timeoutMs);
+          await page.goto(entryPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+          if (isWithdrawOperation) {
+            await findFirstVisibleLocator(page, 'text=/Descarga|Disponible\\s*:|Jugador\\s*:/i', cfg.timeoutMs);
+            return;
+          }
+
+          await findFirstVisibleLocator(
+            page,
+            'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo/i',
+            cfg.timeoutMs
+          );
         },
         captureSuccessArtifacts
       );
@@ -897,6 +928,7 @@ export async function runAsnDepositJob(
 
       let saldoDespues: AsnBalanceSnapshot | undefined;
       const expectedBalance = computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
+      const refreshPath = isWithdrawOperation ? withdrawPath : userPath;
       const readAfterStep = await executeActionStep(
         page,
         artifactDir,
@@ -911,7 +943,7 @@ export async function runAsnDepositJob(
             page,
             expectedBalance,
             isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
-            userPath
+            refreshPath
           );
         },
         captureSuccessArtifacts
@@ -1095,4 +1127,3 @@ export async function runAsnBalanceJob(
     result: runResult.payload
   };
 }
-
