@@ -149,6 +149,7 @@ export interface CreatePlayerJobPayload {
   loginPassword: string;
   newUsername: string;
   newPassword: string;
+  telefono?: string;
   stepsOverride?: StepAction[];
 }
 

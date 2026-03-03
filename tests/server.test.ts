@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildAppConfig } from '../src/config';
-import { createServer } from '../src/server';
 import { createLogger } from '../src/logging';
+import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
+import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
 
 class FakeQueue {
@@ -27,6 +28,43 @@ class FakeQueue {
 
   async shutdown(): Promise<void> {
     // no-op for tests
+  }
+}
+
+class FakePlayerPhoneStore implements PlayerPhoneStore {
+  public readonly syncInputs: Array<{
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    jugadorUsername: string;
+    telefono?: string;
+  }> = [];
+
+  public readonly assignInputs: Array<{
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    jugadorUsername: string;
+    telefono: string;
+  }> = [];
+
+  public assignBehavior: () => Promise<void> = async () => undefined;
+
+  async syncCreatePlayerLink(input: {
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    jugadorUsername: string;
+    telefono?: string;
+  }): Promise<void> {
+    this.syncInputs.push(input);
+  }
+
+  async assignPhone(input: {
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    jugadorUsername: string;
+    telefono: string;
+  }): Promise<void> {
+    this.assignInputs.push(input);
+    await this.assignBehavior();
   }
 }
 
@@ -119,6 +157,40 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/create-player accepts optional telefono', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/create-player',
+      payload: {
+        pagina: 'RdA',
+        loginUsername: 'agent',
+        loginPassword: 'secret',
+        newUsername: 'player_with_phone',
+        newPassword: 'player_secret',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const queued = queue.requests.find((item) => item.id === response.json().jobId);
+    expect(queued?.jobType).toBe('create-player');
+    if (queued?.jobType === 'create-player') {
+      expect(queued.payload.telefono).toBe('+5491122334455');
+    }
+
+    await server.close();
+  });
+
   it('POST /users/create-player normalizes pagina aliases', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -177,6 +249,233 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.json().issues.some((issue: { path: string }) => issue.path === 'pagina')).toBe(true);
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 200 when assignment succeeds', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_1',
+        agente: 'agent_1',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: 'ok' });
+    expect(store.assignInputs).toEqual([
+      {
+        pagina: 'RdA',
+        jugadorUsername: 'player_1',
+        cajeroUsername: 'agent_1',
+        telefono: '+5491122334455'
+      }
+    ]);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone validates payload', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_1',
+        agente: 'agent_1'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(store.assignInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 404 when jugador does not exist', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignBehavior = async () => {
+      throw new PlayerPhoneStoreError('NOT_FOUND', 'jugador does not exist');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'missing_player',
+        agente: 'agent_1',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 409 for conflict errors', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignBehavior = async () => {
+      throw new PlayerPhoneStoreError('CONFLICT', 'jugador belongs to another cajero');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_1',
+        agente: 'other_agent',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 409 when jugador link is missing', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignBehavior = async () => {
+      throw new PlayerPhoneStoreError('CONFLICT', 'jugador link does not exist');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_1',
+        agente: 'agent_1',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 409 for duplicated phone in cajero', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignBehavior = async () => {
+      throw new PlayerPhoneStoreError('CONFLICT', 'duplicated phone for cajero');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_2',
+        agente: 'agent_1',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 400 for invalid phone format', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignBehavior = async () => {
+      throw new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'player_1',
+        agente: 'agent_1',
+        telefono: 'abc'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+
     await server.close();
   });
 

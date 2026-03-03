@@ -7,7 +7,8 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Login automation (UI) with reusable session (`storageState`) in `run` mode.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
-- Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`).
+- Supabase persistence for `cajeros`, `jugadores` and `cajeros_jugadores` (phone assignment included).
+- Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`) plus synchronous `POST /users/assign-phone`.
 - Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headless, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
 
@@ -44,6 +45,13 @@ Start server:
 npm run scraper -- server --host 127.0.0.1 --port 3000
 ```
 
+Required environment variables for Supabase persistence:
+
+```bash
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+```
+
 Create login job:
 
 ```bash
@@ -74,14 +82,35 @@ Create player job:
 curl -s -X POST http://127.0.0.1:3000/users/create-player \
   -H 'content-type: application/json' \
   -d '{
+    "pagina":"RdA",
     "loginUsername":"agent_user",
     "loginPassword":"agent_pass",
     "newUsername":"player_1",
     "newPassword":"player_pass",
+    "telefono":"+5491122334455",
     "headless":false,
     "debug":true
   }'
 ```
+
+Assign or update player phone (sync):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
+  -H 'content-type: application/json' \
+  -d '{
+    "pagina":"RdA",
+    "usuario":"player_1",
+    "agente":"agent_user",
+    "telefono":"+5491122334455"
+  }'
+```
+
+Expected `assign-phone` errors:
+
+- `400` invalid phone format or payload
+- `404` player does not exist in Supabase
+- `409` player belongs to another cajero, link is missing, or phone is duplicated under the same cajero
 
 Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`, `consultar_saldo`, `consultar saldo`):
 

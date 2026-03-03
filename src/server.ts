@@ -9,6 +9,11 @@ import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
+import {
+  createPlayerPhoneStoreFromEnv,
+  toHttpError,
+  type PlayerPhoneStore
+} from './player-phone-store';
 import { paginaCodeSchema } from './site-profile';
 import type {
   AppConfig,
@@ -28,6 +33,10 @@ interface JobQueue {
   enqueue(request: JobRequest): string;
   getById(id: string): JobStoreEntry | undefined;
   shutdown(): Promise<void>;
+}
+
+interface ServerDependencies {
+  playerPhoneStore?: PlayerPhoneStore;
 }
 
 const executionOverridesSchema = z.object({
@@ -60,9 +69,17 @@ const createPlayerBodySchema = z
     loginPassword: z.string().min(1),
     newUsername: z.string().min(1),
     newPassword: z.string().min(1),
+    telefono: z.string().trim().min(1).optional(),
     stepsOverride: z.array(stepActionSchema).optional()
   })
   .merge(executionOverridesSchema);
+
+const assignPhoneBodySchema = z.object({
+  pagina: paginaCodeSchema,
+  usuario: z.string().trim().min(1),
+  agente: z.string().trim().min(1),
+  telefono: z.string().trim().min(1)
+});
 
 const depositBodySchema = z
   .object({
@@ -120,9 +137,20 @@ export function createServer(
   appConfig: AppConfig,
   serverConfig: ServerConfig,
   logger: Logger,
-  queue?: JobQueue
+  queue?: JobQueue,
+  dependencies?: ServerDependencies
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
+  let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
+
+  function getPlayerPhoneStore(): PlayerPhoneStore {
+    if (cachedPlayerPhoneStore) {
+      return cachedPlayerPhoneStore;
+    }
+
+    cachedPlayerPhoneStore = createPlayerPhoneStoreFromEnv();
+    return cachedPlayerPhoneStore;
+  }
 
   const internalQueue =
     queue ??
@@ -136,7 +164,18 @@ export function createServer(
         }
 
         if (request.jobType === 'create-player') {
-          return runCreatePlayerJob(request, appConfig, logger);
+          const execution = await runCreatePlayerJob(request, appConfig, logger);
+          const result = execution.result;
+          if (result?.kind === 'create-player') {
+            await getPlayerPhoneStore().syncCreatePlayerLink({
+              pagina: request.payload.pagina,
+              cajeroUsername: request.payload.loginUsername,
+              jugadorUsername: result.createdUsername,
+              telefono: request.payload.telefono
+            });
+          }
+
+          return execution;
         }
 
         if (request.jobType === 'deposit') {
@@ -209,6 +248,7 @@ export function createServer(
         loginPassword: payload.loginPassword,
         newUsername: payload.newUsername,
         newPassword: payload.newPassword,
+        ...(payload.telefono ? { telefono: payload.telefono } : {}),
         stepsOverride: payload.stepsOverride
       },
       options: resolveExecutionOptions(appConfig, payload)
@@ -221,6 +261,35 @@ export function createServer(
       status: 'queued',
       statusUrl: `/jobs/${id}`
     });
+  });
+
+  fastify.post('/users/assign-phone', async (request, reply) => {
+    const parsed = assignPhoneBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    try {
+      await getPlayerPhoneStore().assignPhone({
+        pagina: parsed.data.pagina,
+        cajeroUsername: parsed.data.agente,
+        jugadorUsername: parsed.data.usuario,
+        telefono: parsed.data.telefono
+      });
+
+      return reply.code(200).send({ status: 'ok' });
+    } catch (error) {
+      const mappedError = toHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /users/assign-phone error');
+      return reply.code(500).send({ message: 'Unexpected persistence error' });
+    }
   });
 
   fastify.post('/users/deposit', async (request, reply) => {
