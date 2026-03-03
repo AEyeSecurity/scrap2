@@ -493,6 +493,25 @@ function getAsnFundsFormPath(operation: FundsTransactionOperation, usuario: stri
   return `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(usuario)}`;
 }
 
+export function resolveAsnDepositEntryPath(
+  operation: FundsTransactionOperation,
+  usuario: string,
+  isTurbo: boolean
+): string {
+  const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(usuario)}`;
+  const fundsPath = getAsnFundsFormPath(operation, usuario);
+
+  if (operation === 'carga' && isTurbo) {
+    return fundsPath;
+  }
+
+  if (operation === 'descarga' || operation === 'descarga_total') {
+    return fundsPath;
+  }
+
+  return userPath;
+}
+
 function amountToAsnInputString(monto: number): string {
   const rounded = roundToTwoDecimals(monto);
   if (Math.abs(rounded % 1) < 0.00001) {
@@ -817,10 +836,10 @@ export async function runAsnDepositJob(
     captureSuccessArtifacts,
     onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps, isTurbo }) => {
       const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+      const withdrawPath = `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+      const entryPath = resolveAsnDepositEntryPath(request.payload.operacion, request.payload.usuario, isTurbo);
       const isWithdrawOperation =
         request.payload.operacion === 'descarga' || request.payload.operacion === 'descarga_total';
-      const withdrawPath = `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(request.payload.usuario)}`;
-      const entryPath = isWithdrawOperation ? withdrawPath : userPath;
 
       const gotoStep = await executeActionStep(
         page,
@@ -833,9 +852,16 @@ export async function runAsnDepositJob(
             return;
           }
 
-          await findFirstVisibleLocator(
+          await findVisibleBySelectors(
             page,
-            'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo/i',
+            [
+              'input#importe',
+              'input[name="importe"]',
+              'input[type="image"]',
+              'input[type="submit"]',
+              'button[type="submit"]',
+              'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo|Importe\\s*:|Cargar/i'
+            ],
             cfg.timeoutMs
           );
         },
@@ -855,6 +881,9 @@ export async function runAsnDepositJob(
         artifactDir,
         '03-read-saldo-before',
         async () => {
+          if (request.payload.operacion === 'carga' && isTurbo) {
+            await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+          }
           saldoAntes = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
         },
         captureSuccessArtifacts
@@ -937,6 +966,10 @@ export async function runAsnDepositJob(
           if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
             saldoDespues = saldoAntes;
             return;
+          }
+
+          if (request.payload.operacion === 'carga' && isTurbo) {
+            await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
           }
 
           saldoDespues = await waitForExpectedAsnBalance(

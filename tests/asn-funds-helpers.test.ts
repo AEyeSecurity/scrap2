@@ -4,6 +4,7 @@ import {
   computeExpectedAsnBalance,
   isExpectedAsnDelta,
   parseAsnMoney,
+  resolveAsnDepositEntryPath,
   resolveAsnRequestedAmount
 } from '../src/asn-funds-job';
 
@@ -33,5 +34,24 @@ describe('asn-funds helpers', () => {
     expect(isExpectedAsnDelta('descarga', 100, 60, 40)).toBe(true);
     expect(isExpectedAsnDelta('descarga_total', 100, 0, 100)).toBe(true);
     expect(isExpectedAsnDelta('descarga', 100, 70, 40)).toBe(false);
+  });
+
+  it('uses direct carga-jugador path in turbo mode for carga', () => {
+    expect(resolveAsnDepositEntryPath('carga', 'Gladis2359', true)).toBe(
+      '/NewAdmin/carga-jugador.php?usr=Gladis2359'
+    );
+  });
+
+  it('keeps JugadoresCD path for carga when not turbo', () => {
+    expect(resolveAsnDepositEntryPath('carga', 'Gladis2359', false)).toBe('/NewAdmin/JugadoresCD.php?usr=Gladis2359');
+  });
+
+  it('uses descarga-jugador path for withdraw operations', () => {
+    expect(resolveAsnDepositEntryPath('descarga', 'Gladis2359', true)).toBe(
+      '/NewAdmin/descarga-jugador.php?usr=Gladis2359'
+    );
+    expect(resolveAsnDepositEntryPath('descarga_total', 'Gladis2359', false)).toBe(
+      '/NewAdmin/descarga-jugador.php?usr=Gladis2359'
+    );
   });
 });
