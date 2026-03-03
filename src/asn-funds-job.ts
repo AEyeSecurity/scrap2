@@ -656,6 +656,33 @@ async function waitForExpectedAsnBalance(
   throw new Error(`ASN balance did not reach expected value ${formatAsnMoney(targetBalance)}`);
 }
 
+function isNavigationAbortedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ERR_ABORTED/i.test(message);
+}
+
+async function gotoWithRetry(page: Page, path: string, timeoutMs: number): Promise<void> {
+  const attempts = 2;
+  let lastError: unknown = null;
+
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await page.goto(path, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isNavigationAbortedError(error) || i === attempts - 1) {
+        throw error;
+      }
+
+      await page.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 1_500) }).catch(() => undefined);
+      await page.waitForTimeout(200);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 function buildRuntimeConfig(
   baseConfig: AppConfig,
   requestOptions: DepositJobRequest['options'] | BalanceJobRequest['options']
@@ -882,7 +909,7 @@ export async function runAsnDepositJob(
         '03-read-saldo-before',
         async () => {
           if (request.payload.operacion === 'carga' && isTurbo) {
-            await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+            await gotoWithRetry(page, userPath, cfg.timeoutMs);
           }
           saldoAntes = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
         },
@@ -969,7 +996,7 @@ export async function runAsnDepositJob(
           }
 
           if (request.payload.operacion === 'carga' && isTurbo) {
-            await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+            await gotoWithRetry(page, userPath, cfg.timeoutMs);
           }
 
           saldoDespues = await waitForExpectedAsnBalance(
@@ -1099,7 +1126,7 @@ export async function runAsnBalanceJob(
         artifactDir,
         '02-goto-user-cd',
         async () => {
-          await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+          await gotoWithRetry(page, userPath, cfg.timeoutMs);
           await findFirstVisibleLocator(page, 'text=/Saldo\\s+disponible\\s+actual/i', cfg.timeoutMs);
         },
         captureSuccessArtifacts
