@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeAsnAppliedAmount,
   computeExpectedAsnBalance,
+  isExpectedAsnTransferDelta,
   isExpectedAsnDelta,
   parseAsnMoney,
   resolveAsnDepositEntryPath,
@@ -34,6 +35,13 @@ describe('asn-funds helpers', () => {
     expect(isExpectedAsnDelta('descarga', 100, 60, 40)).toBe(true);
     expect(isExpectedAsnDelta('descarga_total', 100, 0, 100)).toBe(true);
     expect(isExpectedAsnDelta('descarga', 100, 70, 40)).toBe(false);
+  });
+
+  it('validates transfer delta for carga with at-least semantics', () => {
+    expect(isExpectedAsnTransferDelta(320520.04, 290520.04, 30000)).toBe(true);
+    expect(isExpectedAsnTransferDelta(320520.04, 260520.04, 30000)).toBe(true);
+    expect(isExpectedAsnTransferDelta(320520.04, 300520.04, 30000)).toBe(false);
+    expect(isExpectedAsnTransferDelta(320520.04, 330520.04, 30000)).toBe(false);
   });
 
   it('uses direct carga-jugador path in turbo mode for carga', () => {

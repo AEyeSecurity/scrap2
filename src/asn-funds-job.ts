@@ -658,6 +658,20 @@ function computeAsnTransferAppliedAmount(saldoAntesNumero: number, saldoDespuesN
   return roundToTwoDecimals(saldoAntesNumero - saldoDespuesNumero);
 }
 
+export function isExpectedAsnTransferDelta(
+  saldoAntesNumero: number,
+  saldoDespuesNumero: number,
+  montoEsperado: number,
+  tolerance = 0.01
+): boolean {
+  const appliedAmount = computeAsnTransferAppliedAmount(saldoAntesNumero, saldoDespuesNumero);
+  if (appliedAmount < -tolerance) {
+    return false;
+  }
+
+  return appliedAmount + tolerance >= montoEsperado;
+}
+
 export function isExpectedAsnDelta(
   operation: FundsTransactionOperation,
   saldoAntesNumero: number,
@@ -729,7 +743,7 @@ async function waitForExpectedAsnTransferBalance(
     try {
       const snapshot = await readAsnTransferBalance(page, Math.min(timeoutMs, 1_200));
       lastSnapshot = snapshot;
-      if (Math.abs(snapshot.saldoNumero - targetBalance) <= 0.01) {
+      if (snapshot.saldoNumero <= targetBalance + 0.01) {
         return snapshot;
       }
     } catch {
@@ -1137,9 +1151,16 @@ export async function runAsnDepositJob(
           const appliedAmount = useTransferBalanceValidation
             ? computeAsnTransferAppliedAmount(saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0)
             : computeAsnAppliedAmount(request.payload.operacion, saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0);
-          const appliedDeltaMatches = Math.abs(appliedAmount - montoSolicitado) <= 0.01;
+          const appliedDeltaMatches = useTransferBalanceValidation
+            ? appliedAmount >= -0.01
+            : Math.abs(appliedAmount - montoSolicitado) <= 0.01;
           const expectedDeltaMatches = useTransferBalanceValidation
-            ? Math.abs((saldoDespues?.saldoNumero ?? 0) - expectedBalance) <= 0.01
+            ? isExpectedAsnTransferDelta(
+                saldoAntes?.saldoNumero ?? 0,
+                saldoDespues?.saldoNumero ?? 0,
+                montoSolicitado,
+                0.01
+              )
             : isExpectedAsnDelta(
                 request.payload.operacion,
                 saldoAntes?.saldoNumero ?? 0,
@@ -1168,9 +1189,25 @@ export async function runAsnDepositJob(
         saldoAntes.saldoNumero,
         saldoDespues.saldoNumero
       );
-      const montoAplicadoFinal = useTransferBalanceValidation
-        ? computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero)
-        : montoAplicado;
+      let montoAplicadoFinal = montoAplicado;
+      if (useTransferBalanceValidation) {
+        const transferAppliedAmount = computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero);
+        if (transferAppliedAmount - montoSolicitado > 0.01) {
+          jobLogger.warn(
+            {
+              operacion: request.payload.operacion,
+              usuario: request.payload.usuario,
+              montoSolicitado,
+              transferAppliedAmount,
+              saldoAntes: saldoAntes.saldoNumero,
+              saldoDespues: saldoDespues.saldoNumero
+            },
+            'ASN transfer balance moved more than requested; clamping applied amount to requested amount'
+          );
+        }
+
+        montoAplicadoFinal = roundToTwoDecimals(Math.min(transferAppliedAmount, montoSolicitado));
+      }
 
       const resultPayload: AsnFundsOperationResult = {
         kind: 'asn-funds-operation',
