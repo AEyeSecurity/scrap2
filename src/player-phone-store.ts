@@ -34,9 +34,17 @@ export interface AssignPhoneInput {
   telefono: string;
 }
 
+export interface AssignUsernameByPhoneResult {
+  previousUsername: string | null;
+  currentUsername: string;
+  overwritten: boolean;
+}
+
 export interface PlayerPhoneStore {
   syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void>;
+  assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
+  assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
 }
 
 export class PlayerPhoneStoreError extends Error {
@@ -75,7 +83,7 @@ export function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: stri
     return new PlayerPhoneStoreError('CONFLICT', fallbackMessage);
   }
 
-  if (code === '23514' || code === '22P02') {
+  if (code === '23514' || code === '22P02' || code === '22023') {
     return new PlayerPhoneStoreError('VALIDATION', fallbackMessage);
   }
 
@@ -143,6 +151,81 @@ function mapPostgrestError(error: PostgrestError, fallbackMessage: string): Play
   );
 }
 
+function mapAssignPendingUsernameRpcError(error: PostgrestError): PlayerPhoneStoreError {
+  const code = error.code ?? '';
+  const message = error.message || 'could not assign pending username';
+  const normalizedMessage = message.toLowerCase();
+
+  if (
+    code === 'P0001' &&
+    (normalizedMessage.includes('pending link not found') || normalizedMessage.includes('agente not found'))
+  ) {
+    return new PlayerPhoneStoreError('NOT_FOUND', 'pending jugador link does not exist');
+  }
+
+  if (
+    code === 'P0001' &&
+    (normalizedMessage.includes('username already exists') || normalizedMessage.includes('telefono already assigned'))
+  ) {
+    return new PlayerPhoneStoreError('CONFLICT', message);
+  }
+
+  if (code === 'P0001' && normalizedMessage.includes('immutable')) {
+    return new PlayerPhoneStoreError('NOT_FOUND', 'pending jugador link does not exist');
+  }
+
+  return mapPostgrestError(error, message);
+}
+
+export function mapAssignUsernameByPhoneRpcError(error: PostgrestError): PlayerPhoneStoreError {
+  const code = error.code ?? '';
+  const message = error.message || 'could not assign username by phone';
+  const normalizedMessage = message.toLowerCase();
+
+  if (code === 'P0001' && normalizedMessage.includes('link not found')) {
+    return new PlayerPhoneStoreError('NOT_FOUND', 'No existe vínculo para agente+telefono');
+  }
+
+  if (code === 'P0001' && normalizedMessage.includes('username already exists')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina');
+  }
+
+  if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this cajero');
+  }
+
+  return mapPostgrestError(error, message);
+}
+
+function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResult {
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== 'object') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone did not return row');
+  }
+
+  const payload = row as {
+    previous_username?: unknown;
+    current_username?: unknown;
+    overwritten?: unknown;
+  };
+
+  if (typeof payload.current_username !== 'string' || !payload.current_username) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone returned invalid current_username');
+  }
+  if (typeof payload.overwritten !== 'boolean') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone returned invalid overwritten');
+  }
+  if (payload.previous_username !== null && payload.previous_username !== undefined && typeof payload.previous_username !== 'string') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone returned invalid previous_username');
+  }
+
+  return {
+    previousUsername: (payload.previous_username as string | null | undefined) ?? null,
+    currentUsername: payload.current_username,
+    overwritten: payload.overwritten
+  };
+}
+
 class SupabasePlayerPhoneStore implements PlayerPhoneStore {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -185,6 +268,24 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
   }
 
+  async assignPendingUsername(input: AssignPhoneInput): Promise<void> {
+    const pagina = input.pagina;
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
+    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
+    const telefono = normalizePhone(input.telefono);
+
+    const { error } = await this.client.rpc('assign_pending_username', {
+      p_pagina: pagina,
+      p_agente: cajeroUsername,
+      p_telefono: telefono,
+      p_username: jugadorUsername
+    });
+
+    if (error) {
+      throw mapAssignPendingUsernameRpcError(error);
+    }
+  }
+
   async assignPhone(input: AssignPhoneInput): Promise<void> {
     const pagina = input.pagina;
     const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
@@ -217,6 +318,26 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     if (error) {
       throw mapPostgrestError(error, 'could not assign phone to jugador');
     }
+  }
+
+  async assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult> {
+    const pagina = input.pagina;
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
+    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
+    const telefono = normalizePhone(input.telefono);
+
+    const { data, error } = await this.client.rpc('assign_username_by_phone', {
+      p_pagina: pagina,
+      p_agente: cajeroUsername,
+      p_telefono: telefono,
+      p_username: jugadorUsername
+    });
+
+    if (error) {
+      throw mapAssignUsernameByPhoneRpcError(error);
+    }
+
+    return asAssignUsernameByPhoneResult(data);
   }
 
   private async upsertEntity(table: EntityTable, pagina: PaginaCode, username: string): Promise<string> {

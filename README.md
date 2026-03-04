@@ -93,24 +93,50 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
-Assign or update player phone (sync):
+Assign username by phone (sync, ASN-only):
 
 ```bash
 curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
   -H 'content-type: application/json' \
   -d '{
-    "pagina":"RdA",
+    "pagina":"ASN",
     "usuario":"player_1",
     "agente":"agent_user",
+    "contrasena_agente":"agent_pass",
     "telefono":"+5491122334455"
   }'
 ```
 
+`/users/assign-phone` behavior:
+
+- Verifies first in ASN web (`/NewAdmin/JugadoresCD.php?usr=<usuario>`) that the user exists.
+- If ASN user does not exist, returns `404` with message `El usuario no existe`.
+- If ASN user exists, updates Supabase strictly by `agente + telefono` via RPC `assign_username_by_phone`.
+- Can overwrite the linked username and returns overwrite details.
+- Keeps strict E.164 validation for `telefono`.
+
+Success response example:
+
+```json
+{
+  "status": "ok",
+  "overwritten": true,
+  "previousUsername": "ailen389",
+  "currentUsername": "1ailen389"
+}
+```
+
+Recommended intake for new clients without username (n8n path):
+
+- Call Supabase RPC `intake_pending_cliente(agente, telefono, pagina)` directly.
+- Later call this endpoint with `usuario + agente + telefono` to complete assignment.
+
 Expected `assign-phone` errors:
 
 - `400` invalid phone format or payload
-- `404` player does not exist in Supabase
-- `409` player belongs to another cajero, link is missing, or phone is duplicated under the same cajero
+- `404` ASN user does not exist or Supabase link by `agente+telefono` does not exist
+- `409` target username already used by another jugador in the same pagina
+- `501` `assign-phone` with ASN existence check is implemented only for ASN
 
 Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`, `consultar_saldo`, `consultar saldo`):
 

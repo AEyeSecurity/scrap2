@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
+import { AsnUserCheckError, assertAsnUserExists, type AssertAsnUserExistsInput } from './asn-user-check';
 import { runAsnReportJob } from './asn-report-job';
 import { runBalanceJob } from './balance-job';
 import { runCreatePlayerJob } from './create-player-job';
@@ -37,6 +38,7 @@ interface JobQueue {
 
 interface ServerDependencies {
   playerPhoneStore?: PlayerPhoneStore;
+  asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
 }
 
 const executionOverridesSchema = z.object({
@@ -78,6 +80,7 @@ const assignPhoneBodySchema = z.object({
   pagina: paginaCodeSchema,
   usuario: z.string().trim().min(1),
   agente: z.string().trim().min(1),
+  contrasena_agente: z.string().trim().min(1),
   telefono: z.string().trim().min(1)
 });
 
@@ -142,6 +145,7 @@ export function createServer(
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
+  const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
 
   function getPlayerPhoneStore(): PlayerPhoneStore {
     if (cachedPlayerPhoneStore) {
@@ -272,16 +276,44 @@ export function createServer(
       });
     }
 
+    if (parsed.data.pagina !== 'ASN') {
+      return reply.code(501).send({
+        message: 'assign-phone with ASN existence check is implemented only for ASN'
+      });
+    }
+
     try {
-      await getPlayerPhoneStore().assignPhone({
+      await asnUserExistsChecker({
+        usuario: parsed.data.usuario,
+        agente: parsed.data.agente,
+        contrasenaAgente: parsed.data.contrasena_agente,
+        appConfig,
+        logger
+      });
+
+      const store = getPlayerPhoneStore();
+      const assignment = await store.assignUsernameByPhone({
         pagina: parsed.data.pagina,
         cajeroUsername: parsed.data.agente,
         jugadorUsername: parsed.data.usuario,
         telefono: parsed.data.telefono
       });
 
-      return reply.code(200).send({ status: 'ok' });
+      return reply.code(200).send({
+        status: 'ok',
+        overwritten: assignment.overwritten,
+        previousUsername: assignment.previousUsername,
+        currentUsername: assignment.currentUsername
+      });
     } catch (error) {
+      if (error instanceof AsnUserCheckError) {
+        if (error.code === 'NOT_FOUND') {
+          return reply.code(404).send({ message: error.message });
+        }
+        logger.error({ error }, 'Unexpected ASN user existence checker error');
+        return reply.code(500).send({ message: 'Could not verify ASN user existence' });
+      }
+
       const mappedError = toHttpError(error);
       if (mappedError) {
         return reply.code(mappedError.statusCode).send({ message: mappedError.message });
