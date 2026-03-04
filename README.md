@@ -93,6 +93,11 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
   }'
 ```
 
+`/users/create-player` persistence behavior:
+
+- Without `telefono`: creates user only on the target site (no Supabase sync).
+- With `telefono`: syncs `cajeros` / `jugadores` / `cajeros_jugadores` in Supabase.
+
 Assign username by phone (sync, ASN-only):
 
 ```bash
@@ -130,6 +135,7 @@ Recommended intake for new clients without username (n8n path):
 
 - Call Supabase RPC `intake_pending_cliente(agente, telefono, pagina)` directly.
 - Later call this endpoint with `usuario + agente + telefono` to complete assignment.
+- For AI-agent prompt orchestration (`crearUsuario` + `tipoCrear` + API routing), use [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md).
 
 Expected `assign-phone` errors:
 

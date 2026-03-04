@@ -170,7 +170,7 @@ export function createServer(
         if (request.jobType === 'create-player') {
           const execution = await runCreatePlayerJob(request, appConfig, logger);
           const result = execution.result;
-          if (result?.kind === 'create-player') {
+          if (result?.kind === 'create-player' && typeof request.payload.telefono === 'string') {
             await getPlayerPhoneStore().syncCreatePlayerLink({
               pagina: request.payload.pagina,
               cajeroUsername: request.payload.loginUsername,

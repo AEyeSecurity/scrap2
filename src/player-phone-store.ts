@@ -9,6 +9,11 @@ interface EntityIdRow {
   id: string;
 }
 
+interface CajeroIdentityRow {
+  id: string;
+  pagina: PaginaCode;
+}
+
 interface LinkRow {
   id: string;
   cajero_id: string;
@@ -141,6 +146,25 @@ function asLinkRow(data: unknown): LinkRow {
   };
 }
 
+function asCajeroIdentityRow(data: unknown): CajeroIdentityRow {
+  if (!data || typeof data !== 'object') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'cajeros query did not return row');
+  }
+
+  const row = data as { id?: unknown; pagina?: unknown };
+  if (typeof row.id !== 'string' || !row.id) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'cajeros query did not return id');
+  }
+  if (row.pagina !== 'RdA' && row.pagina !== 'ASN') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'cajeros query returned invalid pagina');
+  }
+
+  return {
+    id: row.id,
+    pagina: row.pagina
+  };
+}
+
 function mapPostgrestError(error: PostgrestError, fallbackMessage: string): PlayerPhoneStoreError {
   return mapDatabaseError(
     {
@@ -235,7 +259,8 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const telefono = input.telefono === undefined ? null : normalizePhone(input.telefono);
 
-    const cajeroId = await this.upsertEntity('cajeros', pagina, cajeroUsername);
+    const cajero = await this.getOrCreateCajeroByUsername(pagina, cajeroUsername);
+    const cajeroId = cajero.id;
     const jugadorId = await this.upsertEntity('jugadores', pagina, jugadorUsername);
     const existingRelation = await this.findRelationByJugadorId(jugadorId);
 
@@ -256,7 +281,7 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     const { error } = await this.client.from('cajeros_jugadores').insert({
-      pagina,
+      pagina: cajero.pagina,
       cajero_id: cajeroId,
       jugador_id: jugadorId,
       telefono,
@@ -354,6 +379,35 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     return asEntityIdRow(data, table).id;
   }
 
+  private async getOrCreateCajeroByUsername(pagina: PaginaCode, username: string): Promise<CajeroIdentityRow> {
+    const existing = await this.findCajeroByUsername(username);
+    if (existing) {
+      if (existing.pagina !== pagina) {
+        throw new PlayerPhoneStoreError('CONFLICT', 'cajero already exists in another pagina');
+      }
+      return existing;
+    }
+
+    const { data, error } = await this.client.from('cajeros').insert({ pagina, username }).select('id,pagina').single();
+
+    if (!error) {
+      return asCajeroIdentityRow(data);
+    }
+
+    // Handle race conditions when another request inserts the same username concurrently.
+    if (error.code === '23505') {
+      const concurrent = await this.findCajeroByUsername(username);
+      if (concurrent) {
+        if (concurrent.pagina !== pagina) {
+          throw new PlayerPhoneStoreError('CONFLICT', 'cajero already exists in another pagina');
+        }
+        return concurrent;
+      }
+    }
+
+    throw mapPostgrestError(error, 'could not upsert cajeros');
+  }
+
   private async findEntityByPaginaAndUsername(
     table: EntityTable,
     pagina: PaginaCode,
@@ -375,6 +429,20 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     return asEntityIdRow(data, table);
+  }
+
+  private async findCajeroByUsername(username: string): Promise<CajeroIdentityRow | null> {
+    const { data, error } = await this.client.from('cajeros').select('id,pagina').eq('username', username).maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'could not fetch cajeros');
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    return asCajeroIdentityRow(data);
   }
 
   private async findRelationByJugadorId(jugadorId: string): Promise<LinkRow | null> {
