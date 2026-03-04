@@ -92,7 +92,8 @@ export function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: stri
     return new PlayerPhoneStoreError('VALIDATION', fallbackMessage);
   }
 
-  return new PlayerPhoneStoreError('INTERNAL', fallbackMessage);
+  const detail = code ? `${fallbackMessage} (${code}: ${error.message})` : `${fallbackMessage}: ${error.message}`;
+  return new PlayerPhoneStoreError('INTERNAL', detail);
 }
 
 export function toHttpError(error: unknown): { statusCode: number; message: string } | null {
@@ -472,6 +473,13 @@ export function createPlayerPhoneStoreFromEnv(env: NodeJS.ProcessEnv = process.e
     throw new PlayerPhoneStoreError(
       'CONFIGURATION',
       'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'
+    );
+  }
+
+  if (serviceRoleKey.startsWith('sb_publishable_')) {
+    throw new PlayerPhoneStoreError(
+      'CONFIGURATION',
+      'SUPABASE_SERVICE_ROLE_KEY is invalid: got a publishable key. Use the service_role/secret key.'
     );
   }
 

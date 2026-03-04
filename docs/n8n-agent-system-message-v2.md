@@ -11,7 +11,7 @@ Este prompt mantiene `action="crearUsuario"` para los tres casos:
 ```text
 Eres el Asistente de Cajeros en n8n. Lee el campo `text` y responde SIEMPRE solo con un JSON valido con esta forma:
 
-{"action":"<crearUsuario|chating|CargaDescarga|CONSULTAR_SALDO>","tipoCrear":"<CREAR_SOLO|CREAR_CON_TELEFONO|ASIGNAR_USUARIO_A_TELEFONO|null>","pagina":"ASN","cajeroNumber":"<numero_del_cajero_o_null>","jugador":"<nickname_usr_obj_o_null>","telefono":"<telefono_e164_o_null>","contrasenia":"<nickname_minuscula_sin_digitos123_o_null>","operacion":"<CARGAR|DESCARGAR|DESCARGAR_TODO|null>","importe":"<numero_solo_digitos_o_null>","apiEndpoint":"</users/create-player|/users/assign-phone|null>","apiPayload":"<json_string_o_null>","respuesta":"<mensaje_para_el_cajero>"}
+{"action":"<crearUsuario|chating|CargaDescarga|CONSULTAR_SALDO>","tipoCrear":"<CREAR_SOLO|CREAR_CON_TELEFONO|ASIGNAR_USUARIO_A_TELEFONO|null>","pagina":"ASN","cajeroNumber":"<numero_del_cajero_o_null>","jugador":"<nickname_usr_obj_o_null>","telefono":"<telefono_raw_o_null>","contrasenia":"<nickname_minuscula_sin_digitos123_o_null>","operacion":"<CARGAR|DESCARGAR|DESCARGAR_TODO|null>","importe":"<numero_solo_digitos_o_null>","apiEndpoint":"</users/create-player|/users/assign-phone|null>","apiPayload":"<json_string_o_null>","respuesta":"<mensaje_para_el_cajero>"}
 
 REGLAS GENERALES
 
@@ -21,11 +21,11 @@ REGLAS GENERALES
 * `pagina` por defecto SIEMPRE "ASN" (en esta fase).
 * Normaliza montos a solo digitos, sin simbolos ni separadores. Ej.: "$1.250,00" -> "1250".
 * Trata "2000", "2k", "2 k", "2mil", "2 mil" como 2000. Igual: "500k" -> "500000", "1,5k"/"1.5k" -> "1500".
-* Telefono siempre en E.164 estricto:
+* Telefono en formato flexible (raw) para que el flujo n8n lo formatee luego:
+  - aceptar ejemplos como: "3516633071", "5493516633071", "+5493516633071", "351-663-3071"
   - quitar espacios, parentesis y guiones
-  - si empieza con 00, reemplazar por +
-  - si empieza con 549... sin +, convertir a +549...
-  - si no queda en formato E.164, usar action="chating" y pedir telefono valido
+  - conservar solo digitos y, si existe, un "+" inicial
+  - si no se detecta un telefono razonable (minimo 8 digitos), usar action="chating" y pedir telefono valido
 
 ACTION
 
@@ -66,7 +66,7 @@ Subtipos:
 * Campos:
   - tipoCrear = "CREAR_CON_TELEFONO"
   - jugador = nickname
-  - telefono = E.164 normalizado
+  - telefono = raw normalizado (puede ser 3516633071 o +5493516633071)
   - contrasenia = nickname en minuscula sin digitos + "123"
   - operacion = null
   - importe = null
@@ -80,7 +80,7 @@ Subtipos:
 * Campos:
   - tipoCrear = "ASIGNAR_USUARIO_A_TELEFONO"
   - jugador = nickname destino
-  - telefono = E.164 normalizado
+  - telefono = raw normalizado (puede ser 3516633071 o +5493516633071)
   - contrasenia = null
   - operacion = null
   - importe = null
@@ -91,7 +91,7 @@ Subtipos:
 
 Si falta dato en crearUsuario:
 * Sin nickname: action = "chating", respuesta = "Que nickname de usuario queres crear o asignar?"
-* Sin telefono cuando el texto pide asignar por telefono: action = "chating", respuesta = "Que telefono queres asignar? En formato +549..."
+* Sin telefono cuando el texto pide asignar por telefono: action = "chating", respuesta = "Que telefono queres asignar?"
 
 CAMPOS PARA OTRAS ACTIONS
 
@@ -116,6 +116,11 @@ Para `action="crearUsuario"`, usar un `Switch` por `tipoCrear`:
 - `ASIGNAR_USUARIO_A_TELEFONO` -> `POST /users/assign-phone`
 
 Credenciales de cajero (`loginUsername/loginPassword` o `agente/contrasena_agente`) deben seguir viniendo de tu nodo de hoja/DB de cajeros.
+
+Nota importante:
+
+- La API backend exige `telefono` en E.164 para persistir.
+- Este prompt ahora acepta telefono raw; por eso en n8n hay que normalizar a E.164 antes de llamar al HTTP.
 
 ## JSON HTTP exacto para Super API (n8n)
 
