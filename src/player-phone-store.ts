@@ -20,6 +20,11 @@ interface LinkRow {
   jugador_id: string;
 }
 
+interface JugadorIdentityRow {
+  id: string;
+  username: string | null;
+}
+
 interface DatabaseErrorLike {
   code?: string | null;
   message: string;
@@ -166,6 +171,25 @@ function asCajeroIdentityRow(data: unknown): CajeroIdentityRow {
   };
 }
 
+function asJugadorIdentityRow(data: unknown): JugadorIdentityRow {
+  if (!data || typeof data !== 'object') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'jugadores query did not return row');
+  }
+
+  const row = data as { id?: unknown; username?: unknown };
+  if (typeof row.id !== 'string' || !row.id) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'jugadores query did not return id');
+  }
+  if (row.username !== null && row.username !== undefined && typeof row.username !== 'string') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'jugadores query returned invalid username');
+  }
+
+  return {
+    id: row.id,
+    username: (row.username as string | null | undefined) ?? null
+  };
+}
+
 function mapPostgrestError(error: PostgrestError, fallbackMessage: string): PlayerPhoneStoreError {
   return mapDatabaseError(
     {
@@ -260,8 +284,45 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const telefono = input.telefono === undefined ? null : normalizePhone(input.telefono);
 
+    if (telefono) {
+      try {
+        await this.assignPendingUsername({
+          pagina,
+          cajeroUsername,
+          jugadorUsername,
+          telefono
+        });
+        return;
+      } catch (error) {
+        if (!(error instanceof PlayerPhoneStoreError) || error.code !== 'NOT_FOUND') {
+          throw error;
+        }
+      }
+    }
+
     const cajero = await this.getOrCreateCajeroByUsername(pagina, cajeroUsername);
     const cajeroId = cajero.id;
+    if (telefono) {
+      const relationByPhone = await this.findRelationByCajeroIdAndPhone(cajeroId, telefono);
+      if (relationByPhone) {
+        const linkedJugador = await this.findJugadorById(relationByPhone.jugador_id);
+        if (linkedJugador?.username === jugadorUsername) {
+          const { error } = await this.client
+            .from('cajeros_jugadores')
+            .update({ source: 'create-player' as LinkSource })
+            .eq('id', relationByPhone.id);
+
+          if (error) {
+            throw mapPostgrestError(error, 'could not update cajeros_jugadores link');
+          }
+
+          return;
+        }
+
+        throw new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this cajero');
+      }
+    }
+
     const jugadorId = await this.upsertEntity('jugadores', pagina, jugadorUsername);
     const existingRelation = await this.findRelationByJugadorId(jugadorId);
 
@@ -462,6 +523,39 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     return asLinkRow(data);
+  }
+
+  private async findRelationByCajeroIdAndPhone(cajeroId: string, telefono: string): Promise<LinkRow | null> {
+    const { data, error } = await this.client
+      .from('cajeros_jugadores')
+      .select('id,cajero_id,jugador_id')
+      .eq('cajero_id', cajeroId)
+      .eq('telefono', telefono)
+      .maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'could not fetch cajeros_jugadores link by phone');
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    return asLinkRow(data);
+  }
+
+  private async findJugadorById(id: string): Promise<JugadorIdentityRow | null> {
+    const { data, error } = await this.client.from('jugadores').select('id,username').eq('id', id).maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'could not fetch jugadores');
+    }
+
+    if (!data) {
+      return null;
+    }
+
+    return asJugadorIdentityRow(data);
   }
 }
 
