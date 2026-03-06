@@ -143,6 +143,13 @@ export interface LoginJobPayload {
   password: string;
 }
 
+export interface OwnerContext {
+  ownerKey: string;
+  ownerLabel: string;
+  actorAlias?: string | null;
+  actorPhone?: string | null;
+}
+
 export interface CreatePlayerJobPayload {
   pagina: PaginaCode;
   loginUsername: string;
@@ -150,6 +157,7 @@ export interface CreatePlayerJobPayload {
   newUsername: string;
   newPassword: string;
   telefono?: string;
+  ownerContext?: OwnerContext;
   stepsOverride?: StepAction[];
 }
 

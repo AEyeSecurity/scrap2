@@ -30,11 +30,34 @@ interface DatabaseErrorLike {
   message: string;
 }
 
+export interface OwnerContextInput {
+  ownerKey: string;
+  ownerLabel: string;
+  actorAlias?: string | null;
+  actorPhone?: string | null;
+}
+
 export interface SyncCreatePlayerLinkInput {
   pagina: PaginaCode;
   cajeroUsername: string;
   jugadorUsername: string;
   telefono?: string;
+  ownerContext?: OwnerContextInput;
+}
+
+export interface IntakePendingInput {
+  pagina: PaginaCode;
+  cajeroUsername: string;
+  telefono: string;
+  ownerContext?: OwnerContextInput;
+}
+
+export interface IntakePendingResult {
+  cajeroId: string;
+  jugadorId: string;
+  linkId: string;
+  estado: string;
+  ownerId?: string;
 }
 
 export interface AssignPhoneInput {
@@ -42,6 +65,7 @@ export interface AssignPhoneInput {
   cajeroUsername: string;
   jugadorUsername: string;
   telefono: string;
+  ownerContext?: OwnerContextInput;
 }
 
 export interface AssignUsernameByPhoneResult {
@@ -51,6 +75,7 @@ export interface AssignUsernameByPhoneResult {
 }
 
 export interface PlayerPhoneStore {
+  intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult>;
   syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void>;
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
@@ -85,6 +110,40 @@ export function normalizePhone(value: string): string {
   }
 
   return withPlus;
+}
+
+interface NormalizedOwnerContext {
+  ownerKey: string;
+  ownerLabel: string;
+  actorAlias: string | null;
+  actorPhone: string | null;
+}
+
+function normalizeOwnerContext(value: OwnerContextInput | undefined): NormalizedOwnerContext | null {
+  if (!value) {
+    return null;
+  }
+
+  const ownerKey = value.ownerKey.trim();
+  if (!ownerKey) {
+    throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext.ownerKey is required');
+  }
+
+  const ownerLabel = value.ownerLabel.trim();
+  if (!ownerLabel) {
+    throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext.ownerLabel is required');
+  }
+
+  const actorAlias = value.actorAlias == null ? null : value.actorAlias.trim() || null;
+  const actorPhone =
+    value.actorPhone == null || value.actorPhone.trim() === '' ? null : normalizePhone(value.actorPhone);
+
+  return {
+    ownerKey,
+    ownerLabel,
+    actorAlias,
+    actorPhone
+  };
 }
 
 export function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): PlayerPhoneStoreError {
@@ -246,6 +305,57 @@ export function mapAssignUsernameByPhoneRpcError(error: PostgrestError): PlayerP
   return mapPostgrestError(error, message);
 }
 
+function mapIntakePendingRpcError(error: PostgrestError): PlayerPhoneStoreError {
+  const code = error.code ?? '';
+  const message = error.message || 'could not intake pending cliente';
+  const normalizedMessage = message.toLowerCase();
+
+  if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this cajero');
+  }
+
+  return mapPostgrestError(error, message);
+}
+
+function asIntakePendingResult(data: unknown): IntakePendingResult {
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || typeof row !== 'object') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente did not return row');
+  }
+
+  const payload = row as {
+    cajero_id?: unknown;
+    jugador_id?: unknown;
+    link_id?: unknown;
+    estado?: unknown;
+    owner_id?: unknown;
+  };
+
+  if (typeof payload.cajero_id !== 'string' || !payload.cajero_id) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente returned invalid cajero_id');
+  }
+  if (typeof payload.jugador_id !== 'string' || !payload.jugador_id) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente returned invalid jugador_id');
+  }
+  if (typeof payload.link_id !== 'string' || !payload.link_id) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente returned invalid link_id');
+  }
+  if (typeof payload.estado !== 'string' || !payload.estado) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente returned invalid estado');
+  }
+  if (payload.owner_id !== undefined && payload.owner_id !== null && typeof payload.owner_id !== 'string') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente returned invalid owner_id');
+  }
+
+  return {
+    cajeroId: payload.cajero_id,
+    jugadorId: payload.jugador_id,
+    linkId: payload.link_id,
+    estado: payload.estado,
+    ...(typeof payload.owner_id === 'string' && payload.owner_id ? { ownerId: payload.owner_id } : {})
+  };
+}
+
 function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResult {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') {
@@ -278,11 +388,81 @@ function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResu
 class SupabasePlayerPhoneStore implements PlayerPhoneStore {
   constructor(private readonly client: SupabaseClient) {}
 
+  async intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult> {
+    const pagina = input.pagina;
+    const telefono = normalizePhone(input.telefono);
+    const ownerContext = normalizeOwnerContext(input.ownerContext);
+
+    if (ownerContext) {
+      const { data, error } = await this.client.rpc('intake_pending_cliente_v2', {
+        p_owner_key: ownerContext.ownerKey,
+        p_cliente_telefono: telefono,
+        p_pagina: pagina,
+        p_owner_label: ownerContext.ownerLabel,
+        p_actor_alias: ownerContext.actorAlias,
+        p_actor_phone: ownerContext.actorPhone
+      });
+
+      if (error) {
+        throw mapIntakePendingRpcError(error);
+      }
+
+      return asIntakePendingResult(data);
+    }
+
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
+    const { data, error } = await this.client.rpc('intake_pending_cliente', {
+      p_agente: cajeroUsername,
+      p_telefono: telefono,
+      p_pagina: pagina
+    });
+
+    if (error) {
+      throw mapIntakePendingRpcError(error);
+    }
+
+    return asIntakePendingResult(data);
+  }
+
   async syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void> {
     const pagina = input.pagina;
-    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const telefono = input.telefono === undefined ? null : normalizePhone(input.telefono);
+    const ownerContext = normalizeOwnerContext(input.ownerContext);
+
+    if (ownerContext && telefono) {
+      try {
+        await this.assignUsernameByPhone({
+          pagina,
+          cajeroUsername: ownerContext.ownerKey,
+          jugadorUsername,
+          telefono,
+          ownerContext
+        });
+        return;
+      } catch (error) {
+        if (!(error instanceof PlayerPhoneStoreError) || error.code !== 'NOT_FOUND') {
+          throw error;
+        }
+      }
+
+      await this.intakePendingCliente({
+        pagina,
+        cajeroUsername: ownerContext.ownerKey,
+        telefono,
+        ownerContext
+      });
+      await this.assignUsernameByPhone({
+        pagina,
+        cajeroUsername: ownerContext.ownerKey,
+        jugadorUsername,
+        telefono,
+        ownerContext
+      });
+      return;
+    }
+
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
 
     if (telefono) {
       try {
@@ -357,9 +537,28 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
 
   async assignPendingUsername(input: AssignPhoneInput): Promise<void> {
     const pagina = input.pagina;
-    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const telefono = normalizePhone(input.telefono);
+    const ownerContext = normalizeOwnerContext(input.ownerContext);
+
+    if (ownerContext) {
+      const { error } = await this.client.rpc('assign_pending_username_v2', {
+        p_owner_key: ownerContext.ownerKey,
+        p_cliente_telefono: telefono,
+        p_username: jugadorUsername,
+        p_pagina: pagina,
+        p_owner_label: ownerContext.ownerLabel,
+        p_actor_alias: ownerContext.actorAlias,
+        p_actor_phone: ownerContext.actorPhone
+      });
+
+      if (error) {
+        throw mapAssignPendingUsernameRpcError(error);
+      }
+      return;
+    }
+
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
 
     const { error } = await this.client.rpc('assign_pending_username', {
       p_pagina: pagina,
@@ -409,9 +608,29 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
 
   async assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult> {
     const pagina = input.pagina;
-    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const telefono = normalizePhone(input.telefono);
+    const ownerContext = normalizeOwnerContext(input.ownerContext);
+
+    if (ownerContext) {
+      const { data, error } = await this.client.rpc('assign_username_by_phone_v2', {
+        p_owner_key: ownerContext.ownerKey,
+        p_cliente_telefono: telefono,
+        p_username: jugadorUsername,
+        p_pagina: pagina,
+        p_owner_label: ownerContext.ownerLabel,
+        p_actor_alias: ownerContext.actorAlias,
+        p_actor_phone: ownerContext.actorPhone
+      });
+
+      if (error) {
+        throw mapAssignUsernameByPhoneRpcError(error);
+      }
+
+      return asAssignUsernameByPhoneResult(data);
+    }
+
+    const cajeroUsername = normalizeUsername(input.cajeroUsername, 'agente');
 
     const { data, error } = await this.client.rpc('assign_username_by_phone', {
       p_pagina: pagina,

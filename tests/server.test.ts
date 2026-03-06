@@ -33,11 +33,29 @@ class FakeQueue {
 }
 
 class FakePlayerPhoneStore implements PlayerPhoneStore {
+  public readonly intakeInputs: Array<{
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
+  }> = [];
+
   public readonly syncInputs: Array<{
     pagina: 'RdA' | 'ASN';
     cajeroUsername: string;
     jugadorUsername: string;
     telefono?: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }> = [];
 
   public readonly assignByPhoneInputs: Array<{
@@ -45,6 +63,12 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }> = [];
 
   public assignByPhoneBehavior: () => Promise<{
@@ -57,11 +81,44 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     overwritten: false
   });
 
+  async intakePendingCliente(input: {
+    pagina: 'RdA' | 'ASN';
+    cajeroUsername: string;
+    telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
+  }): Promise<{
+    cajeroId: string;
+    jugadorId: string;
+    linkId: string;
+    estado: string;
+    ownerId?: string;
+  }> {
+    this.intakeInputs.push(input);
+    return {
+      cajeroId: 'cajero-1',
+      jugadorId: 'jugador-1',
+      linkId: 'link-1',
+      estado: 'pendiente',
+      ...(input.ownerContext ? { ownerId: 'owner-1' } : {})
+    };
+  }
+
   async syncCreatePlayerLink(input: {
     pagina: 'RdA' | 'ASN';
     cajeroUsername: string;
     jugadorUsername: string;
     telefono?: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }): Promise<void> {
     this.syncInputs.push(input);
   }
@@ -71,6 +128,12 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }): Promise<void> {
     this.assignByPhoneInputs.push(input);
   }
@@ -80,6 +143,12 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }): Promise<void> {
     this.assignByPhoneInputs.push(input);
   }
@@ -89,6 +158,12 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
+    ownerContext?: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
   }): Promise<{
     previousUsername: string | null;
     currentUsername: string;
@@ -222,6 +297,51 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/create-player accepts ownerContext', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/create-player',
+      payload: {
+        pagina: 'ASN',
+        loginUsername: 'agent',
+        loginPassword: 'secret',
+        newUsername: 'player_with_owner',
+        newPassword: 'player_secret',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_123',
+          ownerLabel: 'Lucas 10',
+          actorAlias: 'Vicky',
+          actorPhone: '+5491122334000'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    const queued = queue.requests.find((item) => item.id === response.json().jobId);
+    expect(queued?.jobType).toBe('create-player');
+    if (queued?.jobType === 'create-player') {
+      expect(queued.payload.ownerContext).toEqual({
+        ownerKey: 'wf_123',
+        ownerLabel: 'Lucas 10',
+        actorAlias: 'Vicky',
+        actorPhone: '+5491122334000'
+      });
+    }
+
+    await server.close();
+  });
+
   it('POST /users/create-player normalizes pagina aliases', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -283,6 +403,82 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/intake-pending persists pending intake via store', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/intake-pending',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_001',
+          ownerLabel: 'Lucas 10',
+          actorAlias: 'Vicky',
+          actorPhone: '+5491122334999'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.intakeInputs).toHaveLength(1);
+    expect(store.intakeInputs[0]).toEqual({
+      pagina: 'ASN',
+      cajeroUsername: 'wf_001',
+      telefono: '+5491122334455',
+      ownerContext: {
+        ownerKey: 'wf_001',
+        ownerLabel: 'Lucas 10',
+        actorAlias: 'Vicky',
+        actorPhone: '+5491122334999'
+      }
+    });
+
+    await server.close();
+  });
+
+  it('POST /users/intake-pending supports legacy agente fallback', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/intake-pending',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        agente: 'lucas10'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.intakeInputs).toHaveLength(1);
+    expect(store.intakeInputs[0]?.cajeroUsername).toBe('lucas10');
+    expect(store.intakeInputs[0]?.ownerContext).toBeUndefined();
+
+    await server.close();
+  });
+
   it('POST /users/assign-phone validates payload and requires contrasena_agente', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
@@ -312,6 +508,51 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(400);
     expect(store.assignByPhoneInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone uses ownerContext.ownerKey when provided', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store,
+        asnUserExistsChecker: async () => undefined
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'ASN',
+        usuario: 'player_1',
+        agente: 'agent_visible',
+        contrasena_agente: 'secret',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10',
+          actorAlias: 'Vicky'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.assignByPhoneInputs).toHaveLength(1);
+    expect(store.assignByPhoneInputs[0]?.cajeroUsername).toBe('wf_owner_9');
+    expect(store.assignByPhoneInputs[0]?.ownerContext).toEqual({
+      ownerKey: 'wf_owner_9',
+      ownerLabel: 'Lucas 10',
+      actorAlias: 'Vicky'
+    });
 
     await server.close();
   });

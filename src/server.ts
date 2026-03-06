@@ -57,6 +57,13 @@ const stepActionSchema = z.object({
   screenshotName: z.string().optional()
 });
 
+const ownerContextSchema = z.object({
+  ownerKey: z.string().trim().min(1),
+  ownerLabel: z.string().trim().min(1),
+  actorAlias: z.string().trim().min(1).nullable().optional(),
+  actorPhone: z.string().trim().min(1).nullable().optional()
+});
+
 const loginBodySchema = z
   .object({
     username: z.string().min(1),
@@ -72,17 +79,46 @@ const createPlayerBodySchema = z
     newUsername: z.string().min(1),
     newPassword: z.string().min(1),
     telefono: z.string().trim().min(1).optional(),
+    ownerContext: ownerContextSchema.optional(),
     stepsOverride: z.array(stepActionSchema).optional()
   })
   .merge(executionOverridesSchema);
 
-const assignPhoneBodySchema = z.object({
-  pagina: paginaCodeSchema,
-  usuario: z.string().trim().min(1),
-  agente: z.string().trim().min(1),
-  contrasena_agente: z.string().trim().min(1),
-  telefono: z.string().trim().min(1)
-});
+const assignPhoneBodySchema = z
+  .object({
+    pagina: paginaCodeSchema,
+    usuario: z.string().trim().min(1),
+    agente: z.string().trim().min(1),
+    contrasena_agente: z.string().trim().min(1),
+    telefono: z.string().trim().min(1),
+    ownerContext: ownerContextSchema.optional()
+  })
+  .superRefine((value, ctx) => {
+    if (!value.ownerContext && !value.agente.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agente'],
+        message: 'agente is required when ownerContext is not provided'
+      });
+    }
+  });
+
+const intakePendingBodySchema = z
+  .object({
+    pagina: paginaCodeSchema,
+    telefono: z.string().trim().min(1),
+    agente: z.string().trim().min(1).optional(),
+    ownerContext: ownerContextSchema.optional()
+  })
+  .superRefine((value, ctx) => {
+    if (!value.ownerContext && (!value.agente || !value.agente.trim())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agente'],
+        message: 'agente is required when ownerContext is not provided'
+      });
+    }
+  });
 
 const depositBodySchema = z
   .object({
@@ -171,11 +207,18 @@ export function createServer(
           const execution = await runCreatePlayerJob(request, appConfig, logger);
           const result = execution.result;
           if (result?.kind === 'create-player' && typeof request.payload.telefono === 'string') {
+            if (!request.payload.ownerContext) {
+              logger.warn(
+                { jobId: request.id, pagina: request.payload.pagina },
+                'create-player legacy fallback without ownerContext; using loginUsername as owner key'
+              );
+            }
             await getPlayerPhoneStore().syncCreatePlayerLink({
               pagina: request.payload.pagina,
-              cajeroUsername: request.payload.loginUsername,
+              cajeroUsername: request.payload.ownerContext?.ownerKey ?? request.payload.loginUsername,
               jugadorUsername: result.createdUsername,
-              telefono: request.payload.telefono
+              telefono: request.payload.telefono,
+              ownerContext: request.payload.ownerContext
             });
           }
 
@@ -253,6 +296,7 @@ export function createServer(
         newUsername: payload.newUsername,
         newPassword: payload.newPassword,
         ...(payload.telefono ? { telefono: payload.telefono } : {}),
+        ...(payload.ownerContext ? { ownerContext: payload.ownerContext } : {}),
         stepsOverride: payload.stepsOverride
       },
       options: resolveExecutionOptions(appConfig, payload)
@@ -265,6 +309,50 @@ export function createServer(
       status: 'queued',
       statusUrl: `/jobs/${id}`
     });
+  });
+
+  fastify.post('/users/intake-pending', async (request, reply) => {
+    const parsed = intakePendingBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    try {
+      const payload = parsed.data;
+      if (!payload.ownerContext) {
+        logger.warn(
+          { pagina: payload.pagina },
+          'intake-pending legacy fallback without ownerContext; using agente as owner key'
+        );
+      }
+
+      const intake = await getPlayerPhoneStore().intakePendingCliente({
+        pagina: payload.pagina,
+        cajeroUsername: payload.ownerContext?.ownerKey ?? (payload.agente ?? ''),
+        telefono: payload.telefono,
+        ownerContext: payload.ownerContext
+      });
+
+      return reply.code(200).send({
+        status: 'ok',
+        cajeroId: intake.cajeroId,
+        jugadorId: intake.jugadorId,
+        linkId: intake.linkId,
+        estado: intake.estado,
+        ...(intake.ownerId ? { ownerId: intake.ownerId } : {})
+      });
+    } catch (error) {
+      const mappedError = toHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /users/intake-pending error');
+      return reply.code(500).send({ message: 'Unexpected persistence error' });
+    }
   });
 
   fastify.post('/users/assign-phone', async (request, reply) => {
@@ -292,11 +380,18 @@ export function createServer(
       });
 
       const store = getPlayerPhoneStore();
+      if (!parsed.data.ownerContext) {
+        logger.warn(
+          { pagina: parsed.data.pagina, usuario: parsed.data.usuario },
+          'assign-phone legacy fallback without ownerContext; using agente as owner key'
+        );
+      }
       const assignment = await store.assignUsernameByPhone({
         pagina: parsed.data.pagina,
-        cajeroUsername: parsed.data.agente,
+        cajeroUsername: parsed.data.ownerContext?.ownerKey ?? parsed.data.agente,
         jugadorUsername: parsed.data.usuario,
-        telefono: parsed.data.telefono
+        telefono: parsed.data.telefono,
+        ownerContext: parsed.data.ownerContext
       });
 
       return reply.code(200).send({

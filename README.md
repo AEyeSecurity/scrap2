@@ -88,6 +88,12 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
     "newUsername":"player_1",
     "newPassword":"player_pass",
     "telefono":"+5491122334455",
+    "ownerContext": {
+      "ownerKey":"<workflow_id_estable>",
+      "ownerLabel":"Lucas 10",
+      "actorAlias":"Vicky",
+      "actorPhone":"+5493511111111"
+    },
     "headless":false,
     "debug":true
   }'
@@ -97,6 +103,25 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
 
 - Without `telefono`: creates user only on the target site (no Supabase sync).
 - With `telefono`: syncs `cajeros` / `jugadores` / `cajeros_jugadores` in Supabase.
+- With `ownerContext`: uses owner-key canonical identity (`ownerKey`) and owner metadata (`ownerLabel` + alias).
+- Without `ownerContext`: legacy fallback keeps using `loginUsername` as owner key (deprecated; warning is logged).
+
+Intake pending client (recommended n8n entrypoint):
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/users/intake-pending \
+  -H 'content-type: application/json' \
+  -d '{
+    "pagina":"ASN",
+    "telefono":"+5493516633070",
+    "ownerContext": {
+      "ownerKey":"<workflow_id_estable>",
+      "ownerLabel":"Lucas 10",
+      "actorAlias":"Vicky",
+      "actorPhone":"+5493511111111"
+    }
+  }'
+```
 
 Assign username by phone (sync, ASN-only):
 
@@ -108,7 +133,12 @@ curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
     "usuario":"player_1",
     "agente":"agent_user",
     "contrasena_agente":"agent_pass",
-    "telefono":"+5491122334455"
+    "telefono":"+5491122334455",
+    "ownerContext": {
+      "ownerKey":"<workflow_id_estable>",
+      "ownerLabel":"Lucas 10",
+      "actorAlias":"Vicky"
+    }
   }'
 ```
 
@@ -116,7 +146,9 @@ curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
 
 - Verifies first in ASN web (`/NewAdmin/JugadoresCD.php?usr=<usuario>`) that the user exists.
 - If ASN user does not exist, returns `404` with message `El usuario no existe`.
-- If ASN user exists, updates Supabase strictly by `agente + telefono` via RPC `assign_username_by_phone`.
+- If ASN user exists, updates Supabase by owner identity:
+  - preferred: `ownerContext.ownerKey + telefono` via RPC v2
+  - fallback: `agente + telefono` via legacy RPC (deprecated)
 - Can overwrite the linked username and returns overwrite details.
 - Keeps strict E.164 validation for `telefono`.
 
@@ -133,8 +165,8 @@ Success response example:
 
 Recommended intake for new clients without username (n8n path):
 
-- Call Supabase RPC `intake_pending_cliente(agente, telefono, pagina)` directly.
-- Later call this endpoint with `usuario + agente + telefono` to complete assignment.
+- Call SuperAPI `POST /users/intake-pending` with `ownerContext`.
+- Later call `POST /users/assign-phone` with `usuario + telefono + ownerContext` to complete assignment.
 - For AI-agent prompt orchestration (`crearUsuario` + `tipoCrear` + API routing), use [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md).
 
 Expected `assign-phone` errors:
