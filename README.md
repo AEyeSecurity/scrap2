@@ -7,7 +7,7 @@ Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
 - Login automation (UI) with reusable session (`storageState`) in `run` mode.
 - Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
 - Credentials by CLI flags (`--username`, `--password`) with env fallback.
-- Supabase persistence for `cajeros`, `jugadores` and `cajeros_jugadores` (phone assignment included).
+- Supabase persistence in owner-centric model (`owners`, `owner_aliases`, `clients`, `owner_client_links`, `owner_client_events`).
 - Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`) plus synchronous `POST /users/assign-phone`.
 - Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headless, debug off, no slow-mo, timeout <= 15s) unless overridden.
 - Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
@@ -102,7 +102,7 @@ curl -s -X POST http://127.0.0.1:3000/users/create-player \
 `/users/create-player` persistence behavior:
 
 - Without `telefono`: creates user only on the target site (no Supabase sync).
-- With `telefono`: syncs `cajeros` / `jugadores` / `cajeros_jugadores` in Supabase.
+- With `telefono`: syncs owner-centric entities (`clients` + `owner_client_links`) in Supabase.
 - With `ownerContext`: uses owner-key canonical identity (`ownerKey`) and owner metadata (`ownerLabel` + alias).
 - Without `ownerContext`: legacy fallback keeps using `loginUsername` as owner key (deprecated; warning is logged).
 
@@ -147,8 +147,8 @@ curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
 - Verifies first in ASN web (`/NewAdmin/JugadoresCD.php?usr=<usuario>`) that the user exists.
 - If ASN user does not exist, returns `404` with message `El usuario no existe`.
 - If ASN user exists, updates Supabase by owner identity:
-  - preferred: `ownerContext.ownerKey + telefono` via RPC v2
-  - fallback: `agente + telefono` via legacy RPC (deprecated)
+  - preferred: `ownerContext.ownerKey + telefono` via owner-centric RPC v3
+  - fallback: `agente + telefono` as temporary compatibility path (deprecated)
 - Can overwrite the linked username and returns overwrite details.
 - Keeps strict E.164 validation for `telefono`.
 
