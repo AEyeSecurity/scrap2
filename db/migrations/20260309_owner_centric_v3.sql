@@ -315,7 +315,7 @@ begin
 
   insert into public.owners (pagina, owner_key, owner_label)
   values (v_pagina, v_owner_key, v_owner_label)
-  on conflict (pagina, owner_key) do update
+  on conflict on constraint uq_owners_pagina_owner_key do update
   set owner_label = excluded.owner_label
   returning public.owners.id, public.owners.pagina, public.owners.owner_key
     into owner_id, pagina, owner_key;
@@ -489,7 +489,7 @@ begin
     now(),
     now()
   )
-  on conflict (owner_id, client_id) do update
+  on conflict on constraint uq_owner_client_links_owner_client do update
   set status = case
       when public.owner_client_links.status = 'assigned' then 'assigned'
       else 'pending'
