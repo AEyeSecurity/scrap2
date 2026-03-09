@@ -264,8 +264,11 @@ export interface AsnReportJobResult {
   pagina: 'ASN';
   usuario: string;
   mesActual: string;
+  fechaActual: string;
   cargadoTexto: string;
   cargadoNumero: number;
+  cargadoHoyTexto: string;
+  cargadoHoyNumero: number;
 }
 
 export interface AsnFundsOperationResult {

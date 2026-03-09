@@ -15,6 +15,9 @@ type AsnCdRow = {
   resultado: string;
 };
 
+const ASN_DAY_ROW_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const ASN_MONTH_TOTAL_REGEX = /^TOTAL del mes \d{4}-\d{2}$/i;
+
 function sanitizeFileName(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
 }
@@ -54,11 +57,30 @@ export function getBuenosAiresMonthToken(now = new Date()): string {
   return `${year}-${month}`;
 }
 
+export function getBuenosAiresDateToken(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+}
+
 export function pickAsnMonthTotalCargadoRow(rows: AsnCdRow[], monthToken: string): AsnCdRow | null {
   const expected = normalizeSpaces(`TOTAL del mes ${monthToken}`).toLowerCase();
   for (const row of rows) {
     const label = normalizeSpaces(row.label).toLowerCase();
     if (label.includes(expected)) {
+      return row;
+    }
+  }
+  return null;
+}
+
+export function pickAsnDayCargadoRow(rows: AsnCdRow[], dayToken: string): AsnCdRow | null {
+  for (const row of rows) {
+    const label = normalizeSpaces(row.label);
+    if (label === dayToken) {
       return row;
     }
   }
@@ -73,6 +95,16 @@ export function extractAsnMonthTotalCargadoFromText(pageText: string, monthToken
   const escapedMonth = monthToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const regex = new RegExp(
     `TOTAL\\s+del\\s+mes\\s+${escapedMonth}\\s+(-?\\d{1,3}(?:\\.\\d{3})*,\\d{2}|-?\\d+,\\d{2}|-?\\d+)`,
+    'i'
+  );
+  const match = pageText.match(regex);
+  return match?.[1]?.trim() ?? null;
+}
+
+export function extractAsnDayCargadoFromText(pageText: string, dayToken: string): string | null {
+  const escapedDay = dayToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(
+    `${escapedDay}\\s+(-?\\d{1,3}(?:\\.\\d{3})*,\\d{2}|-?\\d+,\\d{2}|-?\\d+)`,
     'i'
   );
   const match = pageText.match(regex);
@@ -208,6 +240,10 @@ async function readAsnCdRows(page: Page): Promise<AsnCdRow[]> {
       if (!label && !cargado && !descargado && !resultado) {
         continue;
       }
+      const normalizedLabel = label.replace(/\s+/g, ' ').trim();
+      if (!ASN_DAY_ROW_REGEX.test(normalizedLabel) && !ASN_MONTH_TOTAL_REGEX.test(normalizedLabel)) {
+        continue;
+      }
       mapped.push({ label, cargado, descargado, resultado });
     }
     return mapped;
@@ -287,6 +323,67 @@ async function waitForAsnMonthTotalCargado(page: Page, monthToken: string, timeo
     .join(' | ');
   throw new Error(
     `Could not find row "TOTAL del mes ${monthToken}" in ASN Cargas y Descargas table. Last labels: ${lastLabels}`
+  );
+}
+
+async function readAsnReportSnapshot(
+  page: Page,
+  monthToken: string,
+  dateToken: string,
+  timeoutMs: number
+): Promise<{ monthRow: AsnCdRow; dayRow: AsnCdRow | null }> {
+  const startedAt = Date.now();
+  let lastRowsSnapshot: AsnCdRow[] = [];
+  let lastTextSnapshot = '';
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const bodyText = await page.locator('body').innerText().catch(() => '');
+    lastTextSnapshot = bodyText;
+    const monthFromText = extractAsnMonthTotalCargadoFromText(bodyText, monthToken);
+    const dayFromText = extractAsnDayCargadoFromText(bodyText, dateToken);
+
+    const rows = await readAsnCdRows(page);
+    lastRowsSnapshot = rows;
+    const monthRow = pickAsnMonthTotalCargadoRow(rows, monthToken);
+    const dayRow = pickAsnDayCargadoRow(rows, dateToken);
+
+    if (monthRow) {
+      return {
+        monthRow,
+        dayRow
+      };
+    }
+
+    if (monthFromText) {
+      return {
+        monthRow: {
+          label: `TOTAL del mes ${monthToken}`,
+          cargado: monthFromText,
+          descargado: '',
+          resultado: ''
+        },
+        dayRow: dayFromText
+          ? {
+              label: dateToken,
+              cargado: dayFromText,
+              descargado: '',
+              resultado: ''
+            }
+          : null
+      };
+    }
+
+    await scrollAsnCdGrid(page);
+    await page.waitForTimeout(120);
+  }
+
+  const lastLabels = lastRowsSnapshot
+    .map((row) => normalizeSpaces(row.label))
+    .filter(Boolean)
+    .slice(0, 20)
+    .join(' | ');
+  throw new Error(
+    `Could not find row "TOTAL del mes ${monthToken}" in ASN Cargas y Descargas table. Last labels: ${lastLabels}. Text sample: ${normalizeSpaces(lastTextSnapshot).slice(0, 220)}`
   );
 }
 
@@ -400,17 +497,22 @@ export async function runAsnReportJob(
     }
 
     const monthToken = getBuenosAiresMonthToken();
+    const dateToken = getBuenosAiresDateToken();
     let monthTotalRow: AsnCdRow | undefined;
+    let dayTotalRow: AsnCdRow | null = null;
     const findTotalStep = await executeActionStep(
       page,
       artifactDir,
-      '03-find-month-total-row',
+      '03-find-report-rows',
       async () => {
-        monthTotalRow = await waitForAsnMonthTotalCargado(
+        const snapshot = await readAsnReportSnapshot(
           page,
           monthToken,
+          dateToken,
           isTurbo ? Math.min(runtimeConfig.timeoutMs, 7_000) : Math.min(runtimeConfig.timeoutMs, 12_000)
         );
+        monthTotalRow = snapshot.monthRow;
+        dayTotalRow = snapshot.dayRow;
       },
       captureSuccessArtifacts
     );
@@ -425,20 +527,25 @@ export async function runAsnReportJob(
     const readStep = await executeActionStep(
       page,
       artifactDir,
-      '04-read-cargado-total-mes',
+      '04-read-cargado-report',
       async () => {
         if (!monthTotalRow) {
           throw new Error('Month total row was not resolved');
         }
         const cargadoTexto = normalizeSpaces(monthTotalRow.cargado);
         const cargadoNumero = parseAsnReportCargadoNumber(cargadoTexto);
+        const cargadoHoyTexto = normalizeSpaces(dayTotalRow?.cargado ?? '0,00');
+        const cargadoHoyNumero = parseAsnReportCargadoNumber(cargadoHoyTexto);
         resultPayload = {
           kind: 'asn-reporte-cargado-mes',
           pagina: 'ASN',
           usuario: request.payload.usuario,
           mesActual: monthToken,
+          fechaActual: dateToken,
           cargadoTexto,
-          cargadoNumero
+          cargadoNumero,
+          cargadoHoyTexto,
+          cargadoHoyNumero
         };
       },
       captureSuccessArtifacts

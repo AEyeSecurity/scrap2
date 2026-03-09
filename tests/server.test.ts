@@ -1527,8 +1527,11 @@ describe('server routes', () => {
         pagina: 'ASN',
         usuario: 'Ariel728',
         mesActual: '2026-03',
+        fechaActual: '2026-03-09',
         cargadoTexto: '40.000,00',
-        cargadoNumero: 40000
+        cargadoNumero: 40000,
+        cargadoHoyTexto: '0,00',
+        cargadoHoyNumero: 0
       }
     });
 
@@ -1543,8 +1546,11 @@ describe('server routes', () => {
       pagina: 'ASN',
       usuario: 'Ariel728',
       mesActual: '2026-03',
+      fechaActual: '2026-03-09',
       cargadoTexto: '40.000,00',
-      cargadoNumero: 40000
+      cargadoNumero: 40000,
+      cargadoHoyTexto: '0,00',
+      cargadoHoyNumero: 0
     });
 
     await server.close();
