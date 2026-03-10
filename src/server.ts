@@ -15,10 +15,17 @@ import {
   toHttpError,
   type PlayerPhoneStore
 } from './player-phone-store';
+import {
+  createReportRunStoreFromEnv,
+  toHttpError as toReportHttpError,
+  type ReportRunStore
+} from './report-run-store';
+import { createReportJobExecutor, ReportRunWorker, type ReportJobExecutor } from './report-worker';
 import { paginaCodeSchema } from './site-profile';
 import type {
   AppConfig,
   AsnReportJobRequest,
+  AsnReportJobResult,
   BalanceJobRequest,
   CreatePlayerJobRequest,
   DepositJobRequest,
@@ -38,7 +45,14 @@ interface JobQueue {
 
 interface ServerDependencies {
   playerPhoneStore?: PlayerPhoneStore;
+  reportRunStore?: ReportRunStore;
   asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
+  reportWorkerEnabled?: boolean;
+  reportWorkerConcurrency?: number;
+  reportWorkerPollMs?: number;
+  reportWorkerLeaseSeconds?: number;
+  reportWorkerMaxAttempts?: number;
+  reportJobExecutor?: ReportJobExecutor;
 }
 
 const executionOverridesSchema = z.object({
@@ -144,8 +158,59 @@ const jobParamsSchema = z.object({
   id: z.string().min(1)
 });
 
+const reportRunBodySchema = z.object({
+  pagina: z.literal('ASN'),
+  principalKey: z.string().trim().min(1),
+  agente: z.string().trim().min(1),
+  contrasena_agente: z.string().trim().min(1),
+  reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
+
+const reportRunParamsSchema = z.object({
+  runId: z.string().trim().min(1)
+});
+
+const reportRunItemsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+  offset: z.coerce.number().int().min(0).optional()
+});
+
 const DEPOSIT_TURBO_TIMEOUT_MS = 15_000;
 const DEPOSIT_AMOUNT_REQUIRED_OPERATIONS: FundsOperation[] = ['carga', 'descarga'];
+
+function parseBooleanEnv(input: string | undefined): boolean | undefined {
+  if (input == null) {
+    return undefined;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) {
+    return false;
+  }
+
+  return undefined;
+}
+
+function parsePositiveIntegerEnv(input: string | undefined, fallback: number): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.trunc(parsed);
+}
+
+function getBuenosAiresDateToken(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(now);
+}
 
 function resolveExecutionOptions(
   appConfig: AppConfig,
@@ -181,7 +246,22 @@ export function createServer(
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
+  let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
+  let reportWorker: ReportRunWorker | null = null;
   const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
+  const hasSupabaseConfig = Boolean(
+    process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+  );
+  const reportWorkerEnabled =
+    dependencies?.reportWorkerEnabled ??
+    ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
+  const reportWorkerConcurrency =
+    dependencies?.reportWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_CONCURRENCY, 3);
+  const reportWorkerPollMs = dependencies?.reportWorkerPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_POLL_MS, 1000);
+  const reportWorkerLeaseSeconds =
+    dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
+  const reportWorkerMaxAttempts =
+    dependencies?.reportWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_ATTEMPTS, 3);
 
   function getPlayerPhoneStore(): PlayerPhoneStore {
     if (cachedPlayerPhoneStore) {
@@ -190,6 +270,15 @@ export function createServer(
 
     cachedPlayerPhoneStore = createPlayerPhoneStoreFromEnv();
     return cachedPlayerPhoneStore;
+  }
+
+  function getReportRunStore(): ReportRunStore {
+    if (cachedReportRunStore) {
+      return cachedReportRunStore;
+    }
+
+    cachedReportRunStore = createReportRunStoreFromEnv();
+    return cachedReportRunStore;
   }
 
   const internalQueue =
@@ -240,6 +329,19 @@ export function createServer(
         throw new Error('Unsupported job type');
       }
     });
+
+  if (reportWorkerEnabled) {
+    const executor =
+      dependencies?.reportJobExecutor ??
+      createReportJobExecutor(appConfig, logger, resolveDepositExecutionOptions(appConfig, {}));
+    reportWorker = new ReportRunWorker(getReportRunStore(), logger, {
+      concurrency: reportWorkerConcurrency,
+      pollMs: reportWorkerPollMs,
+      leaseSeconds: reportWorkerLeaseSeconds,
+      maxAttempts: reportWorkerMaxAttempts
+    }, executor);
+    reportWorker.start();
+  }
 
   fastify.post('/login', async (request, reply) => {
     const parsed = loginBodySchema.safeParse(request.body);
@@ -514,6 +616,103 @@ export function createServer(
     });
   });
 
+  fastify.post('/reports/asn/run', async (request, reply) => {
+    const parsed = reportRunBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    let runId: string | null = null;
+    try {
+      const payload = parsed.data;
+      const store = getReportRunStore();
+      const run = await store.createRun({
+        pagina: 'ASN',
+        principalKey: payload.principalKey,
+        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
+        agente: payload.agente,
+        contrasenaAgente: payload.contrasena_agente
+      });
+      runId = run.id;
+      await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
+
+      return reply.code(202).send({
+        runId: run.id,
+        status: 'queued',
+        statusUrl: `/reports/asn/run/${run.id}`
+      });
+    } catch (error) {
+      if (runId) {
+        await getReportRunStore()
+          .deleteRun(runId)
+          .catch((cleanupError) => logger.warn({ error: cleanupError, runId }, 'Could not clean report run after enqueue failure'));
+      }
+
+      const mappedError = toReportHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /reports/asn/run error');
+      return reply.code(500).send({ message: 'Unexpected report persistence error' });
+    }
+  });
+
+  fastify.get('/reports/asn/run/:runId', async (request, reply) => {
+    const parsed = reportRunParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    try {
+      const run = await getReportRunStore().getRunById(parsed.data.runId);
+      return reply.send(run);
+    } catch (error) {
+      const mappedError = toReportHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /reports/asn/run/:runId error');
+      return reply.code(500).send({ message: 'Unexpected report persistence error' });
+    }
+  });
+
+  fastify.get('/reports/asn/run/:runId/items', async (request, reply) => {
+    const parsedParams = reportRunParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    const parsedQuery = reportRunItemsQuerySchema.safeParse(request.query);
+    if (!parsedQuery.success) {
+      return reply.code(400).send({
+        message: 'Invalid query',
+        issues: parsedQuery.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    try {
+      const page = await getReportRunStore().listRunItems(
+        parsedParams.data.runId,
+        parsedQuery.data.limit ?? 100,
+        parsedQuery.data.offset ?? 0
+      );
+      return reply.send(page);
+    } catch (error) {
+      const mappedError = toReportHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /reports/asn/run/:runId/items error');
+      return reply.code(500).send({ message: 'Unexpected report persistence error' });
+    }
+  });
+
   fastify.get('/jobs/:id', async (request, reply) => {
     const parsed = jobParamsSchema.safeParse(request.params);
     if (!parsed.success) {
@@ -529,6 +728,9 @@ export function createServer(
   });
 
   fastify.addHook('onClose', async () => {
+    if (reportWorker) {
+      await reportWorker.stop();
+    }
     await internalQueue.shutdown();
   });
 

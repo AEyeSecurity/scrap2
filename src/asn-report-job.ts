@@ -216,6 +216,8 @@ async function executeActionStep(
 
 async function readAsnCdRows(page: Page): Promise<AsnCdRow[]> {
   return page.evaluate(() => {
+    const dayRowRegex = /^\d{4}-\d{2}-\d{2}$/;
+    const monthTotalRegex = /^TOTAL del mes \d{4}-\d{2}$/i;
     const doc = (globalThis as { document?: unknown }).document as
       | { querySelectorAll: (selector: string) => unknown[] }
       | undefined;
@@ -241,7 +243,7 @@ async function readAsnCdRows(page: Page): Promise<AsnCdRow[]> {
         continue;
       }
       const normalizedLabel = label.replace(/\s+/g, ' ').trim();
-      if (!ASN_DAY_ROW_REGEX.test(normalizedLabel) && !ASN_MONTH_TOTAL_REGEX.test(normalizedLabel)) {
+      if (!dayRowRegex.test(normalizedLabel) && !monthTotalRegex.test(normalizedLabel)) {
         continue;
       }
       mapped.push({ label, cargado, descargado, resultado });
