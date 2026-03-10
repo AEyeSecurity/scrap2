@@ -39,6 +39,7 @@ type OutboxEntry = {
   kind: string;
   payload: Record<string, unknown>;
   status: 'pending' | 'consumed';
+  consumedAt: string | null;
 };
 
 function formatAmount(value: number): string {
@@ -315,7 +316,8 @@ class FakeReportRunStore implements ReportRunStore {
     this.outbox.push({
       runId,
       kind: 'asn_report_run_completed',
-      status: 'pending',
+      status: 'consumed',
+      consumedAt: new Date().toISOString(),
       payload: {
         runId,
         principalKey: run.principalKey,
@@ -333,6 +335,7 @@ class FakeReportRunStore implements ReportRunStore {
         }))
       }
     });
+    run.contrasenaAgente = '[redacted]';
   }
 
   async getRunById(runId: string): Promise<ReportRunRecord> {
@@ -541,6 +544,9 @@ describe('report run system', () => {
     expect(runStatus).toBe('completed');
     expect(store.snapshots.size).toBe(10);
     expect(store.outbox).toHaveLength(1);
+    expect(store.outbox[0]?.status).toBe('consumed');
+    expect(store.outbox[0]?.consumedAt).toBeTypeOf('string');
+    expect(store.runs.get(runId)?.contrasenaAgente).toBe('[redacted]');
 
     const grouped = Array.from(store.snapshots.values()).reduce<Record<string, { hoy: number; mes: number; count: number }>>(
       (acc, snapshot) => {

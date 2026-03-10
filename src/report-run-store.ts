@@ -229,6 +229,8 @@ type ClaimRow = {
   max_attempts: number;
 };
 
+const REDACTED_REPORT_SECRET = '[redacted]';
+
 function asRunRecord(row: ReportRunRow): ReportRunRecord {
   return {
     id: row.id,
@@ -295,6 +297,18 @@ function asLease(row: ClaimRow): ReportRunLease {
 
 export class SupabaseReportRunStore implements ReportRunStore {
   constructor(private readonly client: SupabaseClient) {}
+
+  private async redactRunSecret(runId: string): Promise<void> {
+    const { error } = await this.client
+      .from('report_runs')
+      .update({ contrasena_agente: REDACTED_REPORT_SECRET })
+      .eq('id', runId)
+      .neq('contrasena_agente', REDACTED_REPORT_SECRET);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not redact report run secret');
+    }
+  }
 
   async createRun(input: CreateReportRunInput): Promise<ReportRunRecord> {
     const principalKey = normalizeKey(input.principalKey, 'principalKey');
@@ -466,12 +480,15 @@ export class SupabaseReportRunStore implements ReportRunStore {
       }))
     };
 
+    await this.redactRunSecret(runId);
+
     const { error } = await this.client.from('report_outbox').upsert(
       {
         run_id: runId,
         kind: 'asn_report_run_completed',
         payload,
-        status: 'pending'
+        status: 'consumed',
+        consumed_at: new Date().toISOString()
       },
       { onConflict: 'run_id,kind' }
     );
