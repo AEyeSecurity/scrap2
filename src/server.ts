@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
@@ -10,6 +11,15 @@ import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
+import {
+  createMastercrmUserStoreFromEnv,
+  normalizeMastercrmNombre,
+  normalizeMastercrmTelefono,
+  normalizeMastercrmUsername,
+  toMastercrmHttpError,
+  type MastercrmUserRecord,
+  type MastercrmUserStore
+} from './mastercrm-user-store';
 import {
   createPlayerPhoneStoreFromEnv,
   toHttpError,
@@ -44,6 +54,7 @@ interface JobQueue {
 }
 
 interface ServerDependencies {
+  mastercrmUserStore?: MastercrmUserStore;
   playerPhoneStore?: PlayerPhoneStore;
   reportRunStore?: ReportRunStore;
   asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
@@ -53,6 +64,11 @@ interface ServerDependencies {
   reportWorkerLeaseSeconds?: number;
   reportWorkerMaxAttempts?: number;
   reportJobExecutor?: ReportJobExecutor;
+}
+
+interface ValidationIssue {
+  path: string;
+  message: string;
 }
 
 const executionOverridesSchema = z.object({
@@ -175,8 +191,40 @@ const reportRunItemsQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional()
 });
 
+const mastercrmLoginBodySchema = z
+  .object({
+    username: z.string().optional(),
+    usuario: z.string().optional(),
+    password: z.string().optional(),
+    contrasena: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmRegisterBodySchema = z
+  .object({
+    username: z.string().optional(),
+    usuario: z.string().optional(),
+    password: z.string().optional(),
+    contrasena: z.string().optional(),
+    nombre: z.string().optional(),
+    name: z.string().optional(),
+    telefono: z.string().optional(),
+    phone: z.string().optional(),
+    celular: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmClientsBodySchema = z
+  .object({
+    id: z.union([z.string(), z.number().int()]).optional(),
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    usuario_id: z.union([z.string(), z.number().int()]).optional()
+  })
+  .passthrough();
+
 const DEPOSIT_TURBO_TIMEOUT_MS = 15_000;
 const DEPOSIT_AMOUNT_REQUIRED_OPERATIONS: FundsOperation[] = ['carga', 'descarga'];
+const DEFAULT_MASTERCRM_CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
 
 function parseBooleanEnv(input: string | undefined): boolean | undefined {
   if (input == null) {
@@ -201,6 +249,121 @@ function parsePositiveIntegerEnv(input: string | undefined, fallback: number): n
   }
 
   return Math.trunc(parsed);
+}
+
+function parseListEnv(input: string | undefined, fallback: string[]): string[] {
+  const values = input
+    ?.split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return values && values.length > 0 ? values : fallback;
+}
+
+function resolveAliasStringField(
+  payload: Record<string, unknown>,
+  aliases: string[],
+  label: string,
+  issues: ValidationIssue[],
+  options: {
+    required?: boolean;
+    normalize?: (value: string) => string;
+    trim?: boolean;
+  } = {}
+): string | undefined {
+  const required = options.required ?? true;
+  const trim = options.trim ?? true;
+  const normalize = options.normalize ?? ((value: string) => value);
+  const present = aliases.flatMap((alias) => {
+    const value = payload[alias];
+    if (value == null) {
+      return [];
+    }
+
+    if (typeof value !== 'string') {
+      issues.push({ path: alias, message: `${alias} must be a string` });
+      return [];
+    }
+
+    const prepared = trim ? value.trim() : value;
+    return [{ alias, raw: prepared, normalized: normalize(prepared) }];
+  });
+
+  const nonEmpty = present.filter((entry) => entry.raw.length > 0);
+  if (present.length > 1) {
+    const distinct = new Set(nonEmpty.map((entry) => entry.normalized));
+    if (distinct.size > 1) {
+      issues.push({
+        path: aliases.join(','),
+        message: `${label} aliases must match when provided`
+      });
+      return undefined;
+    }
+  }
+
+  if (nonEmpty.length === 0) {
+    if (required) {
+      issues.push({ path: aliases[0] ?? label, message: `${label} is required` });
+    }
+    return undefined;
+  }
+
+  return nonEmpty[0]?.raw;
+}
+
+function resolveAliasPositiveIntegerField(
+  payload: Record<string, unknown>,
+  aliases: string[],
+  label: string,
+  issues: ValidationIssue[]
+): number | undefined {
+  const present = aliases.flatMap((alias) => {
+    const value = payload[alias];
+    if (value == null || value === '') {
+      return [];
+    }
+
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      issues.push({ path: alias, message: `${alias} must be a positive integer` });
+      return [];
+    }
+
+    return [{ alias, value: parsed }];
+  });
+
+  if (present.length > 1) {
+    const distinct = new Set(present.map((entry) => entry.value));
+    if (distinct.size > 1) {
+      issues.push({
+        path: aliases.join(','),
+        message: `${label} aliases must match when provided`
+      });
+      return undefined;
+    }
+  }
+
+  if (present.length === 0) {
+    issues.push({ path: aliases[0] ?? label, message: `${label} is required` });
+    return undefined;
+  }
+
+  return present[0]?.value;
+}
+
+function mastercrmUserToResponse(user: MastercrmUserRecord): Record<string, unknown> {
+  return {
+    id: user.id,
+    usuario: user.username,
+    nombre: user.nombre,
+    telefono: user.telefono,
+    created_at: user.createdAt,
+    inversion: user.inversion
+  };
+}
+
+function resolveMastercrmCorsOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
+  return parseListEnv(env.MASTERCRM_CORS_ORIGINS, DEFAULT_MASTERCRM_CORS_ORIGINS);
 }
 
 function getBuenosAiresDateToken(now = new Date()): string {
@@ -237,6 +400,86 @@ function resolveDepositExecutionOptions(
   };
 }
 
+function parseMastercrmLoginPayload(body: unknown): { data?: { username: string; password: string }; issues: ValidationIssue[] } {
+  const parsed = mastercrmLoginBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const username = resolveAliasStringField(parsed.data, ['username', 'usuario'], 'username', issues, {
+    normalize: (value) => value.trim().toLowerCase()
+  });
+  const password = resolveAliasStringField(parsed.data, ['password', 'contrasena'], 'password', issues, {
+    normalize: (value) => value,
+    trim: false
+  });
+
+  if (issues.length > 0 || !username || !password) {
+    return { issues };
+  }
+
+  return { data: { username, password }, issues };
+}
+
+function parseMastercrmRegisterPayload(body: unknown): {
+  data?: { username: string; password: string; nombre: string; telefono?: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmRegisterBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const username = resolveAliasStringField(parsed.data, ['username', 'usuario'], 'username', issues, {
+    normalize: (value) => value.trim().toLowerCase()
+  });
+  const password = resolveAliasStringField(parsed.data, ['password', 'contrasena'], 'password', issues, {
+    normalize: (value) => value,
+    trim: false
+  });
+  const nombre = resolveAliasStringField(parsed.data, ['nombre', 'name'], 'nombre', issues);
+  const telefono = resolveAliasStringField(parsed.data, ['telefono', 'phone', 'celular'], 'telefono', issues, {
+    required: false
+  });
+
+  if (issues.length > 0 || !username || !password || !nombre) {
+    return { issues };
+  }
+
+  return {
+    data: {
+      username,
+      password,
+      nombre,
+      ...(telefono ? { telefono } : {})
+    },
+    issues
+  };
+}
+
+function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number }; issues: ValidationIssue[] } {
+  const parsed = mastercrmClientsBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['id', 'user_id', 'usuario_id'], 'id', issues);
+  if (issues.length > 0 || !userId) {
+    return { issues };
+  }
+
+  return { data: { userId }, issues };
+}
+
 export function createServer(
   appConfig: AppConfig,
   serverConfig: ServerConfig,
@@ -245,6 +488,7 @@ export function createServer(
   dependencies?: ServerDependencies
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
+  let cachedMastercrmUserStore: MastercrmUserStore | null = dependencies?.mastercrmUserStore ?? null;
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
   let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
   let reportWorker: ReportRunWorker | null = null;
@@ -262,6 +506,19 @@ export function createServer(
     dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
   const reportWorkerMaxAttempts =
     dependencies?.reportWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_ATTEMPTS, 3);
+
+  fastify.register(cors, {
+    origin: resolveMastercrmCorsOrigins()
+  });
+
+  function getMastercrmUserStore(): MastercrmUserStore {
+    if (cachedMastercrmUserStore) {
+      return cachedMastercrmUserStore;
+    }
+
+    cachedMastercrmUserStore = createMastercrmUserStoreFromEnv();
+    return cachedMastercrmUserStore;
+  }
 
   function getPlayerPhoneStore(): PlayerPhoneStore {
     if (cachedPlayerPhoneStore) {
@@ -373,6 +630,85 @@ export function createServer(
       status: 'queued',
       statusUrl: `/jobs/${id}`
     });
+  });
+
+  fastify.post('/mastercrm-register', async (request, reply) => {
+    const parsed = parseMastercrmRegisterPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const createdUser = await getMastercrmUserStore().createUser({
+        username: normalizeMastercrmUsername(parsed.data.username),
+        password: parsed.data.password,
+        nombre: normalizeMastercrmNombre(parsed.data.nombre),
+        ...(parsed.data.telefono ? { telefono: normalizeMastercrmTelefono(parsed.data.telefono) ?? undefined } : {})
+      });
+
+      return reply.code(201).send(mastercrmUserToResponse(createdUser));
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-register error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-login', async (request, reply) => {
+    const parsed = parseMastercrmLoginPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const user = await getMastercrmUserStore().authenticate({
+        username: normalizeMastercrmUsername(parsed.data.username),
+        password: parsed.data.password
+      });
+
+      return reply.code(200).send(mastercrmUserToResponse(user));
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-login error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-clients', async (request, reply) => {
+    const parsed = parseMastercrmClientsPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      await getMastercrmUserStore().getActiveUserById(parsed.data.userId);
+      return reply.code(200).send([]);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-clients error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
   });
 
   fastify.post('/users/create-player', async (request, reply) => {

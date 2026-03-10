@@ -21,6 +21,9 @@ http://127.0.0.1:3000
 
 ## Modelo general
 
+- `POST /mastercrm-register`: alta de usuario web para el frontend MasterCRM.
+- `POST /mastercrm-login`: login web compatible con el frontend actual.
+- `POST /mastercrm-clients`: placeholder compatible para clientes del frontend.
 - `POST /login`: job asincrono de autenticacion.
 - `POST /users/create-player`: job asincrono de alta de usuario.
 - `POST /users/intake-pending`: persistencia sin Playwright para telefonos pendientes.
@@ -44,6 +47,18 @@ http://127.0.0.1:3000
 - `assign-phone` devuelve `501` fuera de ASN.
 
 ## Endpoints principales
+
+### `POST /mastercrm-register`
+
+Registro de usuarios web. Guarda credenciales hasheadas en `mastercrm_users`.
+
+### `POST /mastercrm-login`
+
+Login web compatible con el payload duplicado actual del frontend.
+
+### `POST /mastercrm-clients`
+
+Placeholder compatible. En esta version devuelve `[]` cuando el usuario existe y esta activo.
 
 ### `POST /login`
 
@@ -188,6 +203,7 @@ El worker se activa por defecto cuando hay configuracion de Supabase y puede aju
 
 ## Recomendacion practica
 
+- Para el detalle de login/registro web, ver `docs/README_MASTERCRM_AUTH.md`.
 - Usa `ownerContext` siempre que puedas.
 - Trata `GET /jobs/:id` como fuente de verdad del resultado.
 - Monta `artifacts/` como volumen para inspeccionar errores.

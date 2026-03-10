@@ -16,6 +16,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@fastify/cors": "^11.2.0",
     "@supabase/supabase-js": "^2.98.0",
     "commander": "^14.0.1",
     "csv-stringify": "^6.6.0",

@@ -104,6 +104,7 @@ Artefactos del modo API:
 ## Documentacion puntual
 
 - API y endpoints: [docs/README_API.md](docs/README_API.md)
+- Login y registro MasterCRM: [docs/README_MASTERCRM_AUTH.md](docs/README_MASTERCRM_AUTH.md)
 - JSON listos para copiar: [docs/README_JSON_EJEMPLOS.md](docs/README_JSON_EJEMPLOS.md)
 - Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)
 - Testeo y benchmark en Docker: [docs/README_TESTEO.md](docs/README_TESTEO.md)
