@@ -308,12 +308,12 @@ begin
 
   select
     count(*),
-    count(*) filter (where status = 'done'),
-    count(*) filter (where status = 'failed'),
-    count(*) filter (where status in ('pending', 'leased', 'retry_wait'))
+    count(*) filter (where ri.status = 'done'),
+    count(*) filter (where ri.status = 'failed'),
+    count(*) filter (where ri.status in ('pending', 'leased', 'retry_wait'))
   into v_total, v_done, v_failed, v_in_progress
-  from public.report_run_items
-  where run_id = p_run_id;
+  from public.report_run_items ri
+  where ri.run_id = p_run_id;
 
   if v_total = 0 then
     v_status := 'queued';
@@ -332,14 +332,18 @@ begin
     v_finished_at := now();
   end if;
 
-  update public.report_runs
+  update public.report_runs rr
   set status = v_status,
       total_items = v_total,
       done_items = v_done,
       failed_items = v_failed,
-      finished_at = case when v_status in ('completed', 'completed_with_errors', 'failed', 'cancelled') then coalesce(finished_at, v_finished_at) else null end
-  where id = p_run_id
-  returning public.report_runs.started_at, public.report_runs.finished_at
+      finished_at = case
+        when v_status in ('completed', 'completed_with_errors', 'failed', 'cancelled')
+          then coalesce(rr.finished_at, v_finished_at)
+        else null
+      end
+  where rr.id = p_run_id
+  returning rr.started_at, rr.finished_at
     into v_started_at, v_finished_at;
 
   run_id := p_run_id;
