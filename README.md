@@ -1,401 +1,116 @@
 # ScrapSinoca
 
-Scraper CLI/API for `agents.reydeases.com` using Node.js + Playwright.
+ScrapSinoca es un servicio Node.js + Playwright orientado a automatizar operaciones sobre paneles de agentes y a exponer esas automatizaciones como CLI y como API HTTP.
 
-## Features
+Hoy el proyecto cubre dos frentes:
 
-- Login automation (UI) with reusable session (`storageState`) in `run` mode.
-- Hybrid extraction strategy in `run`: login in UI, then fetch via authenticated API calls.
-- Credentials by CLI flags (`--username`, `--password`) with env fallback.
-- Supabase persistence in owner-centric model (`owners`, `owner_aliases`, `clients`, `owner_client_links`, `owner_client_events`).
-- Async API server with shared job queue (`POST /login`, `POST /users/create-player`, `POST /users/deposit`, `GET /jobs/:id`) plus synchronous `POST /users/assign-phone`.
-- Funds jobs (`carga`/`descarga`/`descarga_total`/`consultar_saldo`) run in Turbo mode by default (headless, debug off, no slow-mo, timeout <= 15s) unless overridden.
-- Debug-friendly flags: headless/headed, slow-mo, traces, video and screenshots on failure.
+- `run`: login en la web, reutilizacion opcional de sesion y extraccion de datos via endpoints autenticados.
+- `server`: API Fastify con jobs asincronos para login, creacion de usuarios, fondos, consulta de saldo y reportes ASN.
 
-## Requirements
+## Que hace
 
-- Node.js 20+
-- npm 10+
+El sistema combina navegacion real con Playwright y logica de negocio propia:
 
-## Install
+- entra en el panel del agente y detecta si la sesion ya es valida;
+- para `RdA` usa `https://agents.reydeases.com`;
+- para `ASN` cambia selectores, base URL y flujos especificos;
+- ejecuta operaciones como crear usuario, cargar, descargar, consultar saldo o leer reportes;
+- opcionalmente sincroniza datos en Supabase con un modelo owner-centric;
+- guarda artefactos de depuracion cuando un job falla o cuando se activa `debug`.
 
-```bash
-npm install
+## Como esta organizado
+
+- `src/index.ts`: CLI principal.
+- `src/run.ts`: flujo de scraping por lote.
+- `src/server.ts`: API HTTP y cola de jobs en memoria.
+- `src/create-player-job.ts`, `src/deposit-job.ts`, `src/balance-job.ts`, `src/asn-report-job.ts`: automatizaciones de negocio.
+- `src/player-phone-store.ts`, `src/report-run-store.ts`, `src/report-worker.ts`: persistencia y cola de reportes sobre Supabase.
+- `tests/`: suite de Vitest.
+- `db/migrations/`: SQL asociado al modelo owner-centric y a la cola de reportes.
+
+## Como funciona
+
+### Modo `run`
+
+1. Abre Chromium.
+2. Hace login con `AGENT_USERNAME` y `AGENT_PASSWORD` o con flags CLI.
+3. Reutiliza `storage-state.json` si existe y si `reuseSession` esta activo.
+4. Descubre endpoints `/api/...` desde el trafico o usa `AGENT_API_ENDPOINTS`.
+5. Descarga, normaliza y escribe JSON, CSV y metadata.
+
+### Modo `server`
+
+1. Levanta Fastify.
+2. Recibe requests HTTP.
+3. Valida payloads con `zod`.
+4. Encola jobs en memoria.
+5. Ejecuta cada job con Playwright.
+6. Expone el estado por `GET /jobs/:id`.
+7. Si Supabase esta configurado, habilita persistencia de telefonos y la cola de reportes ASN.
+
+## Arranque rapido con Docker
+
+Los ejemplos siguientes asumen PowerShell y Docker Desktop activo. El `Dockerfile` actual genera una imagen de runtime cuyo `ENTRYPOINT` es `node dist/index.js` y cuyo `CMD` por defecto es `run`.
+
+### 1. Construir la imagen
+
+```powershell
+docker build -t scrapsinoca .
 ```
 
-## Run mode (local, headless by default)
+### 2. Ejecutar `run`
 
-Credentials from command line:
-
-```bash
-npm run scraper -- run \
-  --username my_user \
-  --password my_password \
-  --headless false \
-  --debug true \
-  --slow-mo 100 \
-  --timeout-ms 45000
+```powershell
+docker run --rm `
+  -e AGENT_USERNAME=mi_agente `
+  -e AGENT_PASSWORD=mi_password `
+  -e AGENT_API_ENDPOINTS=/api/users/all,/api/reports/summary `
+  -v ${PWD}/out:/app/out `
+  -v ${PWD}/artifacts:/app/artifacts `
+  scrapsinoca
 ```
 
-## API server mode (async jobs)
-
-Start server:
-
-```bash
-npm run scraper -- server --host 127.0.0.1 --port 3000
-```
-
-Required environment variables for Supabase persistence:
-
-```bash
-SUPABASE_URL=https://<project-ref>.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
-```
-
-Create login job:
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/login \
-  -H 'content-type: application/json' \
-  -d '{"username":"my_user","password":"my_password","headless":false,"debug":true}'
-```
-
-Response:
-
-```json
-{
-  "jobId": "<uuid>",
-  "status": "queued",
-  "statusUrl": "/jobs/<uuid>"
-}
-```
-
-Get job status:
-
-```bash
-curl -s http://127.0.0.1:3000/jobs/<uuid>
-```
-
-Create player job:
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/create-player \
-  -H 'content-type: application/json' \
-  -d '{
-    "pagina":"RdA",
-    "loginUsername":"agent_user",
-    "loginPassword":"agent_pass",
-    "newUsername":"player_1",
-    "newPassword":"player_pass",
-    "telefono":"+5491122334455",
-    "ownerContext": {
-      "ownerKey":"<workflow_id_estable>",
-      "ownerLabel":"Lucas 10",
-      "actorAlias":"Vicky",
-      "actorPhone":"+5493511111111"
-    },
-    "headless":false,
-    "debug":true
-  }'
-```
-
-`/users/create-player` persistence behavior:
-
-- Without `telefono`: creates user only on the target site (no Supabase sync).
-- With `telefono`: syncs owner-centric entities (`clients` + `owner_client_links`) in Supabase.
-- With `ownerContext`: uses owner-key canonical identity (`ownerKey`) and owner metadata (`ownerLabel` + alias).
-- Without `ownerContext`: legacy fallback keeps using `loginUsername` as owner key (deprecated; warning is logged).
-
-Intake pending client (recommended n8n entrypoint):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/intake-pending \
-  -H 'content-type: application/json' \
-  -d '{
-    "pagina":"ASN",
-    "telefono":"+5493516633070",
-    "ownerContext": {
-      "ownerKey":"<workflow_id_estable>",
-      "ownerLabel":"Lucas 10",
-      "actorAlias":"Vicky",
-      "actorPhone":"+5493511111111"
-    }
-  }'
-```
-
-Assign username by phone (sync, ASN-only):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/assign-phone \
-  -H 'content-type: application/json' \
-  -d '{
-    "pagina":"ASN",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass",
-    "telefono":"+5491122334455",
-    "ownerContext": {
-      "ownerKey":"<workflow_id_estable>",
-      "ownerLabel":"Lucas 10",
-      "actorAlias":"Vicky"
-    }
-  }'
-```
-
-`/users/assign-phone` behavior:
-
-- Verifies first in ASN web (`/NewAdmin/JugadoresCD.php?usr=<usuario>`) that the user exists.
-- If ASN user does not exist, returns `404` with message `El usuario no existe`.
-- If ASN user exists, updates Supabase by owner identity:
-  - preferred: `ownerContext.ownerKey + telefono` via owner-centric RPC v3
-  - fallback: `agente + telefono` as temporary compatibility path (deprecated)
-- Can overwrite the linked username and returns overwrite details.
-- Keeps strict E.164 validation for `telefono`.
-
-Success response example:
-
-```json
-{
-  "status": "ok",
-  "overwritten": true,
-  "previousUsername": "ailen389",
-  "currentUsername": "1ailen389"
-}
-```
-
-Recommended intake for new clients without username (n8n path):
-
-- Call SuperAPI `POST /users/intake-pending` with `ownerContext`.
-- Later call `POST /users/assign-phone` with `usuario + telefono + ownerContext` to complete assignment.
-- For AI-agent prompt orchestration (`crearUsuario` + `tipoCrear` + API routing), use [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md).
-
-Expected `assign-phone` errors:
-
-- `400` invalid phone format or payload
-- `404` ASN user does not exist or Supabase link by `agente+telefono` does not exist
-- `409` target username already used by another jugador in the same pagina
-- `501` `assign-phone` with ASN existence check is implemented only for ASN
-
-Create funds job (`operacion` supports `carga`, `descarga`, `retiro`, `descarga_total`, `retiro_total`, `consultar_saldo`, `consultar saldo`):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"carga",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass",
-    "cantidad":500
-  }'
-```
-
-Create withdraw job (descarga):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"descarga",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass",
-    "cantidad":500
-  }'
-```
-
-Alias example (`retiro` is normalized to `descarga`):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"retiro",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass",
-    "cantidad":500
-  }'
-```
-
-Create total withdraw job (`descarga_total` uses button `Toda` and ignores manual amount fill):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"descarga_total",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass"
-  }'
-```
-
-Alias example (`retiro_total` is normalized to `descarga_total`):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"retiro_total",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass"
-  }'
-```
-
-Consult balance job (`consultar_saldo`):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"consultar_saldo",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass"
-  }'
-```
-
-Alias example (`consultar saldo` is normalized to `consultar_saldo`):
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"consultar saldo",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass"
-  }'
-```
-
-Note: `cantidad` is required for `carga` and `descarga`; for `descarga_total`/`retiro_total`/`consultar_saldo` it is optional and ignored.
-
-Force visual/debug mode for a funds job:
-
-```bash
-curl -s -X POST http://127.0.0.1:3000/users/deposit \
-  -H 'content-type: application/json' \
-  -d '{
-    "operacion":"carga",
-    "usuario":"player_1",
-    "agente":"agent_user",
-    "contrasena_agente":"agent_pass",
-    "cantidad":500,
-    "headless":false,
-    "debug":true,
-    "slowMo":120,
-    "timeoutMs":120000
-  }'
-```
-
-Returned fields:
-
-- `id`
-- `jobType` (`login|create-player|deposit|balance`)
-- `status` (`queued|running|succeeded|failed|expired`)
-- `createdAt`, `startedAt`, `finishedAt`
-- `error`
-- `artifactPaths`
-- `steps`
-- `result` (optional, for `balance` jobs)
-
-Example result payload for `balance` jobs:
-
-```json
-{
-  "result": {
-    "kind": "balance",
-    "usuario": "player_1",
-    "saldoTexto": "12.345,67",
-    "saldoNumero": 12345.67
-  }
-}
-```
-
-## Docker
-
-Build image:
-
-```bash
-docker build -t scrapsinoca:latest .
-```
-
-Run default `run` mode:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/out:/app/out" \
-  -v "$(pwd)/artifacts:/app/artifacts" \
-  scrapsinoca:latest
-```
-
-Run API mode by overriding command:
-
-```bash
-docker run --rm \
-  -v "$(pwd)/artifacts:/app/artifacts" \
-  scrapsinoca:latest server --host 127.0.0.1 --port 3000
-```
-
-## CLI options
-
-### `scraper run`
-
-```text
---username <string>
---password <string>
---headless <boolean>
---debug <boolean>
---slow-mo <ms>
---timeout-ms <ms>
---retries <n>
---concurrency <n>
---output-dir <path>
---artifacts-dir <path>
---from-date <YYYY-MM-DD>
---to-date <YYYY-MM-DD>
---max-pages <n>
---log-level <fatal|error|warn|info|debug|trace|silent>
---no-block-resources
---reuse-session <boolean>
-```
-
-### `scraper server`
-
-```text
---host <host>
---port <port>
---headless <boolean>
---debug <boolean>
---slow-mo <ms>
---timeout-ms <ms>
---artifacts-dir <path>
---log-level <fatal|error|warn|info|debug|trace|silent>
---no-block-resources
-```
-
-## Outputs
-
-Run mode:
+Salidas esperadas:
 
 - `out/data.<timestamp>.json`
 - `out/data.<timestamp>.csv`
 - `out/run.<timestamp>.meta.json`
 
-Server mode (job artifacts):
+### 3. Ejecutar `server`
+
+```powershell
+docker run --rm `
+  -p 3000:3000 `
+  -e API_HOST=0.0.0.0 `
+  -e API_PORT=3000 `
+  -e SUPABASE_URL=https://tu-proyecto.supabase.co `
+  -e SUPABASE_SERVICE_ROLE_KEY=tu_service_role `
+  -v ${PWD}/artifacts:/app/artifacts `
+  scrapsinoca server --host 0.0.0.0 --port 3000
+```
+
+Artefactos del modo API:
 
 - `artifacts/jobs/<jobId>/...`
 
-## Tests
+## Variables importantes
 
-```bash
-npm test
-```
+- `AGENT_USERNAME`, `AGENT_PASSWORD`: credenciales para `run`.
+- `AGENT_API_ENDPOINTS`: lista separada por comas para el modo `run`.
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`: habilitan persistencia y reportes.
+- `REPORT_WORKER_ENABLED`: activa o desactiva el worker de reportes ASN.
+- `FUNDS_SESSION_CACHE_ENABLED`: reutiliza sesiones de fondos entre jobs.
 
-## Benchmark (deposit)
+## Documentacion puntual
 
-```bash
-npm run benchmark:deposit -- --agent monchi30 --password 123mon --user pruebita --amount 1 --turbo-runs 5 --visual-runs 3
-```
+- API y endpoints: [docs/README_API.md](docs/README_API.md)
+- JSON listos para copiar: [docs/README_JSON_EJEMPLOS.md](docs/README_JSON_EJEMPLOS.md)
+- Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)
+- Testeo y benchmark en Docker: [docs/README_TESTEO.md](docs/README_TESTEO.md)
+- Prompt de orquestacion n8n: [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md)
+
+## Notas operativas
+
+- La imagen del `Dockerfile` esta pensada para runtime, no para ejecutar la suite de tests dentro de la propia imagen.
+- Si Docker Desktop no esta levantado, `docker build` y `docker run` van a fallar antes de arrancar la app.
+- `GET /jobs/:id` usa memoria del proceso. Si reinicias el contenedor, se pierde la cola en memoria.

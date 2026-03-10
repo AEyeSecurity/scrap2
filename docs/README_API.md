@@ -1,0 +1,193 @@
+# API
+
+Esta API corre en el comando:
+
+```powershell
+docker run --rm `
+  -p 3000:3000 `
+  -e API_HOST=0.0.0.0 `
+  -e API_PORT=3000 `
+  -e SUPABASE_URL=https://tu-proyecto.supabase.co `
+  -e SUPABASE_SERVICE_ROLE_KEY=tu_service_role `
+  -v ${PWD}/artifacts:/app/artifacts `
+  scrapsinoca server --host 0.0.0.0 --port 3000
+```
+
+Base URL local:
+
+```text
+http://127.0.0.1:3000
+```
+
+## Modelo general
+
+- `POST /login`: job asincrono de autenticacion.
+- `POST /users/create-player`: job asincrono de alta de usuario.
+- `POST /users/intake-pending`: persistencia sin Playwright para telefonos pendientes.
+- `POST /users/assign-phone`: asignacion sincronica de username por telefono, solo ASN.
+- `POST /users/deposit`: carga, descarga, descarga total, saldo o reporte.
+- `GET /jobs/:id`: estado del job asincrono.
+- `POST /reports/asn/run`: crea una corrida persistida de reportes ASN.
+- `GET /reports/asn/run/:runId`: estado agregado de la corrida.
+- `GET /reports/asn/run/:runId/items`: items individuales de la corrida.
+
+## Reglas utiles
+
+- `pagina` acepta `RdA` y `ASN`, sin importar mayusculas.
+- `operacion` normaliza aliases:
+  - `retiro` -> `descarga`
+  - `retiro_total` -> `descarga_total`
+  - `consultar saldo` -> `consultar_saldo`
+  - `report` -> `reporte`
+- `cantidad` es obligatoria para `carga` y `descarga`.
+- `cantidad` se ignora en `descarga_total`, `consultar_saldo` y `reporte`.
+- `assign-phone` devuelve `501` fuera de ASN.
+
+## Endpoints principales
+
+### `POST /login`
+
+Recibe credenciales y encola un login.
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/login \
+  -H "content-type: application/json" \
+  -d "{\"username\":\"mi_agente\",\"password\":\"mi_password\"}"
+```
+
+Respuesta:
+
+```json
+{
+  "jobId": "uuid",
+  "status": "queued",
+  "statusUrl": "/jobs/uuid"
+}
+```
+
+### `POST /users/create-player`
+
+Alta asincrona de usuario. Si mandas `telefono`, puede sincronizar Supabase. Si ademas mandas `ownerContext`, usa identidad owner-centric.
+
+### `POST /users/intake-pending`
+
+No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono.
+
+### `POST /users/assign-phone`
+
+Flujo sincronico:
+
+1. valida payload;
+2. verifica en ASN que el usuario existe;
+3. asigna `telefono -> username` en Supabase.
+
+Errores esperables:
+
+- `400`: payload invalido o telefono fuera de E.164.
+- `404`: usuario ASN inexistente o vinculo inexistente.
+- `409`: conflicto de username o telefono.
+- `501`: pagina distinta de ASN.
+
+### `POST /users/deposit`
+
+Centraliza cinco casos:
+
+- `carga`
+- `descarga`
+- `descarga_total`
+- `consultar_saldo`
+- `reporte` solo para ASN
+
+Internamente:
+
+- `consultar_saldo` genera un job de tipo `balance`;
+- `reporte` genera un job de tipo `report`;
+- el resto genera jobs de tipo `deposit`.
+
+### `GET /jobs/:id`
+
+Devuelve:
+
+- `id`
+- `jobType`
+- `status`
+- `createdAt`
+- `startedAt`
+- `finishedAt`
+- `error`
+- `artifactPaths`
+- `steps`
+- `result` cuando aplica
+
+Estados posibles:
+
+- `queued`
+- `running`
+- `succeeded`
+- `failed`
+- `expired`
+
+### `POST /reports/asn/run`
+
+Crea una corrida persistida para leer el reporte de muchos usuarios ASN usando Supabase como cola y estado.
+
+Requiere:
+
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+
+El worker se activa por defecto cuando hay configuracion de Supabase y puede ajustarse con:
+
+- `REPORT_WORKER_ENABLED`
+- `REPORT_WORKER_CONCURRENCY`
+- `REPORT_WORKER_POLL_MS`
+- `REPORT_WORKER_LEASE_SECONDS`
+- `REPORT_WORKER_MAX_ATTEMPTS`
+
+## Resultado de jobs
+
+### `create-player`
+
+```json
+{
+  "kind": "create-player",
+  "pagina": "ASN",
+  "requestedUsername": "pepito47",
+  "createdUsername": "pepito471",
+  "createdPassword": "PepitoPass123",
+  "attempts": 2
+}
+```
+
+### `balance`
+
+```json
+{
+  "kind": "balance",
+  "usuario": "player_1",
+  "saldoTexto": "12.345,67",
+  "saldoNumero": 12345.67
+}
+```
+
+### `report`
+
+```json
+{
+  "kind": "asn-reporte-cargado-mes",
+  "pagina": "ASN",
+  "usuario": "Ariel728",
+  "mesActual": "2026-03",
+  "fechaActual": "2026-03-09",
+  "cargadoTexto": "40.000,00",
+  "cargadoNumero": 40000,
+  "cargadoHoyTexto": "0,00",
+  "cargadoHoyNumero": 0
+}
+```
+
+## Recomendacion practica
+
+- Usa `ownerContext` siempre que puedas.
+- Trata `GET /jobs/:id` como fuente de verdad del resultado.
+- Monta `artifacts/` como volumen para inspeccionar errores.
