@@ -36,10 +36,22 @@ export interface AuthenticateMastercrmUserInput {
   password: string;
 }
 
+export interface LinkCashierToMastercrmUserInput {
+  userId: number;
+  ownerKey: string;
+}
+
+export interface MastercrmUserCashierLinkRecord {
+  userId: number;
+  ownerKey: string;
+  linked: true;
+}
+
 export interface MastercrmUserStore {
   createUser(input: CreateMastercrmUserInput): Promise<MastercrmUserRecord>;
   authenticate(input: AuthenticateMastercrmUserInput): Promise<MastercrmUserRecord>;
   getActiveUserById(id: number): Promise<MastercrmUserRecord>;
+  linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord>;
 }
 
 interface MastercrmUserRow {
@@ -55,6 +67,11 @@ interface MastercrmUserRow {
 interface DatabaseErrorLike {
   code?: string | null;
   message: string;
+}
+
+interface OwnerRow {
+  id: string;
+  owner_key: string;
 }
 
 export class MastercrmUserStoreError extends Error {
@@ -93,6 +110,15 @@ export function normalizeMastercrmTelefono(value: string | undefined): string | 
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+export function normalizeMastercrmOwnerKey(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    throw new MastercrmUserStoreError('VALIDATION', 'owner_key is required');
+  }
+
+  return normalized;
 }
 
 function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): MastercrmUserStoreError {
@@ -246,6 +272,49 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     return toMastercrmUserRecord(data as MastercrmUserRow);
   }
+
+  async linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+
+    const ownerKey = normalizeMastercrmOwnerKey(input.ownerKey);
+    await this.getActiveUserById(input.userId);
+
+    const { data: ownerData, error: ownerError } = await this.client
+      .from('owners')
+      .select('id, owner_key')
+      .eq('pagina', 'ASN')
+      .eq('owner_key', ownerKey)
+      .maybeSingle();
+
+    if (ownerError) {
+      throw mapPostgrestError(ownerError, 'Cashier owner_key not found');
+    }
+    if (!ownerData) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner_key not found');
+    }
+
+    const owner = ownerData as OwnerRow;
+    const { error: linkError } = await this.client.from('mastercrm_user_owner_links').insert({
+      mastercrm_user_id: input.userId,
+      owner_id: owner.id
+    });
+
+    if (linkError) {
+      throw mapPostgrestError(linkError, 'MasterCRM user is already linked to this cashier');
+    }
+
+    return {
+      userId: input.userId,
+      ownerKey: owner.owner_key,
+      linked: true
+    };
+  }
+}
+
+export function createMastercrmUserStore(client: SupabaseClient): MastercrmUserStore {
+  return new SupabaseMastercrmUserStore(client);
 }
 
 export function toMastercrmHttpError(error: unknown): { statusCode: number; message: string } | null {
@@ -297,5 +366,5 @@ export function createMastercrmUserStoreFromEnv(env: NodeJS.ProcessEnv = process
     }
   });
 
-  return new SupabaseMastercrmUserStore(client);
+  return createMastercrmUserStore(client);
 }

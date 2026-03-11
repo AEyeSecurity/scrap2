@@ -60,6 +60,7 @@ Esos cambios estan en:
 - [db/migrations/20260309_owner_centric_v3.sql](C:/Users/leone/OneDrive/Escritorio/Polo/scrap2/db/migrations/20260309_owner_centric_v3.sql)
 - [db/migrations/20260309_owner_centric_v3_hotfix.sql](C:/Users/leone/OneDrive/Escritorio/Polo/scrap2/db/migrations/20260309_owner_centric_v3_hotfix.sql)
 - [db/migrations/20260310_mastercrm_users.sql](C:/Users/leone/OneDrive/Escritorio/Polo/scrap2/db/migrations/20260310_mastercrm_users.sql)
+- [db/migrations/20260311_mastercrm_user_owner_links.sql](C:/Users/leone/OneDrive/Escritorio/Polo/scrap2/db/migrations/20260311_mastercrm_user_owner_links.sql)
 - [db/migrations/20260310_report_run_queue.sql](C:/Users/leone/OneDrive/Escritorio/Polo/scrap2/db/migrations/20260310_report_run_queue.sql)
 
 ### Como aplicar las migraciones

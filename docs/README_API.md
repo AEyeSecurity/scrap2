@@ -21,6 +21,7 @@ http://127.0.0.1:3000
 - `POST /mastercrm-register`: alta de usuario web para el frontend MasterCRM.
 - `POST /mastercrm-login`: login web compatible con el frontend actual.
 - `POST /mastercrm-clients`: placeholder compatible para clientes del frontend.
+- `POST /mastercrm-link-cashier`: vincula un usuario web con un owner/cajero existente.
 - `POST /login`: job asincrono de autenticacion.
 - `POST /users/create-player`: job asincrono de alta de usuario.
 - `POST /users/intake-pending`: persistencia sin Playwright para telefonos pendientes.
@@ -56,6 +57,10 @@ Login web compatible con el payload duplicado actual del frontend.
 ### `POST /mastercrm-clients`
 
 Placeholder compatible. En esta version devuelve `[]` cuando el usuario existe y esta activo.
+
+### `POST /mastercrm-link-cashier`
+
+Vincula un usuario web de MasterCRM con un cajero/owner ya existente en `owners`, usando `pagina = ASN`.
 
 ### `POST /login`
 

@@ -9,6 +9,7 @@ Se agregaron rutas nuevas dentro de esta API para cubrir el contrato que hoy esp
 - `POST /mastercrm-register`
 - `POST /mastercrm-login`
 - `POST /mastercrm-clients`
+- `POST /mastercrm-link-cashier`
 
 La ruta existente `POST /login` no se toca. Sigue siendo el login asincrono de agentes para Playwright.
 
@@ -19,6 +20,7 @@ La ruta existente `POST /login` no se toca. Sigue siendo el login asincrono de a
 Se creo la tabla `public.mastercrm_users` en la migracion:
 
 - `db/migrations/20260310_mastercrm_users.sql`
+- `db/migrations/20260311_mastercrm_user_owner_links.sql`
 
 Columnas principales:
 
@@ -43,6 +45,7 @@ Ese modulo resuelve:
 - alta de usuario;
 - busqueda por `id`;
 - autenticacion por `username + password`;
+- vinculo entre usuario web y owner/cajero existente;
 - hash de contrasenas con `node:crypto` usando `scrypt` + salt aleatorio;
 - serializacion al formato que consume el frontend.
 
@@ -121,6 +124,42 @@ Si el usuario existe y esta activo, responde:
 
 Esta ruta no sincroniza ni devuelve todavia datos reales del CRM. Queda lista para enchufar esa logica despues.
 
+### `POST /mastercrm-link-cashier`
+
+Vincula el usuario web autenticado del frontend con un owner/cajero ya existente.
+
+Payload esperado:
+
+```json
+{
+  "user_id": 123,
+  "owner_key": "owner_key_del_cajero"
+}
+```
+
+Reglas:
+
+- `user_id` acepta string o number, pero debe resolver a entero positivo;
+- `owner_key` se normaliza a minuscula;
+- el usuario debe existir y estar activo en `mastercrm_users`;
+- el `owner_key` debe existir en `owners` con `pagina = ASN`;
+- si el vinculo exacto ya existe, responde `409`;
+- no crea owners nuevos ni devuelve todavia el listado de cajeros vinculados.
+
+Respuesta exitosa `201`:
+
+```json
+{
+  "success": true,
+  "message": "Usuario vinculado al cajero correctamente",
+  "data": {
+    "user_id": 123,
+    "owner_key": "owner_key_del_cajero",
+    "linked": true
+  }
+}
+```
+
 ## CORS
 
 Se agrego CORS global con `@fastify/cors`.
@@ -145,4 +184,5 @@ Default de desarrollo:
 - no se reutiliza `/login` porque ya existe para jobs de agentes;
 - los usuarios web viven en una tabla propia, separada del modelo `owners/clients`;
 - no hay JWT ni cookie en esta primera version;
-- `mastercrm-clients` queda deliberadamente como `[]` hasta definir la sincronizacion real.
+- `mastercrm-clients` queda deliberadamente como `[]` hasta definir la sincronizacion real;
+- `mastercrm-link-cashier` usa `pagina = ASN` fija en esta etapa.

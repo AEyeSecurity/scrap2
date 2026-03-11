@@ -14,6 +14,7 @@ import { runLoginJob } from './login-job';
 import {
   createMastercrmUserStoreFromEnv,
   normalizeMastercrmNombre,
+  normalizeMastercrmOwnerKey,
   normalizeMastercrmTelefono,
   normalizeMastercrmUsername,
   toMastercrmHttpError,
@@ -219,6 +220,13 @@ const mastercrmClientsBodySchema = z
     id: z.union([z.string(), z.number().int()]).optional(),
     user_id: z.union([z.string(), z.number().int()]).optional(),
     usuario_id: z.union([z.string(), z.number().int()]).optional()
+  })
+  .passthrough();
+
+const mastercrmLinkCashierBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    owner_key: z.string().optional()
   })
   .passthrough();
 
@@ -480,6 +488,30 @@ function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number 
   return { data: { userId }, issues };
 }
 
+function parseMastercrmLinkCashierPayload(body: unknown): {
+  data?: { userId: number; ownerKey: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmLinkCashierBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const ownerKey = resolveAliasStringField(parsed.data, ['owner_key'], 'owner_key', issues, {
+    normalize: (value) => value.trim().toLowerCase()
+  });
+
+  if (issues.length > 0 || !userId || !ownerKey) {
+    return { issues };
+  }
+
+  return { data: { userId, ownerKey }, issues };
+}
+
 export function createServer(
   appConfig: AppConfig,
   serverConfig: ServerConfig,
@@ -708,6 +740,50 @@ export function createServer(
 
       logger.error({ error }, 'Unexpected /mastercrm-clients error');
       return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-link-cashier', async (request, reply) => {
+    const parsed = parseMastercrmLinkCashierPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        success: false,
+        message: 'Faltan datos requeridos',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const link = await getMastercrmUserStore().linkCashierToUser({
+        userId: parsed.data.userId,
+        ownerKey: normalizeMastercrmOwnerKey(parsed.data.ownerKey)
+      });
+
+      return reply.code(201).send({
+        success: true,
+        message: 'Usuario vinculado al cajero correctamente',
+        data: {
+          user_id: link.userId,
+          owner_key: link.ownerKey,
+          linked: link.linked
+        }
+      });
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        if (mappedError.statusCode === 400) {
+          return reply.code(400).send({ success: false, message: 'Faltan datos requeridos' });
+        }
+        if (mappedError.statusCode === 404) {
+          return reply.code(404).send({ success: false, message: 'Usuario o cajero no encontrado' });
+        }
+        if (mappedError.statusCode === 409) {
+          return reply.code(409).send({ success: false, message: 'El usuario ya esta vinculado a ese cajero' });
+        }
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-link-cashier error');
+      return reply.code(500).send({ success: false, message: 'Error interno del servidor' });
     }
   });
 

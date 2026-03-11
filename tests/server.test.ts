@@ -190,6 +190,11 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
 
   public readonly getByIdInputs: number[] = [];
 
+  public readonly linkInputs: Array<{
+    userId: number;
+    ownerKey: string;
+  }> = [];
+
   public createBehavior: (input: {
     username: string;
     password: string;
@@ -252,6 +257,19 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     createdAt: '2026-03-10T12:00:00.000Z'
   });
 
+  public linkBehavior: (input: {
+    userId: number;
+    ownerKey: string;
+  }) => Promise<{
+    userId: number;
+    ownerKey: string;
+    linked: true;
+  }> = async (input) => ({
+    userId: input.userId,
+    ownerKey: input.ownerKey,
+    linked: true
+  });
+
   async createUser(input: {
     username: string;
     password: string;
@@ -297,6 +315,18 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   }> {
     this.getByIdInputs.push(id);
     return this.getByIdBehavior(id);
+  }
+
+  async linkCashierToUser(input: {
+    userId: number;
+    ownerKey: string;
+  }): Promise<{
+    userId: number;
+    ownerKey: string;
+    linked: true;
+  }> {
+    this.linkInputs.push(input);
+    return this.linkBehavior(input);
   }
 }
 
@@ -577,6 +607,185 @@ describe('server routes', () => {
     });
 
     expect(response.statusCode).toBe(404);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-link-cashier creates the user-owner link', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: '123',
+        owner_key: '  OWNER_KEY_DEL_CAJERO  '
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(store.linkInputs).toEqual([
+      {
+        userId: 123,
+        ownerKey: 'owner_key_del_cajero'
+      }
+    ]);
+    expect(response.json()).toEqual({
+      success: true,
+      message: 'Usuario vinculado al cajero correctamente',
+      data: {
+        user_id: 123,
+        owner_key: 'owner_key_del_cajero',
+        linked: true
+      }
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-link-cashier validates payload', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        owner_key: ''
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      success: false,
+      message: 'Faltan datos requeridos',
+      issues: [
+        { path: 'user_id', message: 'user_id is required' },
+        { path: 'owner_key', message: 'owner_key is required' }
+      ]
+    });
+    expect(store.linkInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-link-cashier returns 404 when user is missing', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.linkBehavior = async () => {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'MasterCRM user not found');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: 999,
+        owner_key: 'owner_1'
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      success: false,
+      message: 'Usuario o cajero no encontrado'
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-link-cashier returns 404 when owner is missing', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.linkBehavior = async () => {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner_key not found');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: 123,
+        owner_key: 'owner_missing'
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      success: false,
+      message: 'Usuario o cajero no encontrado'
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-link-cashier returns 409 when the link already exists', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.linkBehavior = async () => {
+      throw new MastercrmUserStoreError('CONFLICT', 'MasterCRM user is already linked to this cashier');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: 123,
+        owner_key: 'owner_1'
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      success: false,
+      message: 'El usuario ya esta vinculado a ese cajero'
+    });
 
     await server.close();
   });
