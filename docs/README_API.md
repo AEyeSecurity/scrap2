@@ -5,10 +5,7 @@ Esta API corre en el comando:
 ```powershell
 docker run --rm `
   -p 3000:3000 `
-  -e API_HOST=0.0.0.0 `
-  -e API_PORT=3000 `
-  -e SUPABASE_URL=https://tu-proyecto.supabase.co `
-  -e SUPABASE_SERVICE_ROLE_KEY=tu_service_role `
+  --env-file .env `
   -v ${PWD}/artifacts:/app/artifacts `
   scrapsinoca server --host 0.0.0.0 --port 3000
 ```

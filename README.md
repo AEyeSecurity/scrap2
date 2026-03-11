@@ -81,13 +81,12 @@ Salidas esperadas:
 ```powershell
 docker run --rm `
   -p 3000:3000 `
-  -e API_HOST=0.0.0.0 `
-  -e API_PORT=3000 `
-  -e SUPABASE_URL=https://tu-proyecto.supabase.co `
-  -e SUPABASE_SERVICE_ROLE_KEY=tu_service_role `
+  --env-file .env `
   -v ${PWD}/artifacts:/app/artifacts `
   scrapsinoca server --host 0.0.0.0 --port 3000
 ```
+
+El archivo `.env` queda pensado para Docker. Si necesitas un ejemplo sin secretos para compartir con el equipo, usa `.env.example`.
 
 Artefactos del modo API:
 
@@ -101,9 +100,20 @@ Artefactos del modo API:
 - `REPORT_WORKER_ENABLED`: activa o desactiva el worker de reportes ASN.
 - `FUNDS_SESSION_CACHE_ENABLED`: reutiliza sesiones de fondos entre jobs.
 
+Para arrancar el contenedor del modo API con las variables en archivo, usa:
+
+```powershell
+docker run --rm `
+  -p 3000:3000 `
+  --env-file .env `
+  -v ${PWD}/artifacts:/app/artifacts `
+  scrapsinoca server --host 0.0.0.0 --port 3000
+```
+
 ## Documentacion puntual
 
 - API y endpoints: [docs/README_API.md](docs/README_API.md)
+- Configuracion de Supabase para Docker: [docs/README_SUPABASE.md](docs/README_SUPABASE.md)
 - Login y registro MasterCRM: [docs/README_MASTERCRM_AUTH.md](docs/README_MASTERCRM_AUTH.md)
 - JSON listos para copiar: [docs/README_JSON_EJEMPLOS.md](docs/README_JSON_EJEMPLOS.md)
 - Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)
