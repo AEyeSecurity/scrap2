@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AsnUserCheckError } from '../src/asn-user-check';
 import { buildAppConfig } from '../src/config';
 import { createLogger } from '../src/logging';
+import { MastercrmUserStoreError, type MastercrmUserStore } from '../src/mastercrm-user-store';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
@@ -174,6 +175,131 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
   }
 }
 
+class FakeMastercrmUserStore implements MastercrmUserStore {
+  public readonly createInputs: Array<{
+    username: string;
+    password: string;
+    nombre: string;
+    telefono?: string;
+  }> = [];
+
+  public readonly authenticateInputs: Array<{
+    username: string;
+    password: string;
+  }> = [];
+
+  public readonly getByIdInputs: number[] = [];
+
+  public createBehavior: (input: {
+    username: string;
+    password: string;
+    nombre: string;
+    telefono?: string;
+  }) => Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> = async (input) => ({
+    id: 101,
+    username: input.username,
+    nombre: input.nombre,
+    telefono: input.telefono ?? null,
+    inversion: 0,
+    isActive: true,
+    createdAt: '2026-03-10T12:00:00.000Z'
+  });
+
+  public authenticateBehavior: (input: {
+    username: string;
+    password: string;
+  }) => Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> = async (input) => ({
+    id: 101,
+    username: input.username,
+    nombre: 'Juan Perez',
+    telefono: '54911',
+    inversion: 150000,
+    isActive: true,
+    createdAt: '2026-03-10T12:00:00.000Z'
+  });
+
+  public getByIdBehavior: (id: number) => Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> = async (id) => ({
+    id,
+    username: 'juan',
+    nombre: 'Juan Perez',
+    telefono: '54911',
+    inversion: 0,
+    isActive: true,
+    createdAt: '2026-03-10T12:00:00.000Z'
+  });
+
+  async createUser(input: {
+    username: string;
+    password: string;
+    nombre: string;
+    telefono?: string;
+  }): Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> {
+    this.createInputs.push(input);
+    return this.createBehavior(input);
+  }
+
+  async authenticate(input: {
+    username: string;
+    password: string;
+  }): Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> {
+    this.authenticateInputs.push(input);
+    return this.authenticateBehavior(input);
+  }
+
+  async getActiveUserById(id: number): Promise<{
+    id: number;
+    username: string;
+    nombre: string;
+    telefono: string | null;
+    inversion: number;
+    isActive: boolean;
+    createdAt: string;
+  }> {
+    this.getByIdInputs.push(id);
+    return this.getByIdBehavior(id);
+  }
+}
+
 describe('server routes', () => {
   it('POST /login returns 202 with job id', async () => {
     const queue = new FakeQueue();
@@ -203,6 +329,292 @@ describe('server routes', () => {
     expect(queue.getById(body.jobId)?.jobType).toBe('login');
 
     await server.close();
+  });
+
+  it('POST /mastercrm-register creates user and returns canonical payload', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-register',
+      payload: {
+        username: 'Juan',
+        usuario: 'juan',
+        password: 'secret123',
+        contrasena: 'secret123',
+        nombre: 'Juan Perez',
+        telefono: '54911'
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(store.createInputs).toEqual([
+      {
+        username: 'juan',
+        password: 'secret123',
+        nombre: 'Juan Perez',
+        telefono: '54911'
+      }
+    ]);
+    expect(response.json()).toEqual({
+      id: 101,
+      usuario: 'juan',
+      nombre: 'Juan Perez',
+      telefono: '54911',
+      created_at: '2026-03-10T12:00:00.000Z',
+      inversion: 0
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-register rejects conflicting aliases', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-register',
+      payload: {
+        username: 'juan',
+        usuario: 'pedro',
+        password: 'secret123',
+        contrasena: 'secret123',
+        nombre: 'Juan Perez'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(store.createInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-register returns 409 on duplicate username', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.createBehavior = async () => {
+      throw new MastercrmUserStoreError('CONFLICT', 'Could not create mastercrm user');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-register',
+      payload: {
+        usuario: 'juan',
+        contrasena: 'secret123',
+        nombre: 'Juan Perez'
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-login accepts duplicated frontend payload and returns canonical payload', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-login',
+      payload: {
+        username: 'Juan',
+        usuario: 'juan',
+        password: 'secret123',
+        contrasena: 'secret123'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.authenticateInputs).toEqual([
+      {
+        username: 'juan',
+        password: 'secret123'
+      }
+    ]);
+    expect(response.json()).toEqual({
+      id: 101,
+      usuario: 'juan',
+      nombre: 'Juan Perez',
+      telefono: '54911',
+      created_at: '2026-03-10T12:00:00.000Z',
+      inversion: 150000
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-login returns 401 on invalid credentials', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.authenticateBehavior = async () => {
+      throw new MastercrmUserStoreError('AUTHENTICATION', 'Invalid username or password');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-login',
+      payload: {
+        usuario: 'juan',
+        contrasena: 'wrong'
+      }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ message: 'Invalid username or password' });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-clients accepts id aliases and returns placeholder array', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const responseFromId = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      payload: { id: 101 }
+    });
+    const responseFromUserId = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      payload: { user_id: 202 }
+    });
+    const responseFromUsuarioId = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      payload: { usuario_id: '303' }
+    });
+
+    expect(responseFromId.statusCode).toBe(200);
+    expect(responseFromUserId.statusCode).toBe(200);
+    expect(responseFromUsuarioId.statusCode).toBe(200);
+    expect(responseFromId.json()).toEqual([]);
+    expect(responseFromUserId.json()).toEqual([]);
+    expect(responseFromUsuarioId.json()).toEqual([]);
+    expect(store.getByIdInputs).toEqual([101, 202, 303]);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-clients returns 404 when user is missing', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    store.getByIdBehavior = async () => {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'MasterCRM user not found');
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      payload: { user_id: 999 }
+    });
+
+    expect(response.statusCode).toBe(404);
+
+    await server.close();
+  });
+
+  it('OPTIONS /mastercrm-login returns configured cors headers', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const previousOrigins = process.env.MASTERCRM_CORS_ORIGINS;
+    process.env.MASTERCRM_CORS_ORIGINS = 'http://localhost:5173,http://127.0.0.1:5173';
+
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'OPTIONS',
+      url: '/mastercrm-login',
+      headers: {
+        origin: 'http://localhost:5173',
+        'access-control-request-method': 'POST'
+      }
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:5173');
+
+    await server.close();
+    if (previousOrigins === undefined) {
+      delete process.env.MASTERCRM_CORS_ORIGINS;
+    } else {
+      process.env.MASTERCRM_CORS_ORIGINS = previousOrigins;
+    }
   });
 
   it('POST /users/create-player returns 202 with job id', async () => {

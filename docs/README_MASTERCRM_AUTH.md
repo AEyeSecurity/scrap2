@@ -1,0 +1,148 @@
+# MasterCRM Auth
+
+Este documento resume como quedo implementado el login y registro web compatible con el frontend actual, sin usar el webhook de n8n.
+
+## Objetivo
+
+Se agregaron rutas nuevas dentro de esta API para cubrir el contrato que hoy espera el frontend:
+
+- `POST /mastercrm-register`
+- `POST /mastercrm-login`
+- `POST /mastercrm-clients`
+
+La ruta existente `POST /login` no se toca. Sigue siendo el login asincrono de agentes para Playwright.
+
+## Como esta hecho
+
+### Persistencia
+
+Se creo la tabla `public.mastercrm_users` en la migracion:
+
+- `db/migrations/20260310_mastercrm_users.sql`
+
+Columnas principales:
+
+- `id bigint generated always as identity`
+- `username` unico y normalizado en minuscula
+- `password_hash`
+- `nombre`
+- `telefono`
+- `inversion` con default `0`
+- `is_active`
+- `created_at`
+- `updated_at`
+
+### Store de usuarios
+
+La logica de usuarios web vive en:
+
+- `src/mastercrm-user-store.ts`
+
+Ese modulo resuelve:
+
+- alta de usuario;
+- busqueda por `id`;
+- autenticacion por `username + password`;
+- hash de contrasenas con `node:crypto` usando `scrypt` + salt aleatorio;
+- serializacion al formato que consume el frontend.
+
+## Contrato HTTP
+
+### `POST /mastercrm-register`
+
+Acepta aliases:
+
+- `username` o `usuario`
+- `password` o `contrasena`
+- `nombre` o `name`
+- `telefono`, `phone` o `celular`
+
+Si dos aliases del mismo campo llegan con valores distintos, responde `400`.
+
+Ejemplo:
+
+```json
+{
+  "usuario": "juan",
+  "contrasena": "secret123",
+  "nombre": "Juan Perez",
+  "telefono": "54911..."
+}
+```
+
+Respuesta exitosa `201`:
+
+```json
+{
+  "id": 1,
+  "usuario": "juan",
+  "nombre": "Juan Perez",
+  "telefono": "54911...",
+  "created_at": "2026-03-10T12:00:00.000Z",
+  "inversion": 0
+}
+```
+
+### `POST /mastercrm-login`
+
+Acepta exactamente el payload duplicado que hoy manda el frontend:
+
+```json
+{
+  "username": "juan",
+  "password": "secret123",
+  "usuario": "juan",
+  "contrasena": "secret123"
+}
+```
+
+Reglas:
+
+- autentica contra `mastercrm_users`;
+- responde `200` con JSON canonico;
+- responde `401` si las credenciales no son validas;
+- nunca devuelve `password` ni `contrasena`.
+
+### `POST /mastercrm-clients`
+
+Por ahora es un placeholder compatible.
+
+Acepta:
+
+- `id`
+- `user_id`
+- `usuario_id`
+
+Si el usuario existe y esta activo, responde:
+
+```json
+[]
+```
+
+Esta ruta no sincroniza ni devuelve todavia datos reales del CRM. Queda lista para enchufar esa logica despues.
+
+## CORS
+
+Se agrego CORS global con `@fastify/cors`.
+
+Variable nueva:
+
+- `MASTERCRM_CORS_ORIGINS`
+
+Formato:
+
+```text
+http://localhost:5173,http://127.0.0.1:5173,https://tu-frontend.com
+```
+
+Default de desarrollo:
+
+- `http://localhost:5173`
+- `http://127.0.0.1:5173`
+
+## Resumen de decisiones
+
+- no se reutiliza `/login` porque ya existe para jobs de agentes;
+- los usuarios web viven en una tabla propia, separada del modelo `owners/clients`;
+- no hay JWT ni cookie en esta primera version;
+- `mastercrm-clients` queda deliberadamente como `[]` hasta definir la sincronizacion real.
