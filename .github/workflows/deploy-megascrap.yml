@@ -1,0 +1,29 @@
+name: Deploy MegaScrap
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-megascrap-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on:
+      - self-hosted
+      - Windows
+      - X64
+      - megascrap
+    timeout-minutes: 30
+
+    steps:
+      - name: Run local deploy script
+        shell: powershell
+        run: |
+          powershell -ExecutionPolicy Bypass -File C:\ServerCIT\scripts\deploy_megascrap_from_main.ps1
