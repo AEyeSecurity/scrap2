@@ -38,16 +38,25 @@ describe('player-phone-store helpers', () => {
   });
 
   it('maps store errors to HTTP responses', () => {
-    const conflictResponse = toHttpError(new PlayerPhoneStoreError('CONFLICT', 'duplicated'));
-    expect(conflictResponse).toEqual({ statusCode: 409, message: 'duplicated' });
+    const conflictResponse = toHttpError(
+      new PlayerPhoneStoreError('CONFLICT', 'duplicated', {
+        reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+      })
+    );
+    expect(conflictResponse).toEqual({
+      statusCode: 409,
+      message: 'duplicated',
+      code: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
   });
 
-  it('maps assign_username_by_phone RPC not found to NOT_FOUND', () => {
+  it('maps assign_username_by_phone RPC other-owner conflicts to CONFLICT', () => {
     const error = mapAssignUsernameByPhoneRpcError({
       code: 'P0001',
-      message: 'link not found for agente + telefono'
+      message: 'username assigned to other owner'
     } as any);
-    expect(error.code).toBe('NOT_FOUND');
+    expect(error.code).toBe('CONFLICT');
+    expect(error.reason).toBe('USERNAME_ASSIGNED_TO_OTHER_OWNER');
   });
 
   it('maps assign_username_by_phone RPC conflict to CONFLICT', () => {
@@ -64,5 +73,21 @@ describe('player-phone-store helpers', () => {
       message: 'telefono must be strict E.164 format'
     } as any);
     expect(error.code).toBe('VALIDATION');
+  });
+
+  it('preserves validation details in HTTP responses', () => {
+    const response = toHttpError(
+      new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format', {
+        reason: 'INVALID_PHONE_FORMAT',
+        details: { field: 'telefono', value: 'abc' }
+      })
+    );
+
+    expect(response).toEqual({
+      statusCode: 400,
+      message: 'telefono must follow strict E.164 format',
+      code: 'INVALID_PHONE_FORMAT',
+      details: { field: 'telefono', value: 'abc' }
+    });
   });
 });

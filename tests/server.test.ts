@@ -36,9 +36,8 @@ class FakeQueue {
 class FakePlayerPhoneStore implements PlayerPhoneStore {
   public readonly intakeInputs: Array<{
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -48,10 +47,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
 
   public readonly syncInputs: Array<{
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono?: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -61,10 +59,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
 
   public readonly assignByPhoneInputs: Array<{
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -76,17 +73,24 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     previousUsername: string | null;
     currentUsername: string;
     overwritten: boolean;
+    createdClient: boolean;
+    createdLink: boolean;
+    movedFromPhone: string | null;
+    deletedOldPhone: boolean;
   }> = async () => ({
     previousUsername: 'player_1',
     currentUsername: 'player_1',
-    overwritten: false
+    overwritten: false,
+    createdClient: false,
+    createdLink: false,
+    movedFromPhone: null,
+    deletedOldPhone: false
   });
 
   async intakePendingCliente(input: {
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -105,16 +109,15 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       jugadorId: 'jugador-1',
       linkId: 'link-1',
       estado: 'pendiente',
-      ...(input.ownerContext ? { ownerId: 'owner-1' } : {})
+      ownerId: 'owner-1'
     };
   }
 
   async syncCreatePlayerLink(input: {
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono?: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -126,10 +129,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
 
   async assignPhone(input: {
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -141,10 +143,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
 
   async assignPendingUsername(input: {
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -156,10 +157,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
 
   async assignUsernameByPhone(input: {
     pagina: 'RdA' | 'ASN';
-    cajeroUsername: string;
     jugadorUsername: string;
     telefono: string;
-    ownerContext?: {
+    ownerContext: {
       ownerKey: string;
       ownerLabel: string;
       actorAlias?: string | null;
@@ -169,6 +169,10 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     previousUsername: string | null;
     currentUsername: string;
     overwritten: boolean;
+    createdClient: boolean;
+    createdLink: boolean;
+    movedFromPhone: string | null;
+    deletedOldPhone: boolean;
   }> {
     this.assignByPhoneInputs.push(input);
     return this.assignByPhoneBehavior();
@@ -884,7 +888,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/create-player accepts optional telefono', async () => {
+  it('POST /users/create-player requires ownerContext when telefono is provided', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -908,12 +912,12 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(202);
-    const queued = queue.requests.find((item) => item.id === response.json().jobId);
-    expect(queued?.jobType).toBe('create-player');
-    if (queued?.jobType === 'create-player') {
-      expect(queued.payload.telefono).toBe('+5491122334455');
-    }
+    expect(response.statusCode).toBe(400);
+    expect(response.json().issues).toContainEqual({
+      path: 'ownerContext',
+      message: 'ownerContext is required when telefono is provided'
+    });
+    expect(queue.requests).toHaveLength(0);
 
     await server.close();
   });
@@ -1056,7 +1060,6 @@ describe('server routes', () => {
     expect(store.intakeInputs).toHaveLength(1);
     expect(store.intakeInputs[0]).toEqual({
       pagina: 'ASN',
-      cajeroUsername: 'wf_001',
       telefono: '+5491122334455',
       ownerContext: {
         ownerKey: 'wf_001',
@@ -1069,7 +1072,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/intake-pending supports legacy agente fallback', async () => {
+  it('POST /users/intake-pending requires ownerContext', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -1087,15 +1090,24 @@ describe('server routes', () => {
       url: '/users/intake-pending',
       payload: {
         pagina: 'ASN',
-        telefono: '+5491122334455',
-        agente: 'lucas10'
+        telefono: '+5491122334455'
       }
     });
 
-    expect(response.statusCode).toBe(200);
-    expect(store.intakeInputs).toHaveLength(1);
-    expect(store.intakeInputs[0]?.cajeroUsername).toBe('lucas10');
-    expect(store.intakeInputs[0]?.ownerContext).toBeUndefined();
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: 'Invalid payload',
+      code: 'INVALID_PAYLOAD',
+      details: {
+        issues: [
+          {
+            path: 'ownerContext',
+            message: 'Invalid input: expected object, received undefined'
+          }
+        ]
+      }
+    });
+    expect(store.intakeInputs).toHaveLength(0);
 
     await server.close();
   });
@@ -1128,6 +1140,7 @@ describe('server routes', () => {
     });
 
     expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe('INVALID_PAYLOAD');
     expect(store.assignByPhoneInputs).toHaveLength(0);
 
     await server.close();
@@ -1168,7 +1181,6 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(200);
     expect(store.assignByPhoneInputs).toHaveLength(1);
-    expect(store.assignByPhoneInputs[0]?.cajeroUsername).toBe('wf_owner_9');
     expect(store.assignByPhoneInputs[0]?.ownerContext).toEqual({
       ownerKey: 'wf_owner_9',
       ownerLabel: 'Lucas 10',
@@ -1202,11 +1214,20 @@ describe('server routes', () => {
         usuario: 'player_1',
         agente: 'agent_1',
         contrasena_agente: 'secret',
-        telefono: '+5491122334455'
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
     expect(response.statusCode).toBe(501);
+    expect(response.json()).toEqual({
+      message: 'assign-phone with ASN existence check is implemented only for ASN',
+      code: 'UNSUPPORTED_PAGINA',
+      details: { pagina: 'RdA' }
+    });
     expect(store.assignByPhoneInputs).toHaveLength(0);
 
     await server.close();
@@ -1238,22 +1259,33 @@ describe('server routes', () => {
         usuario: 'missing_player',
         agente: 'agent_1',
         contrasena_agente: 'secret',
-        telefono: '+5491122334455'
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ message: 'El usuario no existe' });
+    expect(response.json()).toEqual({
+      message: 'El usuario no existe',
+      code: 'ASN_USER_NOT_FOUND',
+      details: { usuario: 'missing_player' }
+    });
     expect(store.assignByPhoneInputs).toHaveLength(0);
 
     await server.close();
   });
 
-  it('POST /users/assign-phone returns 404 when agent+phone link does not exist', async () => {
+  it('POST /users/assign-phone returns 409 when username belongs to another owner', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
     store.assignByPhoneBehavior = async () => {
-      throw new PlayerPhoneStoreError('NOT_FOUND', 'No existe vínculo para agente+telefono');
+      throw new PlayerPhoneStoreError('CONFLICT', 'El usuario ya esta asignado a otro cajero', {
+        reason: 'USERNAME_ASSIGNED_TO_OTHER_OWNER',
+        details: { usuario: 'player_1' }
+      });
     };
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -1276,11 +1308,20 @@ describe('server routes', () => {
         usuario: 'player_1',
         agente: 'agent_1',
         contrasena_agente: 'secret',
-        telefono: '+5491122334455'
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      message: 'El usuario ya esta asignado a otro cajero',
+      code: 'USERNAME_ASSIGNED_TO_OTHER_OWNER',
+      details: { usuario: 'player_1' }
+    });
 
     await server.close();
   });
@@ -1291,7 +1332,11 @@ describe('server routes', () => {
     store.assignByPhoneBehavior = async () => ({
       previousUsername: 'ailen389',
       currentUsername: '1ailen389',
-      overwritten: true
+      overwritten: true,
+      createdClient: true,
+      createdLink: true,
+      movedFromPhone: '+5493514000000',
+      deletedOldPhone: true
     });
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -1314,7 +1359,11 @@ describe('server routes', () => {
         usuario: '1ailen389',
         agente: 'luuucas10',
         contrasena_agente: 'secret',
-        telefono: '+5493514867589'
+        telefono: '+5493514867589',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
@@ -1323,7 +1372,11 @@ describe('server routes', () => {
       status: 'ok',
       overwritten: true,
       previousUsername: 'ailen389',
-      currentUsername: '1ailen389'
+      currentUsername: '1ailen389',
+      createdClient: true,
+      createdLink: true,
+      movedFromPhone: '+5493514000000',
+      deletedOldPhone: true
     });
 
     await server.close();
@@ -1335,7 +1388,11 @@ describe('server routes', () => {
     store.assignByPhoneBehavior = async () => ({
       previousUsername: '1ailen389',
       currentUsername: '1ailen389',
-      overwritten: false
+      overwritten: false,
+      createdClient: false,
+      createdLink: false,
+      movedFromPhone: null,
+      deletedOldPhone: false
     });
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -1358,7 +1415,11 @@ describe('server routes', () => {
         usuario: '1ailen389',
         agente: 'luuucas10',
         contrasena_agente: 'secret',
-        telefono: '+5493514867589'
+        telefono: '+5493514867589',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
@@ -1377,7 +1438,9 @@ describe('server routes', () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
     store.assignByPhoneBehavior = async () => {
-      throw new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina');
+      throw new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina', {
+        reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+      });
     };
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -1400,11 +1463,19 @@ describe('server routes', () => {
         usuario: 'taken_username',
         agente: 'luuucas10',
         contrasena_agente: 'secret',
-        telefono: '+5493514867589'
+        telefono: '+5493514867589',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
     expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      message: 'username already exists in this pagina',
+      code: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
 
     await server.close();
   });
@@ -1413,7 +1484,10 @@ describe('server routes', () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
     store.assignByPhoneBehavior = async () => {
-      throw new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format');
+      throw new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format', {
+        reason: 'INVALID_PHONE_FORMAT',
+        details: { field: 'telefono', value: 'abc' }
+      });
     };
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -1436,11 +1510,20 @@ describe('server routes', () => {
         usuario: 'player_1',
         agente: 'agent_1',
         contrasena_agente: 'secret',
-        telefono: 'abc'
+        telefono: 'abc',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
       }
     });
 
     expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: 'telefono must follow strict E.164 format',
+      code: 'INVALID_PHONE_FORMAT',
+      details: { field: 'telefono', value: 'abc' }
+    });
 
     await server.close();
   });

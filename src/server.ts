@@ -113,43 +113,31 @@ const createPlayerBodySchema = z
     ownerContext: ownerContextSchema.optional(),
     stepsOverride: z.array(stepActionSchema).optional()
   })
-  .merge(executionOverridesSchema);
-
-const assignPhoneBodySchema = z
-  .object({
-    pagina: paginaCodeSchema,
-    usuario: z.string().trim().min(1),
-    agente: z.string().trim().min(1),
-    contrasena_agente: z.string().trim().min(1),
-    telefono: z.string().trim().min(1),
-    ownerContext: ownerContextSchema.optional()
-  })
+  .merge(executionOverridesSchema)
   .superRefine((value, ctx) => {
-    if (!value.ownerContext && !value.agente.trim()) {
+    if (value.telefono && !value.ownerContext) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['agente'],
-        message: 'agente is required when ownerContext is not provided'
+        path: ['ownerContext'],
+        message: 'ownerContext is required when telefono is provided'
       });
     }
   });
 
-const intakePendingBodySchema = z
-  .object({
-    pagina: paginaCodeSchema,
-    telefono: z.string().trim().min(1),
-    agente: z.string().trim().min(1).optional(),
-    ownerContext: ownerContextSchema.optional()
-  })
-  .superRefine((value, ctx) => {
-    if (!value.ownerContext && (!value.agente || !value.agente.trim())) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['agente'],
-        message: 'agente is required when ownerContext is not provided'
-      });
-    }
-  });
+const assignPhoneBodySchema = z.object({
+  pagina: paginaCodeSchema,
+  usuario: z.string().trim().min(1),
+  agente: z.string().trim().min(1),
+  contrasena_agente: z.string().trim().min(1),
+  telefono: z.string().trim().min(1),
+  ownerContext: ownerContextSchema
+});
+
+const intakePendingBodySchema = z.object({
+  pagina: paginaCodeSchema,
+  telefono: z.string().trim().min(1),
+  ownerContext: ownerContextSchema
+});
 
 const depositBodySchema = z
   .object({
@@ -408,6 +396,10 @@ function resolveDepositExecutionOptions(
   };
 }
 
+function toValidationIssues(error: z.ZodError): ValidationIssue[] {
+  return error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }));
+}
+
 function parseMastercrmLoginPayload(body: unknown): { data?: { username: string; password: string }; issues: ValidationIssue[] } {
   const parsed = mastercrmLoginBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -586,14 +578,10 @@ export function createServer(
           const result = execution.result;
           if (result?.kind === 'create-player' && typeof request.payload.telefono === 'string') {
             if (!request.payload.ownerContext) {
-              logger.warn(
-                { jobId: request.id, pagina: request.payload.pagina },
-                'create-player legacy fallback without ownerContext; using loginUsername as owner key'
-              );
+              throw new Error('ownerContext is required when telefono is provided');
             }
             await getPlayerPhoneStore().syncCreatePlayerLink({
               pagina: request.payload.pagina,
-              cajeroUsername: request.payload.ownerContext?.ownerKey ?? request.payload.loginUsername,
               jugadorUsername: result.createdUsername,
               telefono: request.payload.telefono,
               ownerContext: request.payload.ownerContext
@@ -792,7 +780,7 @@ export function createServer(
     if (!parsed.success) {
       return reply.code(400).send({
         message: 'Invalid payload',
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        issues: toValidationIssues(parsed.error)
       });
     }
 
@@ -830,22 +818,17 @@ export function createServer(
     if (!parsed.success) {
       return reply.code(400).send({
         message: 'Invalid payload',
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        code: 'INVALID_PAYLOAD',
+        details: {
+          issues: toValidationIssues(parsed.error)
+        }
       });
     }
 
     try {
       const payload = parsed.data;
-      if (!payload.ownerContext) {
-        logger.warn(
-          { pagina: payload.pagina },
-          'intake-pending legacy fallback without ownerContext; using agente as owner key'
-        );
-      }
-
       const intake = await getPlayerPhoneStore().intakePendingCliente({
         pagina: payload.pagina,
-        cajeroUsername: payload.ownerContext?.ownerKey ?? (payload.agente ?? ''),
         telefono: payload.telefono,
         ownerContext: payload.ownerContext
       });
@@ -861,7 +844,11 @@ export function createServer(
     } catch (error) {
       const mappedError = toHttpError(error);
       if (mappedError) {
-        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          code: mappedError.code,
+          ...(mappedError.details ? { details: mappedError.details } : {})
+        });
       }
 
       logger.error({ error }, 'Unexpected /users/intake-pending error');
@@ -874,13 +861,18 @@ export function createServer(
     if (!parsed.success) {
       return reply.code(400).send({
         message: 'Invalid payload',
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+        code: 'INVALID_PAYLOAD',
+        details: {
+          issues: toValidationIssues(parsed.error)
+        }
       });
     }
 
     if (parsed.data.pagina !== 'ASN') {
       return reply.code(501).send({
-        message: 'assign-phone with ASN existence check is implemented only for ASN'
+        message: 'assign-phone with ASN existence check is implemented only for ASN',
+        code: 'UNSUPPORTED_PAGINA',
+        details: { pagina: parsed.data.pagina }
       });
     }
 
@@ -894,15 +886,8 @@ export function createServer(
       });
 
       const store = getPlayerPhoneStore();
-      if (!parsed.data.ownerContext) {
-        logger.warn(
-          { pagina: parsed.data.pagina, usuario: parsed.data.usuario },
-          'assign-phone legacy fallback without ownerContext; using agente as owner key'
-        );
-      }
       const assignment = await store.assignUsernameByPhone({
         pagina: parsed.data.pagina,
-        cajeroUsername: parsed.data.ownerContext?.ownerKey ?? parsed.data.agente,
         jugadorUsername: parsed.data.usuario,
         telefono: parsed.data.telefono,
         ownerContext: parsed.data.ownerContext
@@ -912,24 +897,43 @@ export function createServer(
         status: 'ok',
         overwritten: assignment.overwritten,
         previousUsername: assignment.previousUsername,
-        currentUsername: assignment.currentUsername
+        currentUsername: assignment.currentUsername,
+        ...(assignment.createdClient ? { createdClient: true } : {}),
+        ...(assignment.createdLink ? { createdLink: true } : {}),
+        ...(assignment.movedFromPhone ? { movedFromPhone: assignment.movedFromPhone } : {}),
+        ...(assignment.deletedOldPhone ? { deletedOldPhone: true } : {})
       });
     } catch (error) {
       if (error instanceof AsnUserCheckError) {
         if (error.code === 'NOT_FOUND') {
-          return reply.code(404).send({ message: error.message });
+          return reply.code(404).send({
+            message: error.message,
+            code: 'ASN_USER_NOT_FOUND',
+            details: { usuario: parsed.data.usuario }
+          });
         }
         logger.error({ error }, 'Unexpected ASN user existence checker error');
-        return reply.code(500).send({ message: 'Could not verify ASN user existence' });
+        return reply.code(500).send({
+          message: 'Could not verify ASN user existence',
+          code: 'ASN_USER_CHECK_FAILED',
+          details: { usuario: parsed.data.usuario }
+        });
       }
 
       const mappedError = toHttpError(error);
       if (mappedError) {
-        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          code: mappedError.code,
+          ...(mappedError.details ? { details: mappedError.details } : {})
+        });
       }
 
       logger.error({ error }, 'Unexpected /users/assign-phone error');
-      return reply.code(500).send({ message: 'Unexpected persistence error' });
+      return reply.code(500).send({
+        message: 'Unexpected persistence error',
+        code: 'UNEXPECTED_PERSISTENCE_ERROR'
+      });
     }
   });
 
