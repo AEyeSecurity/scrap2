@@ -1,0 +1,365 @@
+{
+  "name": "ASN Reporte Masivo Diario - asnlucas10",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "10 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "2eac6556-6a78-4622-a270-aaf1b3bfe5d1",
+      "name": "Schedule Trigger - Diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "fd898f8d-d3eb-4f7f-9c1c-54d7b5388d27",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b196443f-656a-40c2-a185-9c8a5f7c58b0",
+              "name": "baseUrl",
+              "value": "http://127.0.0.1:3000",
+              "type": "string"
+            },
+            {
+              "id": "44f5308e-baf8-4b14-a17b-f6927f4ace70",
+              "name": "pagina",
+              "value": "ASN",
+              "type": "string"
+            },
+            {
+              "id": "a8f0b9f8-c827-46ae-98ad-4abebc34a0fc",
+              "name": "principalKey",
+              "value": "asnlucas10",
+              "type": "string"
+            },
+            {
+              "id": "9e1db59e-7d26-485c-84ce-cb6efbc6db7b",
+              "name": "agente",
+              "value": "Pity24",
+              "type": "string"
+            },
+            {
+              "id": "e74ef596-164f-4a0d-9ce0-2068f8d3984d",
+              "name": "contrasena_agente",
+              "value": "pityboca1509",
+              "type": "string"
+            },
+            {
+              "id": "d5a01e91-aae0-419d-b154-30a4e5f6f45f",
+              "name": "reportDate",
+              "value": "={{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}",
+              "type": "string"
+            },
+            {
+              "id": "1799042c-74a7-47c3-a392-3a7c1781dc4f",
+              "name": "pollSeconds",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "db1adc99-3ec4-4661-8a4c-12f2f749dce6",
+              "name": "itemsLimit",
+              "value": 500,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7d1332ad-3af1-48d8-9142-e3f12b4c9714",
+      "name": "Edit Fields - Prefijos ASN Lucas10",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl + '/reports/asn/run' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, agente: $json.agente, contrasena_agente: $json.contrasena_agente, reportDate: $json.reportDate }) }}",
+        "options": {}
+      },
+      "id": "284cf122-c88e-4e59-a798-0263a5480449",
+      "name": "HTTP - Crear corrida ASN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.pollSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "16bad190-9215-4f4f-bce1-49784e53c6c1",
+      "name": "Wait - Espera worker",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1140,
+        320
+      ],
+      "webhookId": "4d3c7f02-e1fe-4bde-9321-58bb8be0efd2"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/asn/run/' + $('HTTP - Crear corrida ASN').item.json.runId }}",
+        "options": {}
+      },
+      "id": "c40ed70c-8d79-4e86-99b0-81423fb2c95f",
+      "name": "HTTP - Estado corrida ASN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes($json.status) }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "69c2c728-cd00-4fd2-a839-26939e89f6de",
+      "name": "IF - Corrida finalizada",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/asn/run/' + $('HTTP - Crear corrida ASN').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos ASN Lucas10').item.json.itemsLimit + '&offset=0' }}",
+        "options": {}
+      },
+      "id": "7b3a4ac9-14fa-466a-9d4b-a43a895a2437",
+      "name": "HTTP - Listar items corrida ASN",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bba403c2-77f0-4d17-9c4a-c01ad51ff7c4",
+              "name": "runId",
+              "value": "={{ $('HTTP - Crear corrida ASN').item.json.runId }}",
+              "type": "string"
+            },
+            {
+              "id": "12b2c1b8-d99d-4a1e-b373-a0a8499cf4bf",
+              "name": "principalKey",
+              "value": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.principalKey }}",
+              "type": "string"
+            },
+            {
+              "id": "730442c8-d8ed-4d9b-b8a9-b95d5d6389e1",
+              "name": "reportDate",
+              "value": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.reportDate }}",
+              "type": "string"
+            },
+            {
+              "id": "2f4f629b-b680-4e9e-b68a-6c5e1f4049c5",
+              "name": "status",
+              "value": "={{ $('HTTP - Estado corrida ASN').item.json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "e0c54d35-96d6-4fa0-a9b8-7a2082bf0fcb",
+              "name": "totalItems",
+              "value": "={{ $('HTTP - Estado corrida ASN').item.json.totalItems }}",
+              "type": "number"
+            },
+            {
+              "id": "1afb7d44-8a16-4721-9222-f1f575f37084",
+              "name": "doneItems",
+              "value": "={{ $('HTTP - Estado corrida ASN').item.json.doneItems }}",
+              "type": "number"
+            },
+            {
+              "id": "f31f0ce7-bc52-4a53-8fc0-96b26d1368d1",
+              "name": "failedItems",
+              "value": "={{ $('HTTP - Estado corrida ASN').item.json.failedItems }}",
+              "type": "number"
+            },
+            {
+              "id": "44ad79fc-7052-4bda-8fc4-cffab4f37d64",
+              "name": "itemsTotal",
+              "value": "={{ $json.total }}",
+              "type": "number"
+            },
+            {
+              "id": "5939dc44-4be3-4760-9532-5a095fa7e3f6",
+              "name": "items",
+              "value": "={{ $json.items }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5b4397b6-2569-450a-8d40-9fcb008f9551",
+      "name": "Edit Fields - Resumen final",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2260,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger - Diario": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Prefijos ASN Lucas10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Prefijos ASN Lucas10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields - Prefijos ASN Lucas10": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Crear corrida ASN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Crear corrida ASN": {
+      "main": [
+        [
+          {
+            "node": "Wait - Espera worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Espera worker": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Estado corrida ASN",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Estado corrida ASN": {
+      "main": [
+        [
+          {
+            "node": "IF - Corrida finalizada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Corrida finalizada": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Listar items corrida ASN",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait - Espera worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Listar items corrida ASN": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Resumen final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "caebce1f-68fb-48a7-a560-a71c0f7d2bfd",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

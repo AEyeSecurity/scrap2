@@ -119,6 +119,7 @@ docker run --rm `
 - Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)
 - Testeo y benchmark en Docker: [docs/README_TESTEO.md](docs/README_TESTEO.md)
 - Prompt de orquestacion n8n: [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md)
+- Workflow n8n de reporte masivo diario ASN para `asnlucas10`: [docs/README_N8N_REPORTE_MASIVO_DIARIO_ASNLUCAS10.md](docs/README_N8N_REPORTE_MASIVO_DIARIO_ASNLUCAS10.md)
 
 ## Notas operativas
 
