@@ -17,7 +17,7 @@ type QueryResult = {
 };
 
 class FakeQueryBuilder implements PromiseLike<QueryResult> {
-  private operation: 'select' | 'insert' = 'select';
+  private operation: 'select' | 'insert' | 'update' = 'select';
   private readonly filters: Array<{ column: string; value: unknown }> = [];
 
   constructor(
@@ -31,6 +31,12 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     return this;
   }
 
+  update(payload: unknown): FakeQueryBuilder {
+    this.operation = 'update';
+    this.client.calls.push({ table: this.table, operation: 'update', payload });
+    return this;
+  }
+
   select(columns: string): FakeQueryBuilder {
     this.client.calls.push({ table: this.table, operation: 'select-columns', columns });
     return this;
@@ -39,6 +45,16 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
   eq(column: string, value: unknown): FakeQueryBuilder {
     this.filters.push({ column, value });
     this.client.calls.push({ table: this.table, operation: 'filter', column, value });
+    return this;
+  }
+
+  order(column: string, options?: Record<string, unknown>): FakeQueryBuilder {
+    this.client.calls.push({ table: this.table, operation: 'order', column, options });
+    return this;
+  }
+
+  limit(value: number): FakeQueryBuilder {
+    this.client.calls.push({ table: this.table, operation: 'limit', value });
     return this;
   }
 
@@ -62,7 +78,7 @@ class FakeSupabaseClient {
   public readonly calls: Array<Record<string, unknown>> = [];
   private readonly results = new Map<string, QueryResult[]>();
 
-  queue(table: string, operation: 'select' | 'insert', result: QueryResult): void {
+  queue(table: string, operation: 'select' | 'insert' | 'update', result: QueryResult): void {
     const key = `${table}:${operation}`;
     const pending = this.results.get(key) ?? [];
     pending.push(result);
@@ -76,7 +92,7 @@ class FakeSupabaseClient {
 
   async dequeue(
     table: string,
-    operation: 'select' | 'insert',
+    operation: 'select' | 'insert' | 'update',
     filters: Array<{ column: string; value: unknown }>
   ): Promise<QueryResult> {
     this.calls.push({ table, operation: `resolve-${operation}`, filters });
@@ -161,8 +177,14 @@ describe('mastercrm user cashier links', () => {
     client.queue('owners', 'select', {
       data: {
         id: 'owner-1',
-        owner_key: 'owner_key_del_cajero'
+        owner_key: 'owner_key_del_cajero',
+        owner_label: 'Owner Label',
+        pagina: 'ASN'
       },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: null,
       error: null
     });
     client.queue('mastercrm_user_owner_links', 'insert', {
@@ -179,7 +201,11 @@ describe('mastercrm user cashier links', () => {
     expect(result).toEqual({
       userId: 123,
       ownerKey: 'owner_key_del_cajero',
-      linked: true
+      ownerLabel: 'Owner Label',
+      pagina: 'ASN',
+      linked: true,
+      replaced: false,
+      previousOwnerKey: null
     });
     expect(client.calls).toContainEqual({ table: 'owners', operation: 'filter', column: 'pagina', value: 'ASN' });
     expect(client.calls).toContainEqual({
@@ -244,7 +270,7 @@ describe('mastercrm user cashier links', () => {
     });
   });
 
-  it('fails with conflict when the link already exists', async () => {
+  it('replaces the previous owner when the user was already linked', async () => {
     const client = new FakeSupabaseClient();
     client.queue('mastercrm_users', 'select', {
       data: {
@@ -261,19 +287,125 @@ describe('mastercrm user cashier links', () => {
     client.queue('owners', 'select', {
       data: {
         id: 'owner-1',
-        owner_key: 'owner_1'
+        owner_key: 'owner_1',
+        owner_label: 'Owner 1',
+        pagina: 'ASN'
       },
       error: null
     });
-    client.queue('mastercrm_user_owner_links', 'insert', {
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'link-1',
+        owner_id: 'owner-old',
+        owners: {
+          id: 'owner-old',
+          owner_key: 'owner_old',
+          owner_label: 'Owner Old',
+          pagina: 'ASN'
+        }
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'update', {
       data: null,
-      error: createPostgrestError('23505', 'duplicate key value violates unique constraint')
+      error: null
     });
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
 
-    await expect(store.linkCashierToUser({ userId: 123, ownerKey: 'owner_1' })).rejects.toMatchObject({
-      code: 'CONFLICT',
-      message: 'MasterCRM user is already linked to this cashier'
+    await expect(store.linkCashierToUser({ userId: 123, ownerKey: 'owner_1' })).resolves.toEqual({
+      userId: 123,
+      ownerKey: 'owner_1',
+      ownerLabel: 'Owner 1',
+      pagina: 'ASN',
+      linked: true,
+      replaced: true,
+      previousOwnerKey: 'owner_old'
+    });
+    expect(client.calls).toContainEqual({
+      table: 'mastercrm_user_owner_links',
+      operation: 'update',
+      payload: {
+        owner_id: 'owner-1'
+      }
+    });
+  });
+});
+
+describe('mastercrm clients dashboard', () => {
+  it('uses the preferred owner alias phone in the linked owner payload', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 123,
+        username: 'juan',
+        nombre: 'Juan Perez',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'link-1',
+        owner_id: 'owner-1',
+        owners: {
+          id: 'owner-1',
+          owner_key: 'owner_1',
+          owner_label: 'Owner 1',
+          pagina: 'ASN'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', {
+      data: [
+        {
+          alias_phone: '+5491111111111',
+          is_active: false,
+          updated_at: '2026-03-11T10:00:00.000Z',
+          last_seen_at: '2026-03-11T10:00:00.000Z'
+        },
+        {
+          alias_phone: '+5492222222222',
+          is_active: true,
+          updated_at: '2026-03-12T11:00:00.000Z',
+          last_seen_at: '2026-03-12T11:00:00.000Z'
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard(123);
+
+    expect(dashboard).toEqual({
+      linkedOwner: {
+        ownerId: 'owner-1',
+        ownerKey: 'owner_1',
+        ownerLabel: 'Owner 1',
+        pagina: 'ASN',
+        telefono: '+5492222222222'
+      },
+      summary: {
+        totalClients: 0,
+        assignedClients: 0,
+        pendingClients: 0,
+        reportDate: null,
+        cargadoHoyTotal: null,
+        cargadoMesTotal: null,
+        hasReport: false
+      },
+      clientes: []
     });
   });
 });

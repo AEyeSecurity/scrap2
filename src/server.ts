@@ -214,7 +214,8 @@ const mastercrmClientsBodySchema = z
 const mastercrmLinkCashierBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
-    owner_key: z.string().optional()
+    owner_key: z.string().optional(),
+    staff_password: z.string().optional()
   })
   .passthrough();
 
@@ -362,6 +363,15 @@ function resolveMastercrmCorsOrigins(env: NodeJS.ProcessEnv = process.env): stri
   return parseListEnv(env.MASTERCRM_CORS_ORIGINS, DEFAULT_MASTERCRM_CORS_ORIGINS);
 }
 
+function resolveMastercrmStaffLinkPassword(env: NodeJS.ProcessEnv = process.env): string {
+  const password = env.MASTERCRM_STAFF_LINK_PASSWORD?.trim();
+  if (!password) {
+    throw new Error('MASTERCRM_STAFF_LINK_PASSWORD is not configured');
+  }
+
+  return password;
+}
+
 function getBuenosAiresDateToken(now = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Argentina/Buenos_Aires',
@@ -481,7 +491,7 @@ function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number 
 }
 
 function parseMastercrmLinkCashierPayload(body: unknown): {
-  data?: { userId: number; ownerKey: string };
+  data?: { userId: number; ownerKey: string; staffPassword: string };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmLinkCashierBodySchema.safeParse(body);
@@ -496,12 +506,16 @@ function parseMastercrmLinkCashierPayload(body: unknown): {
   const ownerKey = resolveAliasStringField(parsed.data, ['owner_key'], 'owner_key', issues, {
     normalize: (value) => value.trim().toLowerCase()
   });
+  const staffPassword = resolveAliasStringField(parsed.data, ['staff_password'], 'staff_password', issues, {
+    normalize: (value) => value,
+    trim: false
+  });
 
-  if (issues.length > 0 || !userId || !ownerKey) {
+  if (issues.length > 0 || !userId || !ownerKey || !staffPassword) {
     return { issues };
   }
 
-  return { data: { userId, ownerKey }, issues };
+  return { data: { userId, ownerKey, staffPassword }, issues };
 }
 
 export function createServer(
@@ -718,8 +732,40 @@ export function createServer(
     }
 
     try {
-      await getMastercrmUserStore().getActiveUserById(parsed.data.userId);
-      return reply.code(200).send([]);
+      const dashboard = await getMastercrmUserStore().getClientsDashboard(parsed.data.userId);
+      return reply.code(200).send({
+        linkedOwner: dashboard.linkedOwner
+          ? {
+              ownerKey: dashboard.linkedOwner.ownerKey,
+              ownerLabel: dashboard.linkedOwner.ownerLabel,
+              pagina: dashboard.linkedOwner.pagina,
+              telefono: dashboard.linkedOwner.telefono
+            }
+          : null,
+        summary: dashboard.summary
+          ? {
+              totalClients: dashboard.summary.totalClients,
+              assignedClients: dashboard.summary.assignedClients,
+              pendingClients: dashboard.summary.pendingClients,
+              reportDate: dashboard.summary.reportDate,
+              cargadoHoyTotal: dashboard.summary.cargadoHoyTotal,
+              cargadoMesTotal: dashboard.summary.cargadoMesTotal,
+              hasReport: dashboard.summary.hasReport
+            }
+          : null,
+        clientes: dashboard.clientes.map((client) => ({
+          id: client.id,
+          username: client.username,
+          telefono: client.telefono,
+          pagina: client.pagina,
+          estado: client.estado,
+          ownerKey: client.ownerKey,
+          ownerLabel: client.ownerLabel,
+          cargadoHoy: client.cargadoHoy,
+          cargadoMes: client.cargadoMes,
+          reportDate: client.reportDate
+        }))
+      });
     } catch (error) {
       const mappedError = toMastercrmHttpError(error);
       if (mappedError) {
@@ -742,6 +788,14 @@ export function createServer(
     }
 
     try {
+      const configuredStaffPassword = resolveMastercrmStaffLinkPassword();
+      if (parsed.data.staffPassword !== configuredStaffPassword) {
+        return reply.code(403).send({
+          success: false,
+          message: 'Clave tecnica invalida'
+        });
+      }
+
       const link = await getMastercrmUserStore().linkCashierToUser({
         userId: parsed.data.userId,
         ownerKey: normalizeMastercrmOwnerKey(parsed.data.ownerKey)
@@ -753,10 +807,18 @@ export function createServer(
         data: {
           user_id: link.userId,
           owner_key: link.ownerKey,
-          linked: link.linked
+          owner_label: link.ownerLabel,
+          pagina: link.pagina,
+          linked: link.linked,
+          replaced: link.replaced,
+          previous_owner_key: link.previousOwnerKey
         }
       });
     } catch (error) {
+      if (error instanceof Error && error.message === 'MASTERCRM_STAFF_LINK_PASSWORD is not configured') {
+        return reply.code(500).send({ success: false, message: 'Clave tecnica no configurada en backend' });
+      }
+
       const mappedError = toMastercrmHttpError(error);
       if (mappedError) {
         if (mappedError.statusCode === 400) {

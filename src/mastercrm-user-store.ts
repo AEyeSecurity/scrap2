@@ -44,7 +44,48 @@ export interface LinkCashierToMastercrmUserInput {
 export interface MastercrmUserCashierLinkRecord {
   userId: number;
   ownerKey: string;
+  ownerLabel: string;
+  pagina: 'ASN';
   linked: true;
+  replaced: boolean;
+  previousOwnerKey: string | null;
+}
+
+export interface MastercrmLinkedOwnerRecord {
+  ownerId: string;
+  ownerKey: string;
+  ownerLabel: string;
+  pagina: 'ASN';
+  telefono: string | null;
+}
+
+export interface MastercrmOwnerSummary {
+  totalClients: number;
+  assignedClients: number;
+  pendingClients: number;
+  reportDate: string | null;
+  cargadoHoyTotal: number | null;
+  cargadoMesTotal: number | null;
+  hasReport: boolean;
+}
+
+export interface MastercrmOwnerClientRecord {
+  id: string;
+  username: string | null;
+  telefono: string | null;
+  pagina: 'ASN';
+  estado: 'assigned' | 'pending';
+  ownerKey: string;
+  ownerLabel: string;
+  cargadoHoy: number | null;
+  cargadoMes: number | null;
+  reportDate: string | null;
+}
+
+export interface MastercrmClientsDashboardRecord {
+  linkedOwner: MastercrmLinkedOwnerRecord | null;
+  summary: MastercrmOwnerSummary | null;
+  clientes: MastercrmOwnerClientRecord[];
 }
 
 export interface MastercrmUserStore {
@@ -52,6 +93,7 @@ export interface MastercrmUserStore {
   authenticate(input: AuthenticateMastercrmUserInput): Promise<MastercrmUserRecord>;
   getActiveUserById(id: number): Promise<MastercrmUserRecord>;
   linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord>;
+  getClientsDashboard(userId: number): Promise<MastercrmClientsDashboardRecord>;
 }
 
 interface MastercrmUserRow {
@@ -72,6 +114,42 @@ interface DatabaseErrorLike {
 interface OwnerRow {
   id: string;
   owner_key: string;
+  owner_label: string;
+  pagina: 'ASN';
+}
+
+interface UserOwnerLinkRow {
+  id: string;
+  owner_id: string;
+  owners: OwnerRow | OwnerRow[];
+}
+
+interface ClientRow {
+  id: string;
+  username: string | null;
+  phone_e164: string | null;
+  pagina: 'ASN';
+}
+
+interface OwnerClientLinkRow {
+  id: string;
+  status: 'assigned' | 'pending';
+  client_id: string;
+  clients: ClientRow | ClientRow[];
+}
+
+interface ReportDailySnapshotRow {
+  report_date: string;
+  username: string;
+  cargado_hoy: number | string | null;
+  cargado_mes: number | string | null;
+}
+
+interface OwnerAliasRow {
+  alias_phone: string | null;
+  is_active: boolean;
+  updated_at: string;
+  last_seen_at: string;
 }
 
 export class MastercrmUserStoreError extends Error {
@@ -193,6 +271,54 @@ export function toMastercrmUserRecord(row: MastercrmUserRow): MastercrmUserRecor
   };
 }
 
+function unwrapSingleRelation<T>(value: T | T[] | null | undefined): T | null {
+  if (Array.isArray(value)) {
+    return value[0] ?? null;
+  }
+
+  return value ?? null;
+}
+
+function toFiniteNumber(value: number | string | null | undefined): number | null {
+  if (value == null) {
+    return null;
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function compareIsoDatesDesc(left: string, right: string): number {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  const normalizedLeft = Number.isFinite(leftTime) ? leftTime : 0;
+  const normalizedRight = Number.isFinite(rightTime) ? rightTime : 0;
+
+  return normalizedRight - normalizedLeft;
+}
+
+function pickPreferredAliasPhone(rows: OwnerAliasRow[]): string | null {
+  const rowsWithPhone = rows.filter((row) => typeof row.alias_phone === 'string' && row.alias_phone.trim().length > 0);
+  if (rowsWithPhone.length === 0) {
+    return null;
+  }
+
+  const sorted = [...rowsWithPhone].sort((left, right) => {
+    if (left.is_active !== right.is_active) {
+      return left.is_active ? -1 : 1;
+    }
+
+    const updatedComparison = compareIsoDatesDesc(left.updated_at, right.updated_at);
+    if (updatedComparison !== 0) {
+      return updatedComparison;
+    }
+
+    return compareIsoDatesDesc(left.last_seen_at, right.last_seen_at);
+  });
+
+  return sorted[0]?.alias_phone ?? null;
+}
+
 class SupabaseMastercrmUserStore implements MastercrmUserStore {
   constructor(private readonly client: SupabaseClient) {}
 
@@ -283,7 +409,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const { data: ownerData, error: ownerError } = await this.client
       .from('owners')
-      .select('id, owner_key')
+      .select('id, owner_key, owner_label, pagina')
       .eq('pagina', 'ASN')
       .eq('owner_key', ownerKey)
       .maybeSingle();
@@ -296,19 +422,193 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
 
     const owner = ownerData as OwnerRow;
-    const { error: linkError } = await this.client.from('mastercrm_user_owner_links').insert({
-      mastercrm_user_id: input.userId,
-      owner_id: owner.id
-    });
+    const { data: existingLinkData, error: existingLinkError } = await this.client
+      .from('mastercrm_user_owner_links')
+      .select('id, owner_id, owners!inner(id, owner_key, owner_label, pagina)')
+      .eq('mastercrm_user_id', input.userId)
+      .maybeSingle();
 
-    if (linkError) {
-      throw mapPostgrestError(linkError, 'MasterCRM user is already linked to this cashier');
+    if (existingLinkError) {
+      throw mapPostgrestError(existingLinkError, 'Could not read existing MasterCRM user-owner link');
+    }
+
+    const existingLink = existingLinkData as UserOwnerLinkRow | null;
+    const existingOwner = unwrapSingleRelation(existingLink?.owners);
+    const previousOwnerKey = existingOwner?.owner_key ?? null;
+    const replaced = Boolean(previousOwnerKey && previousOwnerKey !== owner.owner_key);
+
+    if (!existingLink) {
+      const { error: linkError } = await this.client.from('mastercrm_user_owner_links').insert({
+        mastercrm_user_id: input.userId,
+        owner_id: owner.id
+      });
+
+      if (linkError) {
+        throw mapPostgrestError(linkError, 'Could not link MasterCRM user to cashier');
+      }
+    } else if (existingLink.owner_id !== owner.id) {
+      const { error: updateError } = await this.client
+        .from('mastercrm_user_owner_links')
+        .update({
+          owner_id: owner.id
+        })
+        .eq('id', existingLink.id);
+
+      if (updateError) {
+        throw mapPostgrestError(updateError, 'Could not replace MasterCRM user cashier link');
+      }
     }
 
     return {
       userId: input.userId,
       ownerKey: owner.owner_key,
-      linked: true
+      ownerLabel: owner.owner_label,
+      pagina: owner.pagina,
+      linked: true,
+      replaced,
+      previousOwnerKey
+    };
+  }
+
+  async getClientsDashboard(userId: number): Promise<MastercrmClientsDashboardRecord> {
+    if (!Number.isInteger(userId) || userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'id must be a positive integer');
+    }
+
+    await this.getActiveUserById(userId);
+
+    const { data: linkedOwnerData, error: linkedOwnerError } = await this.client
+      .from('mastercrm_user_owner_links')
+      .select('id, owner_id, owners!inner(id, owner_key, owner_label, pagina)')
+      .eq('mastercrm_user_id', userId)
+      .maybeSingle();
+
+    if (linkedOwnerError) {
+      throw mapPostgrestError(linkedOwnerError, 'Could not read linked cashier owner');
+    }
+
+    const linkedOwnerRow = linkedOwnerData as UserOwnerLinkRow | null;
+    const owner = unwrapSingleRelation(linkedOwnerRow?.owners);
+    if (!linkedOwnerRow || !owner) {
+      return {
+        linkedOwner: null,
+        summary: null,
+        clientes: []
+      };
+    }
+
+    const { data: ownerAliasesData, error: ownerAliasesError } = await this.client
+      .from('owner_aliases')
+      .select('alias_phone, is_active, updated_at, last_seen_at')
+      .eq('owner_id', owner.id);
+
+    if (ownerAliasesError) {
+      throw mapPostgrestError(ownerAliasesError, 'Could not read owner alias phones');
+    }
+
+    const ownerAliasRows = (ownerAliasesData as OwnerAliasRow[] | null) ?? [];
+    const ownerPhone = pickPreferredAliasPhone(ownerAliasRows);
+
+    const linkedOwner: MastercrmLinkedOwnerRecord = {
+      ownerId: owner.id,
+      ownerKey: owner.owner_key,
+      ownerLabel: owner.owner_label,
+      pagina: owner.pagina,
+      telefono: ownerPhone
+    };
+
+    const { data: ownerClientLinksData, error: ownerClientLinksError } = await this.client
+      .from('owner_client_links')
+      .select('id, status, client_id, clients!inner(id, username, phone_e164, pagina)')
+      .eq('owner_id', owner.id);
+
+    if (ownerClientLinksError) {
+      throw mapPostgrestError(ownerClientLinksError, 'Could not read owner client links');
+    }
+
+    const ownerClientLinks = (ownerClientLinksData as OwnerClientLinkRow[] | null) ?? [];
+    const totalClients = ownerClientLinks.length;
+    const assignedClients = ownerClientLinks.filter((link) => link.status === 'assigned').length;
+    const pendingClients = ownerClientLinks.filter((link) => link.status === 'pending').length;
+
+    const { data: latestReportDateData, error: latestReportDateError } = await this.client
+      .from('report_daily_snapshots')
+      .select('report_date')
+      .eq('owner_id', owner.id)
+      .order('report_date', { ascending: false })
+      .limit(1);
+
+    if (latestReportDateError) {
+      throw mapPostgrestError(latestReportDateError, 'Could not read owner report date');
+    }
+
+    const reportDate = Array.isArray(latestReportDateData) ? latestReportDateData[0]?.report_date ?? null : null;
+    let cargadoHoyTotal: number | null = null;
+    let cargadoMesTotal: number | null = null;
+    const snapshotByUsername = new Map<
+      string,
+      { cargadoHoy: number | null; cargadoMes: number | null; reportDate: string | null }
+    >();
+
+    if (reportDate) {
+      const { data: snapshotsData, error: snapshotsError } = await this.client
+        .from('report_daily_snapshots')
+        .select('report_date, username, cargado_hoy, cargado_mes')
+        .eq('owner_id', owner.id)
+        .eq('report_date', reportDate);
+
+      if (snapshotsError) {
+        throw mapPostgrestError(snapshotsError, 'Could not read owner report snapshots');
+      }
+
+      const snapshots = (snapshotsData as ReportDailySnapshotRow[] | null) ?? [];
+      cargadoHoyTotal = 0;
+      cargadoMesTotal = 0;
+
+      for (const snapshot of snapshots) {
+        const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
+        const cargadoMes = toFiniteNumber(snapshot.cargado_mes);
+        snapshotByUsername.set(snapshot.username, {
+          cargadoHoy,
+          cargadoMes,
+          reportDate: snapshot.report_date
+        });
+        cargadoHoyTotal += cargadoHoy ?? 0;
+        cargadoMesTotal += cargadoMes ?? 0;
+      }
+    }
+
+    const clientes: MastercrmOwnerClientRecord[] = ownerClientLinks.map((link) => {
+      const client = unwrapSingleRelation(link.clients);
+      const username = client?.username ?? null;
+      const snapshot = username ? snapshotByUsername.get(username) : undefined;
+
+      return {
+        id: link.id,
+        username,
+        telefono: client?.phone_e164 ?? null,
+        pagina: client?.pagina ?? owner.pagina,
+        estado: link.status,
+        ownerKey: owner.owner_key,
+        ownerLabel: owner.owner_label,
+        cargadoHoy: snapshot?.cargadoHoy ?? null,
+        cargadoMes: snapshot?.cargadoMes ?? null,
+        reportDate: snapshot?.reportDate ?? reportDate
+      };
+    });
+
+    return {
+      linkedOwner,
+      summary: {
+        totalClients,
+        assignedClients,
+        pendingClients,
+        reportDate,
+        cargadoHoyTotal,
+        cargadoMesTotal,
+        hasReport: Boolean(reportDate)
+      },
+      clientes
     };
   }
 }
