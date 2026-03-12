@@ -42,6 +42,8 @@ Los bloques siguientes estan pensados para copiar tal cual en llamadas `curl` co
 }
 ```
 
+`telefono` sin `ownerContext` ahora devuelve `400`.
+
 ## Intake pending
 
 ```json
@@ -73,6 +75,12 @@ Los bloques siguientes estan pensados para copiar tal cual en llamadas `curl` co
   }
 }
 ```
+
+Notas:
+
+- `ownerContext` es obligatorio.
+- Si el telefono no existia en Supabase, este endpoint crea cliente y vinculo.
+- Si el username ya estaba en otro telefono del mismo owner, lo mueve automaticamente.
 
 ## Carga
 

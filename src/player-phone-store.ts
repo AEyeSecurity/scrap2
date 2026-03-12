@@ -3,9 +3,28 @@ import type { PaginaCode } from './types';
 
 type PlayerPhoneStoreErrorCode = 'CONFIGURATION' | 'VALIDATION' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL';
 
+export type PlayerPhoneStoreErrorReason =
+  | 'OWNER_CONTEXT_REQUIRED'
+  | 'INVALID_PHONE_FORMAT'
+  | 'USERNAME_ASSIGNED_TO_OTHER_OWNER'
+  | 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+  | 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+  | 'OWNER_CLIENT_LINK_NOT_FOUND'
+  | 'INVALID_OWNER_CONTEXT'
+  | 'CONFIGURATION_ERROR'
+  | 'UNEXPECTED_PERSISTENCE_ERROR';
+
 interface DatabaseErrorLike {
   code?: string | null;
   message: string;
+  details?: string | null;
+}
+
+interface HttpErrorResponse {
+  statusCode: number;
+  message: string;
+  code: string;
+  details?: Record<string, unknown>;
 }
 
 export interface OwnerContextInput {
@@ -24,17 +43,15 @@ interface NormalizedOwnerContext {
 
 export interface SyncCreatePlayerLinkInput {
   pagina: PaginaCode;
-  cajeroUsername: string;
   jugadorUsername: string;
   telefono?: string;
-  ownerContext?: OwnerContextInput;
+  ownerContext: OwnerContextInput;
 }
 
 export interface IntakePendingInput {
   pagina: PaginaCode;
-  cajeroUsername: string;
   telefono: string;
-  ownerContext?: OwnerContextInput;
+  ownerContext: OwnerContextInput;
 }
 
 export interface IntakePendingResult {
@@ -48,16 +65,19 @@ export interface IntakePendingResult {
 
 export interface AssignPhoneInput {
   pagina: PaginaCode;
-  cajeroUsername: string;
   jugadorUsername: string;
   telefono: string;
-  ownerContext?: OwnerContextInput;
+  ownerContext: OwnerContextInput;
 }
 
 export interface AssignUsernameByPhoneResult {
   previousUsername: string | null;
   currentUsername: string;
   overwritten: boolean;
+  createdClient: boolean;
+  createdLink: boolean;
+  movedFromPhone: string | null;
+  deletedOldPhone: boolean;
 }
 
 export interface PlayerPhoneStore {
@@ -68,21 +88,51 @@ export interface PlayerPhoneStore {
   assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
 }
 
+interface PlayerPhoneStoreErrorOptions extends ErrorOptions {
+  reason?: PlayerPhoneStoreErrorReason;
+  details?: Record<string, unknown>;
+}
+
 export class PlayerPhoneStoreError extends Error {
+  public readonly reason?: PlayerPhoneStoreErrorReason;
+  public readonly details?: Record<string, unknown>;
+
   constructor(
     public readonly code: PlayerPhoneStoreErrorCode,
     message: string,
-    options?: ErrorOptions
+    options?: PlayerPhoneStoreErrorOptions
   ) {
     super(message, options);
     this.name = 'PlayerPhoneStoreError';
+    this.reason = options?.reason;
+    this.details = options?.details;
   }
+}
+
+function getDefaultReason(code: PlayerPhoneStoreErrorCode): PlayerPhoneStoreErrorReason {
+  if (code === 'CONFIGURATION') {
+    return 'CONFIGURATION_ERROR';
+  }
+  if (code === 'VALIDATION') {
+    return 'INVALID_OWNER_CONTEXT';
+  }
+  if (code === 'NOT_FOUND') {
+    return 'OWNER_CLIENT_LINK_NOT_FOUND';
+  }
+  if (code === 'CONFLICT') {
+    return 'USERNAME_ALREADY_EXISTS_IN_PAGINA';
+  }
+
+  return 'UNEXPECTED_PERSISTENCE_ERROR';
 }
 
 export function normalizeUsername(value: string, label: string): string {
   const normalized = value.trim().toLowerCase();
   if (!normalized) {
-    throw new PlayerPhoneStoreError('VALIDATION', `${label} is required`);
+    throw new PlayerPhoneStoreError('VALIDATION', `${label} is required`, {
+      reason: 'INVALID_OWNER_CONTEXT',
+      details: { path: label }
+    });
   }
 
   return normalized;
@@ -92,22 +142,35 @@ export function normalizePhone(value: string): string {
   const compact = value.replace(/[\s()-]/g, '');
   const withPlus = compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
   if (!/^\+[1-9]\d{7,14}$/.test(withPlus)) {
-    throw new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format');
+    throw new PlayerPhoneStoreError('VALIDATION', 'telefono must follow strict E.164 format', {
+      reason: 'INVALID_PHONE_FORMAT',
+      details: { field: 'telefono', value }
+    });
   }
 
   return withPlus;
 }
 
-function normalizeOwnerContext(value: OwnerContextInput): NormalizedOwnerContext {
-  const ownerKey = normalizeUsername(value.ownerKey, 'ownerContext.ownerKey');
-  const ownerLabel = value.ownerLabel.trim();
-  if (!ownerLabel) {
-    throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext.ownerLabel is required');
+function requireOwnerContext(ownerContext: OwnerContextInput | undefined): NormalizedOwnerContext {
+  if (!ownerContext) {
+    throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext is required', {
+      reason: 'OWNER_CONTEXT_REQUIRED',
+      details: { path: 'ownerContext' }
+    });
   }
 
-  const actorAlias = value.actorAlias == null ? null : value.actorAlias.trim() || null;
+  const ownerKey = normalizeUsername(ownerContext.ownerKey, 'ownerContext.ownerKey');
+  const ownerLabel = ownerContext.ownerLabel.trim();
+  if (!ownerLabel) {
+    throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext.ownerLabel is required', {
+      reason: 'INVALID_OWNER_CONTEXT',
+      details: { path: 'ownerContext.ownerLabel' }
+    });
+  }
+
+  const actorAlias = ownerContext.actorAlias == null ? null : ownerContext.actorAlias.trim() || null;
   const actorPhone =
-    value.actorPhone == null || value.actorPhone.trim() === '' ? null : normalizePhone(value.actorPhone);
+    ownerContext.actorPhone == null || ownerContext.actorPhone.trim() === '' ? null : normalizePhone(ownerContext.actorPhone);
 
   return {
     ownerKey,
@@ -117,39 +180,33 @@ function normalizeOwnerContext(value: OwnerContextInput): NormalizedOwnerContext
   };
 }
 
-function resolveOwnerContext(ownerContext: OwnerContextInput | undefined, cajeroUsername: string): NormalizedOwnerContext {
-  if (ownerContext) {
-    return normalizeOwnerContext(ownerContext);
-  }
-
-  const ownerKey = normalizeUsername(cajeroUsername, 'agente');
-  return {
-    ownerKey,
-    ownerLabel: ownerKey,
-    actorAlias: ownerKey,
-    actorPhone: null
-  };
-}
-
 export function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): PlayerPhoneStoreError {
   const code = error.code ?? '';
   if (code === '23505' || code === '23503') {
-    return new PlayerPhoneStoreError('CONFLICT', fallbackMessage);
+    return new PlayerPhoneStoreError('CONFLICT', fallbackMessage, {
+      reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
   }
 
   if (code === '23514' || code === '22P02' || code === '22023') {
-    return new PlayerPhoneStoreError('VALIDATION', fallbackMessage);
+    return new PlayerPhoneStoreError('VALIDATION', fallbackMessage, {
+      reason: fallbackMessage.toLowerCase().includes('telefono') ? 'INVALID_PHONE_FORMAT' : 'INVALID_OWNER_CONTEXT'
+    });
   }
 
   const detail = code ? `${fallbackMessage} (${code}: ${error.message})` : `${fallbackMessage}: ${error.message}`;
-  return new PlayerPhoneStoreError('INTERNAL', detail);
+  return new PlayerPhoneStoreError('INTERNAL', detail, {
+    reason: 'UNEXPECTED_PERSISTENCE_ERROR',
+    details: error.details ? { dbDetails: error.details } : undefined
+  });
 }
 
 function mapPostgrestError(error: PostgrestError, fallbackMessage: string): PlayerPhoneStoreError {
   return mapDatabaseError(
     {
       code: error.code,
-      message: error.message
+      message: error.message,
+      details: error.details
     },
     fallbackMessage
   );
@@ -161,10 +218,14 @@ function mapIntakePendingRpcError(error: PostgrestError): PlayerPhoneStoreError 
   const normalizedMessage = message.toLowerCase();
 
   if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
-    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner');
+    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner', {
+      reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
   }
   if (code === 'P0001' && normalizedMessage.includes('owner-client link not found')) {
-    return new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist');
+    return new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+      reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+    });
   }
 
   return mapPostgrestError(error, message);
@@ -176,16 +237,24 @@ function mapAssignPendingUsernameRpcError(error: PostgrestError): PlayerPhoneSto
   const normalizedMessage = message.toLowerCase();
 
   if (code === 'P0001' && normalizedMessage.includes('link not found')) {
-    return new PlayerPhoneStoreError('NOT_FOUND', 'pending owner-client link does not exist');
+    return new PlayerPhoneStoreError('NOT_FOUND', 'pending owner-client link does not exist', {
+      reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+    });
   }
   if (code === 'P0001' && normalizedMessage.includes('immutable')) {
-    return new PlayerPhoneStoreError('NOT_FOUND', 'pending owner-client link does not exist');
+    return new PlayerPhoneStoreError('NOT_FOUND', 'pending owner-client link does not exist', {
+      reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+    });
   }
-  if (
-    code === 'P0001' &&
-    (normalizedMessage.includes('username already exists') || normalizedMessage.includes('telefono already assigned'))
-  ) {
-    return new PlayerPhoneStoreError('CONFLICT', message);
+  if (code === 'P0001' && normalizedMessage.includes('username already exists')) {
+    return new PlayerPhoneStoreError('CONFLICT', message, {
+      reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
+  }
+  if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
+    return new PlayerPhoneStoreError('CONFLICT', message, {
+      reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
   }
 
   return mapPostgrestError(error, message);
@@ -196,16 +265,28 @@ export function mapAssignUsernameByPhoneRpcError(error: PostgrestError): PlayerP
   const message = error.message || 'could not assign username by phone';
   const normalizedMessage = message.toLowerCase();
 
-  if (code === 'P0001' && normalizedMessage.includes('link not found')) {
-    return new PlayerPhoneStoreError('NOT_FOUND', 'No existe vinculo para agente+telefono');
+  if (code === 'P0001' && normalizedMessage.includes('username assigned to other owner')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'El usuario ya esta asignado a otro cajero', {
+      reason: 'USERNAME_ASSIGNED_TO_OTHER_OWNER'
+    });
   }
 
   if (code === 'P0001' && normalizedMessage.includes('username already exists')) {
-    return new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina');
+    return new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina', {
+      reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
   }
 
   if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
-    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner');
+    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner', {
+      reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
+  }
+
+  if (code === 'P0001' && normalizedMessage.includes('link not found')) {
+    return new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+      reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+    });
   }
 
   return mapPostgrestError(error, message);
@@ -216,12 +297,22 @@ function mapSyncCreatePlayerLinkRpcError(error: PostgrestError): PlayerPhoneStor
   const message = error.message || 'could not sync create-player link';
   const normalizedMessage = message.toLowerCase();
 
+  if (code === 'P0001' && normalizedMessage.includes('username assigned to other owner')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'El usuario ya esta asignado a otro cajero', {
+      reason: 'USERNAME_ASSIGNED_TO_OTHER_OWNER'
+    });
+  }
+
   if (code === 'P0001' && normalizedMessage.includes('username already exists')) {
-    return new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina');
+    return new PlayerPhoneStoreError('CONFLICT', 'username already exists in this pagina', {
+      reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
   }
 
   if (code === 'P0001' && normalizedMessage.includes('telefono already assigned')) {
-    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner');
+    return new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner', {
+      reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
   }
 
   return mapPostgrestError(error, message);
@@ -230,7 +321,9 @@ function mapSyncCreatePlayerLinkRpcError(error: PostgrestError): PlayerPhoneStor
 function asIntakePendingResult(data: unknown): IntakePendingResult {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 did not return row');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 did not return row', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
 
   const payload = row as {
@@ -243,22 +336,34 @@ function asIntakePendingResult(data: unknown): IntakePendingResult {
   };
 
   if (typeof payload.cajero_id !== 'string' || !payload.cajero_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid cajero_id');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid cajero_id', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (typeof payload.jugador_id !== 'string' || !payload.jugador_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid jugador_id');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid jugador_id', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (typeof payload.link_id !== 'string' || !payload.link_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid link_id');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid link_id', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (typeof payload.estado !== 'string' || !payload.estado) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid estado');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid estado', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (payload.owner_id !== undefined && payload.owner_id !== null && typeof payload.owner_id !== 'string') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid owner_id');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid owner_id', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (payload.client_id !== undefined && payload.client_id !== null && typeof payload.client_id !== 'string') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid client_id');
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid client_id', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
 
   return {
@@ -274,33 +379,73 @@ function asIntakePendingResult(data: unknown): IntakePendingResult {
 function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResult {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v3 did not return row');
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 did not return row', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
 
   const payload = row as {
     previous_username?: unknown;
     current_username?: unknown;
     overwritten?: unknown;
+    created_client?: unknown;
+    created_link?: unknown;
+    moved_from_phone?: unknown;
+    deleted_old_phone?: unknown;
   };
 
   if (typeof payload.current_username !== 'string' || !payload.current_username) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v3 returned invalid current_username');
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid current_username', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (typeof payload.overwritten !== 'boolean') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v3 returned invalid overwritten');
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid overwritten', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
+  }
+  if (typeof payload.created_client !== 'boolean') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid created_client', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
+  }
+  if (typeof payload.created_link !== 'boolean') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid created_link', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
+  }
+  if (typeof payload.deleted_old_phone !== 'boolean') {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid deleted_old_phone', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
   if (
     payload.previous_username !== null &&
     payload.previous_username !== undefined &&
     typeof payload.previous_username !== 'string'
   ) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v3 returned invalid previous_username');
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid previous_username', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
+  }
+  if (
+    payload.moved_from_phone !== null &&
+    payload.moved_from_phone !== undefined &&
+    typeof payload.moved_from_phone !== 'string'
+  ) {
+    throw new PlayerPhoneStoreError('INTERNAL', 'assign_username_by_phone_v4 returned invalid moved_from_phone', {
+      reason: 'UNEXPECTED_PERSISTENCE_ERROR'
+    });
   }
 
   return {
     previousUsername: (payload.previous_username as string | null | undefined) ?? null,
     currentUsername: payload.current_username,
-    overwritten: payload.overwritten
+    overwritten: payload.overwritten,
+    createdClient: payload.created_client,
+    createdLink: payload.created_link,
+    movedFromPhone: (payload.moved_from_phone as string | null | undefined) ?? null,
+    deletedOldPhone: payload.deleted_old_phone
   };
 }
 
@@ -310,7 +455,7 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
   async intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult> {
     const pagina = input.pagina;
     const telefono = normalizePhone(input.telefono);
-    const ownerContext = resolveOwnerContext(input.ownerContext, input.cajeroUsername);
+    const ownerContext = requireOwnerContext(input.ownerContext);
 
     const { data, error } = await this.client.rpc('intake_pending_cliente_v3', {
       p_owner_key: ownerContext.ownerKey,
@@ -336,7 +481,7 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const pagina = input.pagina;
     const telefono = normalizePhone(input.telefono);
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
-    const ownerContext = resolveOwnerContext(input.ownerContext, input.cajeroUsername);
+    const ownerContext = requireOwnerContext(input.ownerContext);
 
     const { error } = await this.client.rpc('sync_create_player_link_v3', {
       p_owner_key: ownerContext.ownerKey,
@@ -357,7 +502,7 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const pagina = input.pagina;
     const telefono = normalizePhone(input.telefono);
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
-    const ownerContext = resolveOwnerContext(input.ownerContext, input.cajeroUsername);
+    const ownerContext = requireOwnerContext(input.ownerContext);
 
     const { error } = await this.client.rpc('assign_pending_username_v3', {
       p_owner_key: ownerContext.ownerKey,
@@ -382,9 +527,9 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const pagina = input.pagina;
     const telefono = normalizePhone(input.telefono);
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
-    const ownerContext = resolveOwnerContext(input.ownerContext, input.cajeroUsername);
+    const ownerContext = requireOwnerContext(input.ownerContext);
 
-    const { data, error } = await this.client.rpc('assign_username_by_phone_v3', {
+    const { data, error } = await this.client.rpc('assign_username_by_phone_v4', {
       p_owner_key: ownerContext.ownerKey,
       p_cliente_telefono: telefono,
       p_username: jugadorUsername,
@@ -402,25 +547,32 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
   }
 }
 
-export function toHttpError(error: unknown): { statusCode: number; message: string } | null {
+export function toHttpError(error: unknown): HttpErrorResponse | null {
   if (!(error instanceof PlayerPhoneStoreError)) {
     return null;
   }
 
+  const code = error.reason ?? getDefaultReason(error.code);
+
   if (error.code === 'VALIDATION') {
-    return { statusCode: 400, message: error.message };
+    return { statusCode: 400, message: error.message, code, ...(error.details ? { details: error.details } : {}) };
   }
   if (error.code === 'NOT_FOUND') {
-    return { statusCode: 404, message: error.message };
+    return { statusCode: 404, message: error.message, code, ...(error.details ? { details: error.details } : {}) };
   }
   if (error.code === 'CONFLICT') {
-    return { statusCode: 409, message: error.message };
+    return { statusCode: 409, message: error.message, code, ...(error.details ? { details: error.details } : {}) };
   }
   if (error.code === 'CONFIGURATION') {
-    return { statusCode: 500, message: error.message };
+    return { statusCode: 500, message: error.message, code, ...(error.details ? { details: error.details } : {}) };
   }
 
-  return { statusCode: 500, message: 'Unexpected persistence error' };
+  return {
+    statusCode: 500,
+    message: error.message,
+    code,
+    ...(error.details ? { details: error.details } : {})
+  };
 }
 
 export function createPlayerPhoneStoreFromEnv(env: NodeJS.ProcessEnv = process.env): PlayerPhoneStore {
@@ -430,14 +582,16 @@ export function createPlayerPhoneStoreFromEnv(env: NodeJS.ProcessEnv = process.e
   if (!url || !serviceRoleKey) {
     throw new PlayerPhoneStoreError(
       'CONFIGURATION',
-      'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY'
+      'Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY',
+      { reason: 'CONFIGURATION_ERROR' }
     );
   }
 
   if (serviceRoleKey.startsWith('sb_publishable_')) {
     throw new PlayerPhoneStoreError(
       'CONFIGURATION',
-      'SUPABASE_SERVICE_ROLE_KEY is invalid: got a publishable key. Use the service_role/secret key.'
+      'SUPABASE_SERVICE_ROLE_KEY is invalid: got a publishable key. Use the service_role/secret key.',
+      { reason: 'CONFIGURATION_ERROR' }
     );
   }
 

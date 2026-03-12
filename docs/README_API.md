@@ -79,11 +79,11 @@ Respuesta:
 
 ### `POST /users/create-player`
 
-Alta asincrona de usuario. Si mandas `telefono`, puede sincronizar Supabase. Si ademas mandas `ownerContext`, usa identidad owner-centric.
+Alta asincrona de usuario. Si mandas `telefono`, `ownerContext` pasa a ser obligatorio para sincronizar Supabase sin fallbacks legacy.
 
 ### `POST /users/intake-pending`
 
-No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono.
+No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono. `ownerContext` es obligatorio.
 
 ### `POST /users/assign-phone`
 
@@ -91,14 +91,50 @@ Flujo sincronico:
 
 1. valida payload;
 2. verifica en ASN que el usuario existe;
-3. asigna `telefono -> username` en Supabase.
+3. crea o actualiza `telefono -> username` en Supabase para el owner indicado.
+
+Reglas:
+
+- `ownerContext` es obligatorio.
+- Si el telefono no existia, crea cliente y vinculo.
+- Si el telefono ya tenia otro username, lo sobreescribe.
+- Si el telefono ya tenia ese username, responde idempotente.
+- Si el username estaba en otro telefono del mismo owner, lo mueve al telefono nuevo.
+- Si el username estaba en otro owner, devuelve conflicto.
 
 Errores esperables:
 
 - `400`: payload invalido o telefono fuera de E.164.
-- `404`: usuario ASN inexistente o vinculo inexistente.
-- `409`: conflicto de username o telefono.
+- `404`: usuario ASN inexistente.
+- `409`: conflicto de username entre owners.
 - `501`: pagina distinta de ASN.
+
+Contrato de error:
+
+```json
+{
+  "message": "El usuario ya esta asignado a otro cajero",
+  "code": "USERNAME_ASSIGNED_TO_OTHER_OWNER",
+  "details": {
+    "usuario": "player_1"
+  }
+}
+```
+
+Respuesta exitosa posible:
+
+```json
+{
+  "status": "ok",
+  "overwritten": true,
+  "previousUsername": "ailen389",
+  "currentUsername": "1ailen389",
+  "createdClient": true,
+  "createdLink": true,
+  "movedFromPhone": "+5493514000000",
+  "deletedOldPhone": true
+}
+```
 
 ### `POST /users/deposit`
 
@@ -201,6 +237,6 @@ El worker se activa por defecto cuando hay configuracion de Supabase y puede aju
 ## Recomendacion practica
 
 - Para el detalle de login/registro web, ver `docs/README_MASTERCRM_AUTH.md`.
-- Usa `ownerContext` siempre que puedas.
+- Usa `ownerContext` siempre en flujos que persisten owner/client (`create-player` con `telefono`, `intake-pending`, `assign-phone`).
 - Trata `GET /jobs/:id` como fuente de verdad del resultado.
 - Monta `artifacts/` como volumen para inspeccionar errores.
