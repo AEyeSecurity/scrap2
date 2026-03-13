@@ -104,6 +104,7 @@ export interface MastercrmOwnerSummary {
   assignedClients: number;
   pendingClients: number;
   reportDate: string | null;
+  reportUpdatedAt: string | null;
   cargadoHoyTotal: number | null;
   cargadoMesTotal: number | null;
   hasReport: boolean;
@@ -207,6 +208,10 @@ interface OwnerMonthlyAdSpendRow {
 
 interface OwnerClientEventRow {
   event_type: 'intake' | 'assign_username';
+}
+
+interface ReportRunFinishedAtRow {
+  finished_at: string | null;
 }
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
@@ -738,6 +743,8 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const latestReportDateRows = (latestReportDateResult.data as Array<{ report_date: string }> | null) ?? [];
     const reportDate = latestReportDateRows[0]?.report_date ?? null;
+    const principalKey = owner.owner_key.split(':')[0] ?? owner.owner_key;
+    let reportUpdatedAt: string | null = null;
 
     let cargadoHoyTotal: number | null = null;
     let cargadoMesTotal: number | null = null;
@@ -779,6 +786,22 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       }
 
       clientesConReporte = reportClientIds.size;
+
+      const { data: reportRunData, error: reportRunError } = await this.client
+        .from('report_runs')
+        .select('finished_at')
+        .eq('principal_key', principalKey)
+        .eq('report_date', reportDate)
+        .in('status', ['completed', 'completed_with_errors'])
+        .order('finished_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (reportRunError) {
+        throw mapPostgrestError(reportRunError, 'Could not read owner report run timestamp');
+      }
+
+      reportUpdatedAt = (reportRunData as ReportRunFinishedAtRow | null)?.finished_at ?? null;
     }
 
     const financialSettings = financialSettingsResult.data as OwnerFinancialSettingsRow | null;
@@ -830,6 +853,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         assignedClients,
         pendingClients,
         reportDate,
+        reportUpdatedAt,
         cargadoHoyTotal,
         cargadoMesTotal,
         hasReport: Boolean(reportDate)

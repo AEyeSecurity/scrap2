@@ -853,6 +853,7 @@ export function createServer(
               assignedClients: dashboard.summary.assignedClients,
               pendingClients: dashboard.summary.pendingClients,
               reportDate: dashboard.summary.reportDate,
+              reportUpdatedAt: dashboard.summary.reportUpdatedAt,
               cargadoHoyTotal: dashboard.summary.cargadoHoyTotal,
               cargadoMesTotal: dashboard.summary.cargadoMesTotal,
               hasReport: dashboard.summary.hasReport

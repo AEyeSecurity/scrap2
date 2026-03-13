@@ -305,6 +305,9 @@ Notas operativas:
 - eso no impide ver datos actualizados si la corrida ya fue procesada antes y los snapshots existen en Supabase
 - para `Lucas10`, al momento de esta validacion, los `59` clientes `assigned` ya tenian snapshot del `2026-03-13`
 - los `14` faltantes en snapshot correspondian a `pending`, no a fallo del reporte
+- `/mastercrm-clients` ahora tambien expone `summary.reportUpdatedAt`
+- ese campo sale de `report_runs.finished_at` para el `principal_key` y `report_date` del owner
+- el frontend lo usa para mostrar la ultima fecha y hora real de corrida en `Detalle del cliente`
 
 ## Regla de seguridad UI/API
 
