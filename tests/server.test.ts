@@ -198,7 +198,8 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   }> = [];
 
   public readonly getByIdInputs: number[] = [];
-  public readonly dashboardInputs: number[] = [];
+  public readonly dashboardInputs: Array<{ userId: number; month?: string }> = [];
+  public readonly financialInputs: Array<{ userId: number; month: string; adSpendArs: number; commissionPct: number }> = [];
 
   public readonly linkInputs: Array<{
     userId: number;
@@ -280,10 +281,50 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     previousOwnerKey: null
   });
 
-  public getClientsDashboardBehavior: (userId: number) => Promise<MastercrmClientsDashboardRecord> = async () => ({
+  public getClientsDashboardBehavior: (input: { userId: number; month?: string }) => Promise<MastercrmClientsDashboardRecord> = async (input) => ({
     linkedOwner: null,
     summary: null,
+    financialInputs: {
+      month: input.month ?? '2026-03',
+      adSpendArs: null,
+      commissionPct: null
+    },
+    primaryKpis: {
+      cargadoMesArs: null,
+      gananciaEstimadaArs: null,
+      roiEstimadoPct: null,
+      costoPorLeadRealArs: null,
+      conversionAsignadoPct: null
+    },
+    statsKpis: {
+      clientesTotales: 0,
+      asignados: 0,
+      pendientes: 0,
+      cargadoHoyArs: null,
+      cargadoMesArs: null,
+      intakesMes: 0,
+      asignacionesMes: 0,
+      tasaIntakeAsignacionPct: null,
+      clientesConReporte: 0,
+      promedioCargaGeneralArs: null,
+      tasaActivacionPct: null
+    },
     clientes: []
+  });
+
+  public upsertOwnerFinancialsBehavior: (input: {
+    userId: number;
+    month: string;
+    adSpendArs: number;
+    commissionPct: number;
+  }) => Promise<{
+    month: string;
+    adSpendArs: number | null;
+    commissionPct: number | null;
+  }> = async (input) => ({
+    month: input.month,
+    adSpendArs: input.adSpendArs,
+    commissionPct: input.commissionPct
   });
 
   async createUser(input: {
@@ -341,9 +382,23 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     return this.linkBehavior(input);
   }
 
-  async getClientsDashboard(userId: number): Promise<MastercrmClientsDashboardRecord> {
-    this.dashboardInputs.push(userId);
-    return this.getClientsDashboardBehavior(userId);
+  async getClientsDashboard(input: { userId: number; month?: string }): Promise<MastercrmClientsDashboardRecord> {
+    this.dashboardInputs.push(input);
+    return this.getClientsDashboardBehavior(input);
+  }
+
+  async upsertOwnerFinancials(input: {
+    userId: number;
+    month: string;
+    adSpendArs: number;
+    commissionPct: number;
+  }): Promise<{
+    month: string;
+    adSpendArs: number | null;
+    commissionPct: number | null;
+  }> {
+    this.financialInputs.push(input);
+    return this.upsertOwnerFinancialsBehavior(input);
   }
 }
 
@@ -564,7 +619,7 @@ describe('server routes', () => {
   it('POST /mastercrm-clients accepts id aliases and returns the cashier dashboard payload', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
-    store.getClientsDashboardBehavior = async (userId) => ({
+    store.getClientsDashboardBehavior = async ({ userId, month }) => ({
       linkedOwner: {
         ownerId: `owner-${userId}`,
         ownerKey: `owner-${userId}`,
@@ -580,6 +635,31 @@ describe('server routes', () => {
         cargadoHoyTotal: 1200,
         cargadoMesTotal: 5600,
         hasReport: true
+      },
+      financialInputs: {
+        month: month ?? '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
       },
       clientes: [
         {
@@ -609,7 +689,7 @@ describe('server routes', () => {
     const responseFromId = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
-      payload: { id: 101 }
+      payload: { id: 101, month: '2026-03' }
     });
     const responseFromUserId = await server.inject({
       method: 'POST',
@@ -640,6 +720,31 @@ describe('server routes', () => {
         cargadoHoyTotal: 1200,
         cargadoMesTotal: 5600,
         hasReport: true
+      },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
       },
       clientes: [
         {
@@ -672,6 +777,31 @@ describe('server routes', () => {
         cargadoMesTotal: 5600,
         hasReport: true
       },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
       clientes: [
         {
           id: 'link-202',
@@ -703,6 +833,31 @@ describe('server routes', () => {
         cargadoMesTotal: 5600,
         hasReport: true
       },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
       clientes: [
         {
           id: 'link-303',
@@ -718,7 +873,49 @@ describe('server routes', () => {
         }
       ]
     });
-    expect(store.dashboardInputs).toEqual([101, 202, 303]);
+    expect(store.dashboardInputs).toEqual([{ userId: 101, month: '2026-03' }, { userId: 202 }, { userId: 303 }]);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-owner-financials persists monthly ad spend and commission', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-owner-financials',
+      payload: {
+        user_id: 101,
+        month: '2026-03',
+        ad_spend_ars: 250000,
+        commission_pct: 12.5
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.financialInputs).toEqual([
+      {
+        userId: 101,
+        month: '2026-03',
+        adSpendArs: 250000,
+        commissionPct: 12.5
+      }
+    ]);
+    expect(response.json()).toEqual({
+      month: '2026-03',
+      adSpendArs: 250000,
+      commissionPct: 12.5
+    });
 
     await server.close();
   });

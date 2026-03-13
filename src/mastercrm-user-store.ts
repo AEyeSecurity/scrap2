@@ -41,6 +41,18 @@ export interface LinkCashierToMastercrmUserInput {
   ownerKey: string;
 }
 
+export interface GetMastercrmClientsDashboardInput {
+  userId: number;
+  month?: string;
+}
+
+export interface UpsertMastercrmOwnerFinancialsInput {
+  userId: number;
+  month: string;
+  adSpendArs: number;
+  commissionPct: number;
+}
+
 export interface MastercrmUserCashierLinkRecord {
   userId: number;
   ownerKey: string;
@@ -57,6 +69,34 @@ export interface MastercrmLinkedOwnerRecord {
   ownerLabel: string;
   pagina: 'ASN';
   telefono: string | null;
+}
+
+export interface MastercrmOwnerFinancialInputsRecord {
+  month: string;
+  adSpendArs: number | null;
+  commissionPct: number | null;
+}
+
+export interface MastercrmPrimaryKpisRecord {
+  cargadoMesArs: number | null;
+  gananciaEstimadaArs: number | null;
+  roiEstimadoPct: number | null;
+  costoPorLeadRealArs: number | null;
+  conversionAsignadoPct: number | null;
+}
+
+export interface MastercrmStatsKpisRecord {
+  clientesTotales: number;
+  asignados: number;
+  pendientes: number;
+  cargadoHoyArs: number | null;
+  cargadoMesArs: number | null;
+  intakesMes: number;
+  asignacionesMes: number;
+  tasaIntakeAsignacionPct: number | null;
+  clientesConReporte: number;
+  promedioCargaGeneralArs: number | null;
+  tasaActivacionPct: number | null;
 }
 
 export interface MastercrmOwnerSummary {
@@ -85,6 +125,9 @@ export interface MastercrmOwnerClientRecord {
 export interface MastercrmClientsDashboardRecord {
   linkedOwner: MastercrmLinkedOwnerRecord | null;
   summary: MastercrmOwnerSummary | null;
+  financialInputs: MastercrmOwnerFinancialInputsRecord;
+  primaryKpis: MastercrmPrimaryKpisRecord;
+  statsKpis: MastercrmStatsKpisRecord;
   clientes: MastercrmOwnerClientRecord[];
 }
 
@@ -93,7 +136,8 @@ export interface MastercrmUserStore {
   authenticate(input: AuthenticateMastercrmUserInput): Promise<MastercrmUserRecord>;
   getActiveUserById(id: number): Promise<MastercrmUserRecord>;
   linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord>;
-  getClientsDashboard(userId: number): Promise<MastercrmClientsDashboardRecord>;
+  getClientsDashboard(input: GetMastercrmClientsDashboardInput): Promise<MastercrmClientsDashboardRecord>;
+  upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord>;
 }
 
 interface MastercrmUserRow {
@@ -139,6 +183,7 @@ interface OwnerClientLinkRow {
 }
 
 interface ReportDailySnapshotRow {
+  client_id?: string;
   report_date: string;
   username: string;
   cargado_hoy: number | string | null;
@@ -151,6 +196,20 @@ interface OwnerAliasRow {
   updated_at: string;
   last_seen_at: string;
 }
+
+interface OwnerFinancialSettingsRow {
+  commission_pct: number | string | null;
+}
+
+interface OwnerMonthlyAdSpendRow {
+  ad_spend_ars: number | string | null;
+}
+
+interface OwnerClientEventRow {
+  event_type: 'intake' | 'assign_username';
+}
+
+const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
 
 export class MastercrmUserStoreError extends Error {
   constructor(
@@ -288,6 +347,11 @@ function toFiniteNumber(value: number | string | null | undefined): number | nul
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function roundTo(value: number, digits = 2): number {
+  const factor = 10 ** digits;
+  return Math.round(value * factor) / factor;
+}
+
 function compareIsoDatesDesc(left: string, right: string): number {
   const leftTime = Date.parse(left);
   const rightTime = Date.parse(right);
@@ -319,8 +383,133 @@ function pickPreferredAliasPhone(rows: OwnerAliasRow[]): string | null {
   return sorted[0]?.alias_phone ?? null;
 }
 
+function getBuenosAiresMonthToken(now = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit'
+  }).formatToParts(now);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+
+  if (!year || !month) {
+    throw new MastercrmUserStoreError('INTERNAL', 'Could not resolve Buenos Aires month token');
+  }
+
+  return `${year}-${month}`;
+}
+
+function normalizeMastercrmMonth(value: string | undefined): string {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) {
+    return getBuenosAiresMonthToken();
+  }
+
+  if (!MONTH_TOKEN_RE.test(normalized)) {
+    throw new MastercrmUserStoreError('VALIDATION', 'month must use YYYY-MM format');
+  }
+
+  const [, monthToken] = normalized.split('-');
+  const monthValue = Number(monthToken);
+  if (!Number.isInteger(monthValue) || monthValue < 1 || monthValue > 12) {
+    throw new MastercrmUserStoreError('VALIDATION', 'month must use a valid YYYY-MM value');
+  }
+
+  return normalized;
+}
+
+function buildMonthWindow(month: string): {
+  month: string;
+  monthStartDate: string;
+  nextMonthStartDate: string;
+  startedAtIso: string;
+  endedAtIso: string;
+} {
+  const normalizedMonth = normalizeMastercrmMonth(month);
+  const [yearToken, monthToken] = normalizedMonth.split('-');
+  const year = Number(yearToken);
+  const monthIndex = Number(monthToken) - 1;
+  const nextMonthYear = monthIndex === 11 ? year + 1 : year;
+  const nextMonthIndex = (monthIndex + 1) % 12;
+  const monthStartDate = `${normalizedMonth}-01`;
+  const nextMonthStartDate = `${nextMonthYear}-${String(nextMonthIndex + 1).padStart(2, '0')}-01`;
+
+  // Buenos Aires is UTC-3 and this project uses month boundaries in local BA time.
+  const startedAtIso = new Date(Date.UTC(year, monthIndex, 1, 3, 0, 0, 0)).toISOString();
+  const endedAtIso = new Date(Date.UTC(nextMonthYear, nextMonthIndex, 1, 3, 0, 0, 0)).toISOString();
+
+  return {
+    month: normalizedMonth,
+    monthStartDate,
+    nextMonthStartDate,
+    startedAtIso,
+    endedAtIso
+  };
+}
+
+function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
+  return {
+    linkedOwner: null,
+    summary: null,
+    financialInputs: {
+      month,
+      adSpendArs: null,
+      commissionPct: null
+    },
+    primaryKpis: {
+      cargadoMesArs: null,
+      gananciaEstimadaArs: null,
+      roiEstimadoPct: null,
+      costoPorLeadRealArs: null,
+      conversionAsignadoPct: null
+    },
+    statsKpis: {
+      clientesTotales: 0,
+      asignados: 0,
+      pendientes: 0,
+      cargadoHoyArs: null,
+      cargadoMesArs: null,
+      intakesMes: 0,
+      asignacionesMes: 0,
+      tasaIntakeAsignacionPct: null,
+      clientesConReporte: 0,
+      promedioCargaGeneralArs: null,
+      tasaActivacionPct: null
+    },
+    clientes: []
+  };
+}
+
 class SupabaseMastercrmUserStore implements MastercrmUserStore {
   constructor(private readonly client: SupabaseClient) {}
+
+  private async getLinkedOwnerRow(userId: number): Promise<OwnerRow | null> {
+    const { data, error } = await this.client
+      .from('mastercrm_user_owner_links')
+      .select('id, owner_id, owners!inner(id, owner_key, owner_label, pagina)')
+      .eq('mastercrm_user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read linked cashier owner');
+    }
+
+    const linkedOwnerRow = data as UserOwnerLinkRow | null;
+    return unwrapSingleRelation(linkedOwnerRow?.owners);
+  }
+
+  private async getOwnerPhone(ownerId: string): Promise<string | null> {
+    const { data, error } = await this.client
+      .from('owner_aliases')
+      .select('alias_phone, is_active, updated_at, last_seen_at')
+      .eq('owner_id', ownerId);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read owner alias phones');
+    }
+
+    return pickPreferredAliasPhone((data as OwnerAliasRow[] | null) ?? []);
+  }
 
   async createUser(input: CreateMastercrmUserInput): Promise<MastercrmUserRecord> {
     const username = normalizeMastercrmUsername(input.username);
@@ -470,44 +659,67 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
   }
 
-  async getClientsDashboard(userId: number): Promise<MastercrmClientsDashboardRecord> {
-    if (!Number.isInteger(userId) || userId < 1) {
+  async getClientsDashboard(input: GetMastercrmClientsDashboardInput): Promise<MastercrmClientsDashboardRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
       throw new MastercrmUserStoreError('VALIDATION', 'id must be a positive integer');
     }
 
-    await this.getActiveUserById(userId);
-
-    const { data: linkedOwnerData, error: linkedOwnerError } = await this.client
-      .from('mastercrm_user_owner_links')
-      .select('id, owner_id, owners!inner(id, owner_key, owner_label, pagina)')
-      .eq('mastercrm_user_id', userId)
-      .maybeSingle();
-
-    if (linkedOwnerError) {
-      throw mapPostgrestError(linkedOwnerError, 'Could not read linked cashier owner');
+    await this.getActiveUserById(input.userId);
+    const monthWindow = buildMonthWindow(input.month ?? getBuenosAiresMonthToken());
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      return buildEmptyDashboard(monthWindow.month);
     }
 
-    const linkedOwnerRow = linkedOwnerData as UserOwnerLinkRow | null;
-    const owner = unwrapSingleRelation(linkedOwnerRow?.owners);
-    if (!linkedOwnerRow || !owner) {
-      return {
-        linkedOwner: null,
-        summary: null,
-        clientes: []
-      };
+    const [ownerPhone, ownerClientLinksResult, latestReportDateResult, financialSettingsResult, adSpendResult, eventsResult] =
+      await Promise.all([
+        this.getOwnerPhone(owner.id),
+        this.client
+          .from('owner_client_links')
+          .select('id, status, client_id, clients!inner(id, username, phone_e164, pagina)')
+          .eq('owner_id', owner.id),
+        this.client
+          .from('report_daily_snapshots')
+          .select('report_date')
+          .eq('owner_id', owner.id)
+          .gte('report_date', monthWindow.monthStartDate)
+          .lt('report_date', monthWindow.nextMonthStartDate)
+          .order('report_date', { ascending: false })
+          .limit(1),
+        this.client
+          .from('owner_financial_settings')
+          .select('commission_pct')
+          .eq('owner_id', owner.id)
+          .maybeSingle(),
+        this.client
+          .from('owner_monthly_ad_spend')
+          .select('ad_spend_ars')
+          .eq('owner_id', owner.id)
+          .eq('month_start', monthWindow.monthStartDate)
+          .maybeSingle(),
+        this.client
+          .from('owner_client_events')
+          .select('event_type')
+          .eq('owner_id', owner.id)
+          .gte('created_at', monthWindow.startedAtIso)
+          .lt('created_at', monthWindow.endedAtIso)
+      ]);
+
+    if (ownerClientLinksResult.error) {
+      throw mapPostgrestError(ownerClientLinksResult.error, 'Could not read owner client links');
     }
-
-    const { data: ownerAliasesData, error: ownerAliasesError } = await this.client
-      .from('owner_aliases')
-      .select('alias_phone, is_active, updated_at, last_seen_at')
-      .eq('owner_id', owner.id);
-
-    if (ownerAliasesError) {
-      throw mapPostgrestError(ownerAliasesError, 'Could not read owner alias phones');
+    if (latestReportDateResult.error) {
+      throw mapPostgrestError(latestReportDateResult.error, 'Could not read owner report date');
     }
-
-    const ownerAliasRows = (ownerAliasesData as OwnerAliasRow[] | null) ?? [];
-    const ownerPhone = pickPreferredAliasPhone(ownerAliasRows);
+    if (financialSettingsResult.error) {
+      throw mapPostgrestError(financialSettingsResult.error, 'Could not read owner financial settings');
+    }
+    if (adSpendResult.error) {
+      throw mapPostgrestError(adSpendResult.error, 'Could not read owner monthly ad spend');
+    }
+    if (eventsResult.error) {
+      throw mapPostgrestError(eventsResult.error, 'Could not read owner events');
+    }
 
     const linkedOwner: MastercrmLinkedOwnerRecord = {
       ownerId: owner.id,
@@ -517,34 +729,19 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       telefono: ownerPhone
     };
 
-    const { data: ownerClientLinksData, error: ownerClientLinksError } = await this.client
-      .from('owner_client_links')
-      .select('id, status, client_id, clients!inner(id, username, phone_e164, pagina)')
-      .eq('owner_id', owner.id);
-
-    if (ownerClientLinksError) {
-      throw mapPostgrestError(ownerClientLinksError, 'Could not read owner client links');
-    }
-
-    const ownerClientLinks = (ownerClientLinksData as OwnerClientLinkRow[] | null) ?? [];
+    const ownerClientLinks = (ownerClientLinksResult.data as OwnerClientLinkRow[] | null) ?? [];
     const totalClients = ownerClientLinks.length;
     const assignedClients = ownerClientLinks.filter((link) => link.status === 'assigned').length;
     const pendingClients = ownerClientLinks.filter((link) => link.status === 'pending').length;
+    const conversionAsignadoPct =
+      totalClients > 0 ? roundTo((assignedClients / totalClients) * 100) : null;
 
-    const { data: latestReportDateData, error: latestReportDateError } = await this.client
-      .from('report_daily_snapshots')
-      .select('report_date')
-      .eq('owner_id', owner.id)
-      .order('report_date', { ascending: false })
-      .limit(1);
+    const latestReportDateRows = (latestReportDateResult.data as Array<{ report_date: string }> | null) ?? [];
+    const reportDate = latestReportDateRows[0]?.report_date ?? null;
 
-    if (latestReportDateError) {
-      throw mapPostgrestError(latestReportDateError, 'Could not read owner report date');
-    }
-
-    const reportDate = Array.isArray(latestReportDateData) ? latestReportDateData[0]?.report_date ?? null : null;
     let cargadoHoyTotal: number | null = null;
     let cargadoMesTotal: number | null = null;
+    let clientesConReporte = 0;
     const snapshotByUsername = new Map<
       string,
       { cargadoHoy: number | null; cargadoMes: number | null; reportDate: string | null }
@@ -553,7 +750,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (reportDate) {
       const { data: snapshotsData, error: snapshotsError } = await this.client
         .from('report_daily_snapshots')
-        .select('report_date, username, cargado_hoy, cargado_mes')
+        .select('client_id, report_date, username, cargado_hoy, cargado_mes')
         .eq('owner_id', owner.id)
         .eq('report_date', reportDate);
 
@@ -564,6 +761,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       const snapshots = (snapshotsData as ReportDailySnapshotRow[] | null) ?? [];
       cargadoHoyTotal = 0;
       cargadoMesTotal = 0;
+      const reportClientIds = new Set<string>();
 
       for (const snapshot of snapshots) {
         const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
@@ -575,8 +773,36 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         });
         cargadoHoyTotal += cargadoHoy ?? 0;
         cargadoMesTotal += cargadoMes ?? 0;
+        if (typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0) {
+          reportClientIds.add(snapshot.client_id);
+        }
       }
+
+      clientesConReporte = reportClientIds.size;
     }
+
+    const financialSettings = financialSettingsResult.data as OwnerFinancialSettingsRow | null;
+    const adSpendRow = adSpendResult.data as OwnerMonthlyAdSpendRow | null;
+    const commissionPct = toFiniteNumber(financialSettings?.commission_pct);
+    const adSpendArs = toFiniteNumber(adSpendRow?.ad_spend_ars);
+    const events = (eventsResult.data as OwnerClientEventRow[] | null) ?? [];
+    const intakesMes = events.filter((event) => event.event_type === 'intake').length;
+    const asignacionesMes = events.filter((event) => event.event_type === 'assign_username').length;
+    const tasaIntakeAsignacionPct = intakesMes > 0 ? roundTo((asignacionesMes / intakesMes) * 100) : null;
+    const promedioCargaGeneralArs =
+      cargadoMesTotal !== null && totalClients > 0 ? roundTo(cargadoMesTotal / totalClients) : null;
+    const tasaActivacionPct =
+      assignedClients > 0 ? roundTo((clientesConReporte / assignedClients) * 100) : null;
+    const gananciaEstimadaArs =
+      commissionPct !== null && cargadoMesTotal !== null
+        ? roundTo(cargadoMesTotal * (commissionPct / 100))
+        : null;
+    const costoPorLeadRealArs =
+      adSpendArs !== null && intakesMes > 0 ? roundTo(adSpendArs / intakesMes) : null;
+    const roiEstimadoPct =
+      gananciaEstimadaArs !== null && adSpendArs !== null && adSpendArs > 0
+        ? roundTo(((gananciaEstimadaArs - adSpendArs) / adSpendArs) * 100)
+        : null;
 
     const clientes: MastercrmOwnerClientRecord[] = ownerClientLinks.map((link) => {
       const client = unwrapSingleRelation(link.clients);
@@ -608,7 +834,88 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         cargadoMesTotal,
         hasReport: Boolean(reportDate)
       },
+      financialInputs: {
+        month: monthWindow.month,
+        adSpendArs,
+        commissionPct
+      },
+      primaryKpis: {
+        cargadoMesArs: cargadoMesTotal,
+        gananciaEstimadaArs,
+        roiEstimadoPct,
+        costoPorLeadRealArs,
+        conversionAsignadoPct
+      },
+      statsKpis: {
+        clientesTotales: totalClients,
+        asignados: assignedClients,
+        pendientes: pendingClients,
+        cargadoHoyArs: cargadoHoyTotal,
+        cargadoMesArs: cargadoMesTotal,
+        intakesMes,
+        asignacionesMes,
+        tasaIntakeAsignacionPct,
+        clientesConReporte,
+        promedioCargaGeneralArs,
+        tasaActivacionPct
+      },
       clientes
+    };
+  }
+
+  async upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+
+    const monthWindow = buildMonthWindow(input.month);
+    const adSpendArs = Number(input.adSpendArs);
+    const commissionPct = Number(input.commissionPct);
+
+    if (!Number.isFinite(adSpendArs) || adSpendArs < 0) {
+      throw new MastercrmUserStoreError('VALIDATION', 'ad_spend_ars must be a positive number or zero');
+    }
+    if (!Number.isFinite(commissionPct) || commissionPct < 0 || commissionPct > 100) {
+      throw new MastercrmUserStoreError('VALIDATION', 'commission_pct must be between 0 and 100');
+    }
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const [financialSettingsResult, adSpendResult] = await Promise.all([
+      this.client.from('owner_financial_settings').upsert(
+        {
+          owner_id: owner.id,
+          commission_pct: roundTo(commissionPct),
+          updated_by_mastercrm_user_id: input.userId
+        },
+        { onConflict: 'owner_id' }
+      ),
+      this.client.from('owner_monthly_ad_spend').upsert(
+        {
+          owner_id: owner.id,
+          month_start: monthWindow.monthStartDate,
+          ad_spend_ars: roundTo(adSpendArs),
+          updated_by_mastercrm_user_id: input.userId
+        },
+        { onConflict: 'owner_id,month_start' }
+      )
+    ]);
+
+    if (financialSettingsResult.error) {
+      throw mapPostgrestError(financialSettingsResult.error, 'Could not persist owner financial settings');
+    }
+    if (adSpendResult.error) {
+      throw mapPostgrestError(adSpendResult.error, 'Could not persist owner monthly ad spend');
+    }
+
+    return {
+      month: monthWindow.month,
+      adSpendArs: roundTo(adSpendArs),
+      commissionPct: roundTo(commissionPct)
     };
   }
 }

@@ -17,7 +17,7 @@ type QueryResult = {
 };
 
 class FakeQueryBuilder implements PromiseLike<QueryResult> {
-  private operation: 'select' | 'insert' | 'update' = 'select';
+  private operation: 'select' | 'insert' | 'update' | 'upsert' = 'select';
   private readonly filters: Array<{ column: string; value: unknown }> = [];
 
   constructor(
@@ -37,6 +37,12 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     return this;
   }
 
+  upsert(payload: unknown, options?: Record<string, unknown>): FakeQueryBuilder {
+    this.operation = 'upsert';
+    this.client.calls.push({ table: this.table, operation: 'upsert', payload, options });
+    return this;
+  }
+
   select(columns: string): FakeQueryBuilder {
     this.client.calls.push({ table: this.table, operation: 'select-columns', columns });
     return this;
@@ -45,6 +51,18 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
   eq(column: string, value: unknown): FakeQueryBuilder {
     this.filters.push({ column, value });
     this.client.calls.push({ table: this.table, operation: 'filter', column, value });
+    return this;
+  }
+
+  gte(column: string, value: unknown): FakeQueryBuilder {
+    this.filters.push({ column: `${column}>=`, value });
+    this.client.calls.push({ table: this.table, operation: 'filter-gte', column, value });
+    return this;
+  }
+
+  lt(column: string, value: unknown): FakeQueryBuilder {
+    this.filters.push({ column: `${column}<`, value });
+    this.client.calls.push({ table: this.table, operation: 'filter-lt', column, value });
     return this;
   }
 
@@ -78,7 +96,7 @@ class FakeSupabaseClient {
   public readonly calls: Array<Record<string, unknown>> = [];
   private readonly results = new Map<string, QueryResult[]>();
 
-  queue(table: string, operation: 'select' | 'insert' | 'update', result: QueryResult): void {
+  queue(table: string, operation: 'select' | 'insert' | 'update' | 'upsert', result: QueryResult): void {
     const key = `${table}:${operation}`;
     const pending = this.results.get(key) ?? [];
     pending.push(result);
@@ -92,7 +110,7 @@ class FakeSupabaseClient {
 
   async dequeue(
     table: string,
-    operation: 'select' | 'insert' | 'update',
+    operation: 'select' | 'insert' | 'update' | 'upsert',
     filters: Array<{ column: string; value: unknown }>
   ): Promise<QueryResult> {
     this.calls.push({ table, operation: `resolve-${operation}`, filters });
@@ -384,9 +402,21 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('owner_financial_settings', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [],
+      error: null
+    });
 
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
-    const dashboard = await store.getClientsDashboard(123);
+    const dashboard = await store.getClientsDashboard({ userId: 123, month: '2026-03' });
 
     expect(dashboard).toEqual({
       linkedOwner: {
@@ -404,6 +434,31 @@ describe('mastercrm clients dashboard', () => {
         cargadoHoyTotal: null,
         cargadoMesTotal: null,
         hasReport: false
+      },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: null,
+        commissionPct: null
+      },
+      primaryKpis: {
+        cargadoMesArs: null,
+        gananciaEstimadaArs: null,
+        roiEstimadoPct: null,
+        costoPorLeadRealArs: null,
+        conversionAsignadoPct: null
+      },
+      statsKpis: {
+        clientesTotales: 0,
+        asignados: 0,
+        pendientes: 0,
+        cargadoHoyArs: null,
+        cargadoMesArs: null,
+        intakesMes: 0,
+        asignacionesMes: 0,
+        tasaIntakeAsignacionPct: null,
+        clientesConReporte: 0,
+        promedioCargaGeneralArs: null,
+        tasaActivacionPct: null
       },
       clientes: []
     });

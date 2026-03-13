@@ -207,7 +207,9 @@ const mastercrmClientsBodySchema = z
   .object({
     id: z.union([z.string(), z.number().int()]).optional(),
     user_id: z.union([z.string(), z.number().int()]).optional(),
-    usuario_id: z.union([z.string(), z.number().int()]).optional()
+    usuario_id: z.union([z.string(), z.number().int()]).optional(),
+    month: z.string().optional(),
+    mes: z.string().optional()
   })
   .passthrough();
 
@@ -216,6 +218,18 @@ const mastercrmLinkCashierBodySchema = z
     user_id: z.union([z.string(), z.number().int()]).optional(),
     owner_key: z.string().optional(),
     staff_password: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmOwnerFinancialsBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    month: z.string().optional(),
+    mes: z.string().optional(),
+    ad_spend_ars: z.union([z.string(), z.number()]).optional(),
+    inversion_publicitaria_ars: z.union([z.string(), z.number()]).optional(),
+    commission_pct: z.union([z.string(), z.number()]).optional(),
+    porcentaje_cajero: z.union([z.string(), z.number()]).optional()
   })
   .passthrough();
 
@@ -473,7 +487,58 @@ function parseMastercrmRegisterPayload(body: unknown): {
   };
 }
 
-function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number }; issues: ValidationIssue[] } {
+function resolveAliasNumberField(
+  payload: Record<string, unknown>,
+  aliases: string[],
+  label: string,
+  issues: ValidationIssue[],
+  options: { min?: number; max?: number } = {}
+): number | undefined {
+  const present = aliases.flatMap((alias) => {
+    const value = payload[alias];
+    if (value == null || value === '') {
+      return [];
+    }
+
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(parsed)) {
+      issues.push({ path: alias, message: `${alias} must be a number` });
+      return [];
+    }
+
+    if (options.min != null && parsed < options.min) {
+      issues.push({ path: alias, message: `${alias} must be >= ${options.min}` });
+      return [];
+    }
+
+    if (options.max != null && parsed > options.max) {
+      issues.push({ path: alias, message: `${alias} must be <= ${options.max}` });
+      return [];
+    }
+
+    return [{ alias, value: parsed }];
+  });
+
+  if (present.length > 1) {
+    const distinct = new Set(present.map((entry) => entry.value));
+    if (distinct.size > 1) {
+      issues.push({
+        path: aliases.join(','),
+        message: `${label} aliases must match when provided`
+      });
+      return undefined;
+    }
+  }
+
+  if (present.length === 0) {
+    issues.push({ path: aliases[0] ?? label, message: `${label} is required` });
+    return undefined;
+  }
+
+  return present[0]?.value;
+}
+
+function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number; month?: string }; issues: ValidationIssue[] } {
   const parsed = mastercrmClientsBodySchema.safeParse(body);
   if (!parsed.success) {
     return {
@@ -483,11 +548,12 @@ function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number 
 
   const issues: ValidationIssue[] = [];
   const userId = resolveAliasPositiveIntegerField(parsed.data, ['id', 'user_id', 'usuario_id'], 'id', issues);
+  const month = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues, { required: false });
   if (issues.length > 0 || !userId) {
     return { issues };
   }
 
-  return { data: { userId }, issues };
+  return { data: { userId, ...(month ? { month } : {}) }, issues };
 }
 
 function parseMastercrmLinkCashierPayload(body: unknown): {
@@ -516,6 +582,42 @@ function parseMastercrmLinkCashierPayload(body: unknown): {
   }
 
   return { data: { userId, ownerKey, staffPassword }, issues };
+}
+
+function parseMastercrmOwnerFinancialsPayload(body: unknown): {
+  data?: { userId: number; month: string; adSpendArs: number; commissionPct: number };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmOwnerFinancialsBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const month = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues);
+  const adSpendArs = resolveAliasNumberField(
+    parsed.data,
+    ['ad_spend_ars', 'inversion_publicitaria_ars'],
+    'ad_spend_ars',
+    issues,
+    { min: 0 }
+  );
+  const commissionPct = resolveAliasNumberField(
+    parsed.data,
+    ['commission_pct', 'porcentaje_cajero'],
+    'commission_pct',
+    issues,
+    { min: 0, max: 100 }
+  );
+
+  if (issues.length > 0 || !userId || !month || adSpendArs == null || commissionPct == null) {
+    return { issues };
+  }
+
+  return { data: { userId, month, adSpendArs, commissionPct }, issues };
 }
 
 export function createServer(
@@ -732,7 +834,10 @@ export function createServer(
     }
 
     try {
-      const dashboard = await getMastercrmUserStore().getClientsDashboard(parsed.data.userId);
+      const dashboard = await getMastercrmUserStore().getClientsDashboard({
+        userId: parsed.data.userId,
+        month: parsed.data.month
+      });
       return reply.code(200).send({
         linkedOwner: dashboard.linkedOwner
           ? {
@@ -753,6 +858,31 @@ export function createServer(
               hasReport: dashboard.summary.hasReport
             }
           : null,
+        financialInputs: {
+          month: dashboard.financialInputs.month,
+          adSpendArs: dashboard.financialInputs.adSpendArs,
+          commissionPct: dashboard.financialInputs.commissionPct
+        },
+        primaryKpis: {
+          cargadoMesArs: dashboard.primaryKpis.cargadoMesArs,
+          gananciaEstimadaArs: dashboard.primaryKpis.gananciaEstimadaArs,
+          roiEstimadoPct: dashboard.primaryKpis.roiEstimadoPct,
+          costoPorLeadRealArs: dashboard.primaryKpis.costoPorLeadRealArs,
+          conversionAsignadoPct: dashboard.primaryKpis.conversionAsignadoPct
+        },
+        statsKpis: {
+          clientesTotales: dashboard.statsKpis.clientesTotales,
+          asignados: dashboard.statsKpis.asignados,
+          pendientes: dashboard.statsKpis.pendientes,
+          cargadoHoyArs: dashboard.statsKpis.cargadoHoyArs,
+          cargadoMesArs: dashboard.statsKpis.cargadoMesArs,
+          intakesMes: dashboard.statsKpis.intakesMes,
+          asignacionesMes: dashboard.statsKpis.asignacionesMes,
+          tasaIntakeAsignacionPct: dashboard.statsKpis.tasaIntakeAsignacionPct,
+          clientesConReporte: dashboard.statsKpis.clientesConReporte,
+          promedioCargaGeneralArs: dashboard.statsKpis.promedioCargaGeneralArs,
+          tasaActivacionPct: dashboard.statsKpis.tasaActivacionPct
+        },
         clientes: dashboard.clientes.map((client) => ({
           id: client.id,
           username: client.username,
@@ -773,6 +903,39 @@ export function createServer(
       }
 
       logger.error({ error }, 'Unexpected /mastercrm-clients error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-owner-financials', async (request, reply) => {
+    const parsed = parseMastercrmOwnerFinancialsPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const financialInputs = await getMastercrmUserStore().upsertOwnerFinancials({
+        userId: parsed.data.userId,
+        month: parsed.data.month,
+        adSpendArs: parsed.data.adSpendArs,
+        commissionPct: parsed.data.commissionPct
+      });
+
+      return reply.code(200).send({
+        month: financialInputs.month,
+        adSpendArs: financialInputs.adSpendArs,
+        commissionPct: financialInputs.commissionPct
+      });
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-owner-financials error');
       return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
     }
   });

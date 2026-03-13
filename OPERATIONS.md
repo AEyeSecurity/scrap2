@@ -81,6 +81,45 @@ Endpoints usados por el frontend:
 - `POST /mastercrm-login`
 - `POST /mastercrm-clients`
 - `POST /mastercrm-link-cashier`
+- `POST /mastercrm-owner-financials`
+
+### Contrato mensual actual
+
+`POST /mastercrm-clients` acepta:
+
+- `user_id`
+- `month` en formato `YYYY-MM`
+
+Respuesta relevante:
+
+- `linkedOwner`
+- `summary`
+- `financialInputs`
+- `primaryKpis`
+- `statsKpis`
+- `clientes`
+
+KPIs principales calculados:
+
+- `cargadoMesArs`
+- `gananciaEstimadaArs`
+- `roiEstimadoPct`
+- `costoPorLeadRealArs`
+- `conversionAsignadoPct`
+
+KPIs de estadisticas:
+
+- `clientesTotales`
+- `asignados`
+- `pendientes`
+- `cargadoHoyArs`
+- `cargadoMesArs`
+- `intakesMes`
+- `asignacionesMes`
+- `tasaIntakeAsignacionPct`
+- `clientesConReporte`
+- `promedioCargaGeneralArs`
+- `tasaActivacionPct`
 
 ### Regla cerrada
 
@@ -107,6 +146,26 @@ Tablas:
 - `owner_client_links`
 - `clients`
 - `report_daily_snapshots`
+- `owner_financial_settings`
+- `owner_monthly_ad_spend`
+
+### Tablas financieras nuevas
+
+`owner_financial_settings`
+
+- guarda `commission_pct`
+- es fija por owner
+- `owner_id` es unico
+
+`owner_monthly_ad_spend`
+
+- guarda `ad_spend_ars`
+- es mensual por owner
+- clave unica: `(owner_id, month_start)`
+
+Migracion aplicada:
+
+- `db/migrations/20260313_owner_financial_kpis.sql`
 
 ### Telefono del cajero
 
@@ -177,17 +236,38 @@ Ese script:
 
 Con `asnlucas10:lucas10`:
 
-- `totalClients = 30`
-- `assignedClients = 16`
-- `pendingClients = 14`
+- `totalClients = 34`
+- `assignedClients = 17`
+- `pendingClients = 17`
 - `reportDate = 2026-03-12`
 - `hasReport = true`
+- `cargadoHoyArs = 142200`
+- `cargadoMesArs = 260000`
+- `intakesMes = 43`
+- `asignacionesMes = 17`
+- `clientesConReporte = 16`
+- `promedioCargaGeneralArs = 7647.06`
+- con `adSpendArs = 250000` y `commissionPct = 12.5`:
+  - `gananciaEstimadaArs = 32500`
+  - `roiEstimadoPct = -87`
+  - `costoPorLeadRealArs = 5813.95`
 
 Con `asnlucas10:vicky`:
 
 - `hasReport = false`
 - `reportDate = null`
+- `totalClients = 17`
+- `assignedClients = 0`
+- `pendingClients = 17`
+- `intakesMes = 21`
+- `asignacionesMes = 0`
 - el relink deja una sola fila activa
+
+Con `month = 2026-02` para `Lucas10`:
+
+- cartera visible igual
+- KPIs de carga en `null`
+- intakes y asignaciones del mes en `0`
 
 ## Regla de seguridad UI/API
 
@@ -207,4 +287,5 @@ Checklist:
 6. correr `npm test`
 7. correr `npm run build`
 8. levantar API local
-9. validar `mastercrm-register`, `mastercrm-login`, `mastercrm-clients`, `mastercrm-link-cashier`
+9. validar `mastercrm-register`, `mastercrm-login`, `mastercrm-clients`, `mastercrm-link-cashier`, `mastercrm-owner-financials`
+10. si el front devuelve `409` al re-guardar inversion mensual, revisar que el `upsert` use `onConflict: 'owner_id,month_start'`
