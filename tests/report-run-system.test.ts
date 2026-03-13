@@ -24,7 +24,6 @@ type SeedOwner = {
 type SeedClient = {
   id: string;
   phone: string;
-  username: string;
 };
 
 type SeedLink = {
@@ -32,6 +31,15 @@ type SeedLink = {
   ownerId: string;
   clientId: string;
   status: 'assigned';
+};
+
+type SeedIdentity = {
+  id: string;
+  ownerId: string;
+  clientId: string;
+  linkId: string;
+  username: string;
+  isActive: true;
 };
 
 type OutboxEntry = {
@@ -52,6 +60,7 @@ class FakeReportRunStore implements ReportRunStore {
   public readonly owners = new Map<string, SeedOwner>();
   public readonly clients = new Map<string, SeedClient>();
   public readonly links = new Map<string, SeedLink>();
+  public readonly identities = new Map<string, SeedIdentity>();
   public readonly runs = new Map<string, ReportRunRecord & { contrasenaAgente: string }>();
   public readonly items = new Map<string, ReportRunItemRecord>();
   public readonly snapshots = new Map<string, Record<string, unknown>>();
@@ -60,7 +69,7 @@ class FakeReportRunStore implements ReportRunStore {
   private runSequence = 0;
   private itemSequence = 0;
 
-  constructor(seed: { owners: SeedOwner[]; clients: SeedClient[]; links: SeedLink[] }) {
+  constructor(seed: { owners: SeedOwner[]; clients: SeedClient[]; links: SeedLink[]; identities: SeedIdentity[] }) {
     for (const owner of seed.owners) {
       this.owners.set(owner.id, owner);
     }
@@ -69,6 +78,9 @@ class FakeReportRunStore implements ReportRunStore {
     }
     for (const link of seed.links) {
       this.links.set(link.id, link);
+    }
+    for (const identity of seed.identities) {
+      this.identities.set(identity.id, identity);
     }
   }
 
@@ -121,16 +133,21 @@ class FakeReportRunStore implements ReportRunStore {
       }
       const owner = this.owners.get(link.ownerId);
       const client = this.clients.get(link.clientId);
+      const identity = Array.from(this.identities.values()).find(
+        (candidate) => candidate.linkId === link.id && candidate.isActive
+      );
       if (!owner || !client) {
         continue;
       }
       if (!owner.ownerKey.startsWith(`${normalizedPrincipal}:`)) {
         continue;
       }
-      if (!client.username) {
+      if (!identity?.username) {
         continue;
       }
-      const exists = Array.from(this.items.values()).some((item) => item.runId === runId && item.username === client.username);
+      const exists = Array.from(this.items.values()).some(
+        (item) => item.runId === runId && item.identityId === identity.id
+      );
       if (exists) {
         continue;
       }
@@ -140,9 +157,10 @@ class FakeReportRunStore implements ReportRunStore {
         id: `item-${this.itemSequence}`,
         runId,
         ownerId: owner.id,
+        identityId: identity.id,
         clientId: client.id,
         linkId: link.id,
-        username: client.username,
+        username: identity.username,
         ownerKey: owner.ownerKey,
         ownerLabel: owner.ownerLabel,
         status: 'pending',
@@ -216,6 +234,7 @@ class FakeReportRunStore implements ReportRunStore {
       agente: run.agente,
       contrasenaAgente: run.contrasenaAgente,
       ownerId: item.ownerId,
+      identityId: item.identityId,
       clientId: item.clientId,
       linkId: item.linkId,
       username: item.username,
@@ -257,6 +276,7 @@ class FakeReportRunStore implements ReportRunStore {
       reportDate: lease.reportDate,
       principalKey: lease.principalKey,
       ownerId: lease.ownerId,
+      identityId: lease.identityId,
       clientId: lease.clientId,
       linkId: lease.linkId,
       username: lease.username,
@@ -406,10 +426,9 @@ function createSeededStore(): FakeReportRunStore {
     ['vnaty893', 'owner-vicky']
   ] as const;
 
-  const clients: SeedClient[] = rawUsers.map(([username], index) => ({
+  const clients: SeedClient[] = rawUsers.map(([,], index) => ({
     id: `client-${index + 1}`,
-    phone: `+54935190000${String(index + 1).padStart(2, '0')}`,
-    username: username.toLowerCase()
+    phone: `+54935190000${String(index + 1).padStart(2, '0')}`
   }));
   const links: SeedLink[] = rawUsers.map(([, ownerId], index) => ({
     id: `link-${index + 1}`,
@@ -417,8 +436,16 @@ function createSeededStore(): FakeReportRunStore {
     clientId: `client-${index + 1}`,
     status: 'assigned'
   }));
+  const identities: SeedIdentity[] = rawUsers.map(([username, ownerId], index) => ({
+    id: `identity-${index + 1}`,
+    ownerId,
+    clientId: `client-${index + 1}`,
+    linkId: `link-${index + 1}`,
+    username: username.toLowerCase(),
+    isActive: true
+  }));
 
-  return new FakeReportRunStore({ owners, clients, links });
+  return new FakeReportRunStore({ owners, clients, links, identities });
 }
 
 function createExecutor() {

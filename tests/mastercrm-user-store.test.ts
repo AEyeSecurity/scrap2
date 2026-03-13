@@ -398,6 +398,10 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('owner_client_identities', 'select', {
+      data: [],
+      error: null
+    });
     client.queue('report_daily_snapshots', 'select', {
       data: [],
       error: null
@@ -431,6 +435,7 @@ describe('mastercrm clients dashboard', () => {
         assignedClients: 0,
         pendingClients: 0,
         reportDate: null,
+        reportUpdatedAt: null,
         cargadoHoyTotal: null,
         cargadoMesTotal: null,
         hasReport: false
@@ -462,5 +467,91 @@ describe('mastercrm clients dashboard', () => {
       },
       clientes: []
     });
+  });
+
+  it('hides shared usernames for pending links in the dashboard payload', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 321,
+        username: 'vicky',
+        nombre: 'Vicky',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'link-1',
+        owner_id: 'owner-vicky',
+        owners: {
+          id: 'owner-vicky',
+          owner_key: 'asnlucas10:vicky',
+          owner_label: 'Vicky',
+          pagina: 'ASN'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [
+        {
+          id: 'link-pending',
+          status: 'pending',
+          client_id: 'client-1',
+          clients: {
+            id: 'client-1',
+            phone_e164: '+5493735506280',
+            pagina: 'ASN'
+          }
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_client_identities', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
+
+    expect(dashboard.clientes).toEqual([
+      {
+        id: 'link-pending',
+        username: null,
+        telefono: '+5493735506280',
+        pagina: 'ASN',
+        estado: 'pending',
+        ownerKey: 'asnlucas10:vicky',
+        ownerLabel: 'Vicky',
+        cargadoHoy: null,
+        cargadoMes: null,
+        reportDate: null
+      }
+    ]);
   });
 });

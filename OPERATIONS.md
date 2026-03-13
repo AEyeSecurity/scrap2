@@ -145,9 +145,97 @@ Tablas:
 - `owner_aliases`
 - `owner_client_links`
 - `clients`
+- `owner_client_identities`
 - `report_daily_snapshots`
 - `owner_financial_settings`
 - `owner_monthly_ad_spend`
+
+### Modelo actual de identidad
+
+Desde el refactor de identidad por owner:
+
+- `clients` representa solo el contacto global por telefono
+- `clients` ya no debe usarse como fuente de `username`
+- `owner_client_links` representa el vinculo del contacto con cada cajero
+- `owner_client_identities` representa la identidad operativa del jugador para ese vinculo
+
+Regla funcional:
+
+- un mismo telefono puede existir en mas de un owner
+- cada owner puede tener un `username` distinto para ese mismo telefono
+- el `username` activo es unico por `pagina`
+- si cambia el `username` dentro del mismo owner, se conserva historial
+
+Campos clave de `owner_client_identities`:
+
+- `owner_client_link_id`
+- `owner_id`
+- `client_id`
+- `pagina`
+- `username`
+- `is_active`
+- `valid_from`
+- `valid_to`
+
+Regla de estado:
+
+- `owner_client_links.status = pending` si no existe identidad activa
+- `owner_client_links.status = assigned` si existe exactamente una identidad activa
+
+Migracion aplicada para esto:
+
+- `db/migrations/20260313_owner_client_identities_refactor.sql`
+
+Migracion intermedia descartada por quedar obsoleta frente al refactor completo:
+
+- `20260313_assign_username_owner_guard.sql`
+
+### Impacto tecnico
+
+Partes que ya no deben leer `clients.username`:
+
+- dashboard CRM
+- `assign-phone`
+- `create-player` sync
+- reporte masivo ASN
+- snapshots diarios
+
+Partes que ahora leen identidad activa:
+
+- `src/mastercrm-user-store.ts`
+- `src/player-phone-store.ts`
+- `src/report-run-store.ts`
+
+### Reportes despues del refactor
+
+`report_run_items` y `report_daily_snapshots` ahora persisten `identity_id`.
+
+Eso significa:
+
+- el reporte masivo encola identidades activas, no clientes globales
+- el dashboard cruza snapshots por `identity_id`
+- un mismo telefono puede aparecer bajo dos owners distintos con dos usernames distintos sin mezclar cargas
+
+### Smoke real validado
+
+Se valido contra Supabase real este caso:
+
+- mismo telefono: `+5491199999013`
+- owner `asnlucas10:lucas10` -> `codexlucas9013`
+- owner `asnlucas10:vicky` -> `codexvicky9013`
+
+Resultado confirmado:
+
+- un solo `client` global por telefono
+- dos `owner_client_links` distintos en `assigned`
+- dos `owner_client_identities` activas distintas
+- dashboard de Lucas devuelve `codexlucas9013`
+- dashboard de Vicky devuelve `codexvicky9013`
+
+Limpieza realizada despues del smoke:
+
+- se eliminaron de Supabase el telefono de prueba `+5491199999013`
+- se eliminaron sus links, identidades, eventos y cualquier rastro asociado
 
 ### Tablas financieras nuevas
 

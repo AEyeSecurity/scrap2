@@ -171,7 +171,6 @@ interface UserOwnerLinkRow {
 
 interface ClientRow {
   id: string;
-  username: string | null;
   phone_e164: string | null;
   pagina: 'ASN';
 }
@@ -183,7 +182,15 @@ interface OwnerClientLinkRow {
   clients: ClientRow | ClientRow[];
 }
 
+interface OwnerClientIdentityRow {
+  id: string;
+  owner_client_link_id: string;
+  username: string;
+  is_active: boolean;
+}
+
 interface ReportDailySnapshotRow {
+  identity_id?: string;
   client_id?: string;
   report_date: string;
   username: string;
@@ -676,13 +683,18 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       return buildEmptyDashboard(monthWindow.month);
     }
 
-    const [ownerPhone, ownerClientLinksResult, latestReportDateResult, financialSettingsResult, adSpendResult, eventsResult] =
+    const [ownerPhone, ownerClientLinksResult, ownerClientIdentitiesResult, latestReportDateResult, financialSettingsResult, adSpendResult, eventsResult] =
       await Promise.all([
         this.getOwnerPhone(owner.id),
         this.client
           .from('owner_client_links')
-          .select('id, status, client_id, clients!inner(id, username, phone_e164, pagina)')
+          .select('id, status, client_id, clients!inner(id, phone_e164, pagina)')
           .eq('owner_id', owner.id),
+        this.client
+          .from('owner_client_identities')
+          .select('id, owner_client_link_id, username, is_active')
+          .eq('owner_id', owner.id)
+          .eq('is_active', true),
         this.client
           .from('report_daily_snapshots')
           .select('report_date')
@@ -713,6 +725,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (ownerClientLinksResult.error) {
       throw mapPostgrestError(ownerClientLinksResult.error, 'Could not read owner client links');
     }
+    if (ownerClientIdentitiesResult.error) {
+      throw mapPostgrestError(ownerClientIdentitiesResult.error, 'Could not read owner client identities');
+    }
     if (latestReportDateResult.error) {
       throw mapPostgrestError(latestReportDateResult.error, 'Could not read owner report date');
     }
@@ -735,6 +750,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
 
     const ownerClientLinks = (ownerClientLinksResult.data as OwnerClientLinkRow[] | null) ?? [];
+    const ownerClientIdentities = (ownerClientIdentitiesResult.data as OwnerClientIdentityRow[] | null) ?? [];
+    const activeIdentityByLinkId = new Map<string, OwnerClientIdentityRow>();
+    for (const identity of ownerClientIdentities) {
+      if (identity.is_active) {
+        activeIdentityByLinkId.set(identity.owner_client_link_id, identity);
+      }
+    }
     const totalClients = ownerClientLinks.length;
     const assignedClients = ownerClientLinks.filter((link) => link.status === 'assigned').length;
     const pendingClients = ownerClientLinks.filter((link) => link.status === 'pending').length;
@@ -749,7 +771,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     let cargadoHoyTotal: number | null = null;
     let cargadoMesTotal: number | null = null;
     let clientesConReporte = 0;
-    const snapshotByUsername = new Map<
+    const snapshotByIdentityId = new Map<
       string,
       { cargadoHoy: number | null; cargadoMes: number | null; reportDate: string | null }
     >();
@@ -757,7 +779,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (reportDate) {
       const { data: snapshotsData, error: snapshotsError } = await this.client
         .from('report_daily_snapshots')
-        .select('client_id, report_date, username, cargado_hoy, cargado_mes')
+        .select('identity_id, client_id, report_date, username, cargado_hoy, cargado_mes')
         .eq('owner_id', owner.id)
         .eq('report_date', reportDate);
 
@@ -773,15 +795,17 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       for (const snapshot of snapshots) {
         const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
         const cargadoMes = toFiniteNumber(snapshot.cargado_mes);
-        snapshotByUsername.set(snapshot.username, {
-          cargadoHoy,
-          cargadoMes,
-          reportDate: snapshot.report_date
-        });
+        if (typeof snapshot.identity_id === 'string' && snapshot.identity_id.length > 0) {
+          snapshotByIdentityId.set(snapshot.identity_id, {
+            cargadoHoy,
+            cargadoMes,
+            reportDate: snapshot.report_date
+          });
+        }
         cargadoHoyTotal += cargadoHoy ?? 0;
         cargadoMesTotal += cargadoMes ?? 0;
-        if (typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0) {
-          reportClientIds.add(snapshot.client_id);
+        if (typeof snapshot.identity_id === 'string' && snapshot.identity_id.length > 0) {
+          reportClientIds.add(snapshot.identity_id);
         }
       }
 
@@ -829,12 +853,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const clientes: MastercrmOwnerClientRecord[] = ownerClientLinks.map((link) => {
       const client = unwrapSingleRelation(link.clients);
-      const username = client?.username ?? null;
-      const snapshot = username ? snapshotByUsername.get(username) : undefined;
+      const activeIdentity = activeIdentityByLinkId.get(link.id);
+      const visibleUsername = link.status === 'assigned' ? activeIdentity?.username ?? null : null;
+      const snapshot = activeIdentity ? snapshotByIdentityId.get(activeIdentity.id) : undefined;
 
       return {
         id: link.id,
-        username,
+        username: visibleUsername,
         telefono: client?.phone_e164 ?? null,
         pagina: client?.pagina ?? owner.pagina,
         estado: link.status,
