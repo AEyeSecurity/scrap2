@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { chromium, type Locator, type Page } from 'playwright';
 import type { Logger } from 'pino';
+import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { parseBalanceNumber } from './balance-job';
 import { configureContext } from './browser';
@@ -587,7 +588,8 @@ export async function runAsnReportJob(
       result: resultPayload
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const friendlyError = toFriendlyAsnUserError(request.payload.usuario, error);
+    const message = friendlyError?.message ?? (error instanceof Error ? error.message : String(error));
     jobLogger.error({ error }, 'ASN report job failed');
 
     try {
@@ -610,7 +612,9 @@ export async function runAsnReportJob(
     await context.close().catch(() => undefined);
     await browser.close().catch(() => undefined);
 
-    const wrapped = new Error(message);
+    const wrapped = new Error(message, {
+      cause: friendlyError?.cause ?? (error instanceof Error ? error : undefined)
+    });
     (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = steps;
     (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths = artifactPaths;
     throw wrapped;

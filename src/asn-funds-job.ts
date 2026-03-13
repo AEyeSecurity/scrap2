@@ -3,6 +3,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { chromium, type Locator, type Page } from 'playwright';
 import type { Logger } from 'pino';
+import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
 import { resolveSiteAppConfig } from './site-profile';
@@ -963,282 +964,301 @@ export async function runAsnDepositJob(
   });
   const captureSuccessArtifacts = parseEnvBoolean(process.env.ASN_FUNDS_CAPTURE_SUCCESS_ARTIFACTS) ?? false;
 
-  const runResult = await runAsnSessionSteps({
-    appConfig: runtimeConfig,
-    requestId: request.id,
-    logger: jobLogger,
-    credentials: {
-      username: request.payload.agente,
-      password: request.payload.contrasena_agente
-    },
-    captureSuccessArtifacts,
-    onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps, isTurbo }) => {
-      const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
-      const withdrawPath = `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(request.payload.usuario)}`;
-      const entryPath = resolveAsnDepositEntryPath(request.payload.operacion, request.payload.usuario, isTurbo);
-      const isWithdrawOperation =
-        request.payload.operacion === 'descarga' || request.payload.operacion === 'descarga_total';
-      const useTransferBalanceValidation = request.payload.operacion === 'carga';
+  try {
+    const runResult = await runAsnSessionSteps({
+      appConfig: runtimeConfig,
+      requestId: request.id,
+      logger: jobLogger,
+      credentials: {
+        username: request.payload.agente,
+        password: request.payload.contrasena_agente
+      },
+      captureSuccessArtifacts,
+      onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps, isTurbo }) => {
+        const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+        const withdrawPath = `/NewAdmin/descarga-jugador.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+        const entryPath = resolveAsnDepositEntryPath(request.payload.operacion, request.payload.usuario, isTurbo);
+        const isWithdrawOperation =
+          request.payload.operacion === 'descarga' || request.payload.operacion === 'descarga_total';
+        const useTransferBalanceValidation = request.payload.operacion === 'carga';
 
-      const gotoStep = await executeActionStep(
-        page,
-        artifactDir,
-        '02-goto-user-cd',
-        async () => {
-          await page.goto(entryPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
-          if (isWithdrawOperation) {
-            await findFirstVisibleLocator(page, 'text=/Descarga|Disponible\\s*:|Jugador\\s*:/i', cfg.timeoutMs);
-            return;
-          }
-
-          await findVisibleBySelectors(
-            page,
-            [
-              'input#importe',
-              'input[name="importe"]',
-              'input[type="image"]',
-              'input[type="submit"]',
-              'button[type="submit"]',
-              'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo|Importe\\s*:|Cargar/i'
-            ],
-            cfg.timeoutMs
-          );
-        },
-        captureSuccessArtifacts
-      );
-      if (gotoStep.artifactPath) {
-        artifactPaths.push(gotoStep.artifactPath);
-      }
-      steps.push(gotoStep);
-      if (gotoStep.status === 'failed') {
-        throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
-      }
-
-      let saldoAntes: AsnBalanceSnapshot | undefined;
-      const readBeforeStep = await executeActionStep(
-        page,
-        artifactDir,
-        '03-read-saldo-before',
-        async () => {
-          if (request.payload.operacion === 'carga' && isTurbo) {
-            await gotoWithRetry(page, userPath, cfg.timeoutMs);
-          }
-          saldoAntes = useTransferBalanceValidation
-            ? await readAsnTransferBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500))
-            : await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
-        },
-        captureSuccessArtifacts
-      );
-      if (readBeforeStep.artifactPath) {
-        artifactPaths.push(readBeforeStep.artifactPath);
-      }
-      steps.push(readBeforeStep);
-      if (readBeforeStep.status === 'failed') {
-        throw new Error(`Step failed: ${readBeforeStep.name} (${readBeforeStep.error ?? 'unknown error'})`);
-      }
-
-      if (!saldoAntes) {
-        throw new Error('ASN balance before operation was not captured');
-      }
-
-      let montoSolicitado = 0;
-      const resolveAmountStep = await executeActionStep(
-        page,
-        artifactDir,
-        '04-resolve-amount',
-        async () => {
-          montoSolicitado = resolveAsnRequestedAmount(
-            request.payload.operacion,
-            saldoAntes?.saldoNumero ?? 0,
-            request.payload.cantidad
-          );
-        },
-        captureSuccessArtifacts
-      );
-      if (resolveAmountStep.artifactPath) {
-        artifactPaths.push(resolveAmountStep.artifactPath);
-      }
-      steps.push(resolveAmountStep);
-      if (resolveAmountStep.status === 'failed') {
-        throw new Error(`Step failed: ${resolveAmountStep.name} (${resolveAmountStep.error ?? 'unknown error'})`);
-      }
-
-      if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
-        steps.push({
-          name: '05-apply-operation',
-          status: 'skipped',
-          startedAt: new Date().toISOString(),
-          finishedAt: new Date().toISOString(),
-          error: 'descarga_total skipped because available balance is zero'
-        });
-      } else {
-        const applyStep = await executeActionStep(
+        const gotoStep = await executeActionStep(
           page,
           artifactDir,
-          '05-apply-operation',
+          '02-goto-user-cd',
           async () => {
-            await submitAsnFundsForm(
+            await page.goto(entryPath, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+            if (isWithdrawOperation) {
+              await findFirstVisibleLocator(page, 'text=/Descarga|Disponible\\s*:|Jugador\\s*:/i', cfg.timeoutMs);
+              return;
+            }
+
+            await findVisibleBySelectors(
               page,
-              request.payload.operacion,
-              request.payload.usuario,
-              montoSolicitado,
+              [
+                'input#importe',
+                'input[name="importe"]',
+                'input[type="image"]',
+                'input[type="submit"]',
+                'button[type="submit"]',
+                'text=/Saldo\\s+disponible\\s+actual|Cargar\\s+Saldo|Descargar\\s+Saldo|Importe\\s*:|Cargar/i'
+              ],
               cfg.timeoutMs
             );
           },
           captureSuccessArtifacts
         );
-        if (applyStep.artifactPath) {
-          artifactPaths.push(applyStep.artifactPath);
+        if (gotoStep.artifactPath) {
+          artifactPaths.push(gotoStep.artifactPath);
         }
-        steps.push(applyStep);
-        if (applyStep.status === 'failed') {
-          throw new Error(`Step failed: ${applyStep.name} (${applyStep.error ?? 'unknown error'})`);
+        steps.push(gotoStep);
+        if (gotoStep.status === 'failed') {
+          throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
         }
-      }
 
-      let saldoDespues: AsnBalanceSnapshot | undefined;
-      const expectedBalance = useTransferBalanceValidation
-        ? computeExpectedAsnTransferBalance(saldoAntes.saldoNumero, montoSolicitado)
-        : computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
-      const refreshPath = isWithdrawOperation ? withdrawPath : userPath;
-      const readAfterStep = await executeActionStep(
-        page,
-        artifactDir,
-        '06-read-saldo-after',
-        async () => {
-          if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
-            saldoDespues = saldoAntes;
-            return;
-          }
+        let saldoAntes: AsnBalanceSnapshot | undefined;
+        const readBeforeStep = await executeActionStep(
+          page,
+          artifactDir,
+          '03-read-saldo-before',
+          async () => {
+            if (request.payload.operacion === 'carga' && isTurbo) {
+              await gotoWithRetry(page, userPath, cfg.timeoutMs);
+            }
+            saldoAntes = useTransferBalanceValidation
+              ? await readAsnTransferBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500))
+              : await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, isTurbo ? 3_500 : 7_500));
+          },
+          captureSuccessArtifacts
+        );
+        if (readBeforeStep.artifactPath) {
+          artifactPaths.push(readBeforeStep.artifactPath);
+        }
+        steps.push(readBeforeStep);
+        if (readBeforeStep.status === 'failed') {
+          throw new Error(`Step failed: ${readBeforeStep.name} (${readBeforeStep.error ?? 'unknown error'})`);
+        }
 
-          if (request.payload.operacion === 'carga' && isTurbo) {
-            await gotoWithRetry(page, userPath, cfg.timeoutMs);
-          }
+        if (!saldoAntes) {
+          throw new Error('ASN balance before operation was not captured');
+        }
 
-          saldoDespues = useTransferBalanceValidation
-            ? await waitForExpectedAsnTransferBalance(
+        let montoSolicitado = 0;
+        const resolveAmountStep = await executeActionStep(
+          page,
+          artifactDir,
+          '04-resolve-amount',
+          async () => {
+            montoSolicitado = resolveAsnRequestedAmount(
+              request.payload.operacion,
+              saldoAntes?.saldoNumero ?? 0,
+              request.payload.cantidad
+            );
+          },
+          captureSuccessArtifacts
+        );
+        if (resolveAmountStep.artifactPath) {
+          artifactPaths.push(resolveAmountStep.artifactPath);
+        }
+        steps.push(resolveAmountStep);
+        if (resolveAmountStep.status === 'failed') {
+          throw new Error(`Step failed: ${resolveAmountStep.name} (${resolveAmountStep.error ?? 'unknown error'})`);
+        }
+
+        if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
+          steps.push({
+            name: '05-apply-operation',
+            status: 'skipped',
+            startedAt: new Date().toISOString(),
+            finishedAt: new Date().toISOString(),
+            error: 'descarga_total skipped because available balance is zero'
+          });
+        } else {
+          const applyStep = await executeActionStep(
+            page,
+            artifactDir,
+            '05-apply-operation',
+            async () => {
+              await submitAsnFundsForm(
                 page,
-                expectedBalance,
-                isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
-                refreshPath
-              )
-            : await waitForExpectedAsnBalance(
-                page,
-                expectedBalance,
-                isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
-                refreshPath
-              );
-        },
-        captureSuccessArtifacts
-      );
-      if (readAfterStep.artifactPath) {
-        artifactPaths.push(readAfterStep.artifactPath);
-      }
-      steps.push(readAfterStep);
-      if (readAfterStep.status === 'failed') {
-        throw new Error(`Step failed: ${readAfterStep.name} (${readAfterStep.error ?? 'unknown error'})`);
-      }
-
-      if (!saldoDespues) {
-        throw new Error('ASN balance after operation was not captured');
-      }
-
-      const verifyStep = await executeActionStep(
-        page,
-        artifactDir,
-        '07-verify-delta',
-        async () => {
-          const appliedAmount = useTransferBalanceValidation
-            ? computeAsnTransferAppliedAmount(saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0)
-            : computeAsnAppliedAmount(request.payload.operacion, saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0);
-          const appliedDeltaMatches = useTransferBalanceValidation
-            ? appliedAmount >= -0.01
-            : Math.abs(appliedAmount - montoSolicitado) <= 0.01;
-          const expectedDeltaMatches = useTransferBalanceValidation
-            ? isExpectedAsnTransferDelta(
-                saldoAntes?.saldoNumero ?? 0,
-                saldoDespues?.saldoNumero ?? 0,
-                montoSolicitado,
-                0.01
-              )
-            : isExpectedAsnDelta(
                 request.payload.operacion,
-                saldoAntes?.saldoNumero ?? 0,
-                saldoDespues?.saldoNumero ?? 0,
+                request.payload.usuario,
                 montoSolicitado,
-                0.01
+                cfg.timeoutMs
               );
-          if (!appliedDeltaMatches || !expectedDeltaMatches) {
-            throw new Error(
-              `Unexpected ASN balance delta: operacion=${request.payload.operacion}, saldoAntes=${saldoAntes?.saldoTexto}, saldoDespues=${saldoDespues?.saldoTexto}, montoSolicitado=${montoSolicitado}`
+            },
+            captureSuccessArtifacts
+          );
+          if (applyStep.artifactPath) {
+            artifactPaths.push(applyStep.artifactPath);
+          }
+          steps.push(applyStep);
+          if (applyStep.status === 'failed') {
+            throw new Error(`Step failed: ${applyStep.name} (${applyStep.error ?? 'unknown error'})`);
+          }
+        }
+
+        let saldoDespues: AsnBalanceSnapshot | undefined;
+        const expectedBalance = useTransferBalanceValidation
+          ? computeExpectedAsnTransferBalance(saldoAntes.saldoNumero, montoSolicitado)
+          : computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
+        const refreshPath = isWithdrawOperation ? withdrawPath : userPath;
+        const readAfterStep = await executeActionStep(
+          page,
+          artifactDir,
+          '06-read-saldo-after',
+          async () => {
+            if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
+              saldoDespues = saldoAntes;
+              return;
+            }
+
+            if (request.payload.operacion === 'carga' && isTurbo) {
+              await gotoWithRetry(page, userPath, cfg.timeoutMs);
+            }
+
+            saldoDespues = useTransferBalanceValidation
+              ? await waitForExpectedAsnTransferBalance(
+                  page,
+                  expectedBalance,
+                  isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
+                  refreshPath
+                )
+              : await waitForExpectedAsnBalance(
+                  page,
+                  expectedBalance,
+                  isTurbo ? Math.min(cfg.timeoutMs, 4_500) : Math.min(cfg.timeoutMs, 8_500),
+                  refreshPath
+                );
+          },
+          captureSuccessArtifacts
+        );
+        if (readAfterStep.artifactPath) {
+          artifactPaths.push(readAfterStep.artifactPath);
+        }
+        steps.push(readAfterStep);
+        if (readAfterStep.status === 'failed') {
+          throw new Error(`Step failed: ${readAfterStep.name} (${readAfterStep.error ?? 'unknown error'})`);
+        }
+
+        if (!saldoDespues) {
+          throw new Error('ASN balance after operation was not captured');
+        }
+
+        const verifyStep = await executeActionStep(
+          page,
+          artifactDir,
+          '07-verify-delta',
+          async () => {
+            const appliedAmount = useTransferBalanceValidation
+              ? computeAsnTransferAppliedAmount(saldoAntes?.saldoNumero ?? 0, saldoDespues?.saldoNumero ?? 0)
+              : computeAsnAppliedAmount(
+                  request.payload.operacion,
+                  saldoAntes?.saldoNumero ?? 0,
+                  saldoDespues?.saldoNumero ?? 0
+                );
+            const appliedDeltaMatches = useTransferBalanceValidation
+              ? appliedAmount >= -0.01
+              : Math.abs(appliedAmount - montoSolicitado) <= 0.01;
+            const expectedDeltaMatches = useTransferBalanceValidation
+              ? isExpectedAsnTransferDelta(
+                  saldoAntes?.saldoNumero ?? 0,
+                  saldoDespues?.saldoNumero ?? 0,
+                  montoSolicitado,
+                  0.01
+                )
+              : isExpectedAsnDelta(
+                  request.payload.operacion,
+                  saldoAntes?.saldoNumero ?? 0,
+                  saldoDespues?.saldoNumero ?? 0,
+                  montoSolicitado,
+                  0.01
+                );
+            if (!appliedDeltaMatches || !expectedDeltaMatches) {
+              throw new Error(
+                `Unexpected ASN balance delta: operacion=${request.payload.operacion}, saldoAntes=${saldoAntes?.saldoTexto}, saldoDespues=${saldoDespues?.saldoTexto}, montoSolicitado=${montoSolicitado}`
+              );
+            }
+          },
+          captureSuccessArtifacts
+        );
+        if (verifyStep.artifactPath) {
+          artifactPaths.push(verifyStep.artifactPath);
+        }
+        steps.push(verifyStep);
+        if (verifyStep.status === 'failed') {
+          throw new Error(`Step failed: ${verifyStep.name} (${verifyStep.error ?? 'unknown error'})`);
+        }
+
+        const montoAplicado = computeAsnAppliedAmount(
+          request.payload.operacion,
+          saldoAntes.saldoNumero,
+          saldoDespues.saldoNumero
+        );
+        let montoAplicadoFinal = montoAplicado;
+        if (useTransferBalanceValidation) {
+          const transferAppliedAmount = computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero);
+          if (transferAppliedAmount - montoSolicitado > 0.01) {
+            jobLogger.warn(
+              {
+                operacion: request.payload.operacion,
+                usuario: request.payload.usuario,
+                montoSolicitado,
+                transferAppliedAmount,
+                saldoAntes: saldoAntes.saldoNumero,
+                saldoDespues: saldoDespues.saldoNumero
+              },
+              'ASN transfer balance moved more than requested; clamping applied amount to requested amount'
             );
           }
-        },
-        captureSuccessArtifacts
-      );
-      if (verifyStep.artifactPath) {
-        artifactPaths.push(verifyStep.artifactPath);
-      }
-      steps.push(verifyStep);
-      if (verifyStep.status === 'failed') {
-        throw new Error(`Step failed: ${verifyStep.name} (${verifyStep.error ?? 'unknown error'})`);
-      }
 
-      const montoAplicado = computeAsnAppliedAmount(
-        request.payload.operacion,
-        saldoAntes.saldoNumero,
-        saldoDespues.saldoNumero
-      );
-      let montoAplicadoFinal = montoAplicado;
-      if (useTransferBalanceValidation) {
-        const transferAppliedAmount = computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero);
-        if (transferAppliedAmount - montoSolicitado > 0.01) {
-          jobLogger.warn(
-            {
-              operacion: request.payload.operacion,
-              usuario: request.payload.usuario,
-              montoSolicitado,
-              transferAppliedAmount,
-              saldoAntes: saldoAntes.saldoNumero,
-              saldoDespues: saldoDespues.saldoNumero
-            },
-            'ASN transfer balance moved more than requested; clamping applied amount to requested amount'
-          );
+          montoAplicadoFinal = roundToTwoDecimals(Math.min(transferAppliedAmount, montoSolicitado));
         }
 
-        montoAplicadoFinal = roundToTwoDecimals(Math.min(transferAppliedAmount, montoSolicitado));
+        const resultPayload: AsnFundsOperationResult = {
+          kind: 'asn-funds-operation',
+          pagina: 'ASN',
+          operacion: request.payload.operacion,
+          usuario: request.payload.usuario,
+          montoSolicitado: roundToTwoDecimals(montoSolicitado),
+          montoAplicado: roundToTwoDecimals(montoAplicadoFinal),
+          montoAplicadoTexto: formatAsnMoney(montoAplicadoFinal),
+          saldoAntesNumero: roundToTwoDecimals(saldoAntes.saldoNumero),
+          saldoAntesTexto: saldoAntes.saldoTexto,
+          saldoDespuesNumero: roundToTwoDecimals(saldoDespues.saldoNumero),
+          saldoDespuesTexto: saldoDespues.saldoTexto
+        };
+
+        steps.push({
+          name: '99-final',
+          status: 'ok',
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString()
+        });
+
+        return resultPayload;
       }
+    });
 
-      const resultPayload: AsnFundsOperationResult = {
-        kind: 'asn-funds-operation',
-        pagina: 'ASN',
-        operacion: request.payload.operacion,
-        usuario: request.payload.usuario,
-        montoSolicitado: roundToTwoDecimals(montoSolicitado),
-        montoAplicado: roundToTwoDecimals(montoAplicadoFinal),
-        montoAplicadoTexto: formatAsnMoney(montoAplicadoFinal),
-        saldoAntesNumero: roundToTwoDecimals(saldoAntes.saldoNumero),
-        saldoAntesTexto: saldoAntes.saldoTexto,
-        saldoDespuesNumero: roundToTwoDecimals(saldoDespues.saldoNumero),
-        saldoDespuesTexto: saldoDespues.saldoTexto
-      };
-
-      steps.push({
-        name: '99-final',
-        status: 'ok',
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString()
-      });
-
-      return resultPayload;
+    return {
+      artifactPaths: runResult.artifactPaths,
+      steps: runResult.steps,
+      result: runResult.payload
+    };
+  } catch (error) {
+    const friendlyError = toFriendlyAsnUserError(request.payload.usuario, error);
+    if (!friendlyError) {
+      throw error;
     }
-  });
 
-  return {
-    artifactPaths: runResult.artifactPaths,
-    steps: runResult.steps,
-    result: runResult.payload
-  };
+    const wrapped = new Error(friendlyError.message, {
+      cause: friendlyError.cause ?? (error instanceof Error ? error : undefined)
+    });
+    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = (error as Error & { steps?: JobStepResult[] }).steps;
+    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths =
+      (error as Error & { artifactPaths?: string[] }).artifactPaths;
+    throw wrapped;
+  }
 }
 export async function runAsnBalanceJob(
   request: BalanceJobRequest,
@@ -1259,80 +1279,95 @@ export async function runAsnBalanceJob(
   });
   const captureSuccessArtifacts = parseEnvBoolean(process.env.ASN_BALANCE_CAPTURE_SUCCESS_ARTIFACTS) ?? false;
 
-  const runResult = await runAsnSessionSteps({
-    appConfig: runtimeConfig,
-    requestId: request.id,
-    logger: jobLogger,
-    credentials: {
-      username: request.payload.agente,
-      password: request.payload.contrasena_agente
-    },
-    captureSuccessArtifacts,
-    onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps }) => {
-      const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
-      const gotoStep = await executeActionStep(
-        page,
-        artifactDir,
-        '02-goto-user-cd',
-        async () => {
-          await gotoWithRetry(page, userPath, cfg.timeoutMs);
-          await findFirstVisibleLocator(page, 'text=/Saldo\\s+disponible\\s+actual/i', cfg.timeoutMs);
-        },
-        captureSuccessArtifacts
-      );
-      if (gotoStep.artifactPath) {
-        artifactPaths.push(gotoStep.artifactPath);
-      }
-      steps.push(gotoStep);
-      if (gotoStep.status === 'failed') {
-        throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
-      }
+  try {
+    const runResult = await runAsnSessionSteps({
+      appConfig: runtimeConfig,
+      requestId: request.id,
+      logger: jobLogger,
+      credentials: {
+        username: request.payload.agente,
+        password: request.payload.contrasena_agente
+      },
+      captureSuccessArtifacts,
+      onRun: async ({ page, runtimeConfig: cfg, artifactDir, artifactPaths, steps }) => {
+        const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(request.payload.usuario)}`;
+        const gotoStep = await executeActionStep(
+          page,
+          artifactDir,
+          '02-goto-user-cd',
+          async () => {
+            await gotoWithRetry(page, userPath, cfg.timeoutMs);
+            await findFirstVisibleLocator(page, 'text=/Saldo\\s+disponible\\s+actual/i', cfg.timeoutMs);
+          },
+          captureSuccessArtifacts
+        );
+        if (gotoStep.artifactPath) {
+          artifactPaths.push(gotoStep.artifactPath);
+        }
+        steps.push(gotoStep);
+        if (gotoStep.status === 'failed') {
+          throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
+        }
 
-      let balance: AsnBalanceSnapshot | undefined;
-      const readStep = await executeActionStep(
-        page,
-        artifactDir,
-        '03-read-saldo',
-        async () => {
-          balance = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, 6_000));
-        },
-        captureSuccessArtifacts
-      );
-      if (readStep.artifactPath) {
-        artifactPaths.push(readStep.artifactPath);
+        let balance: AsnBalanceSnapshot | undefined;
+        const readStep = await executeActionStep(
+          page,
+          artifactDir,
+          '03-read-saldo',
+          async () => {
+            balance = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, 6_000));
+          },
+          captureSuccessArtifacts
+        );
+        if (readStep.artifactPath) {
+          artifactPaths.push(readStep.artifactPath);
+        }
+        steps.push(readStep);
+        if (readStep.status === 'failed') {
+          throw new Error(`Step failed: ${readStep.name} (${readStep.error ?? 'unknown error'})`);
+        }
+
+        if (!balance) {
+          throw new Error('ASN balance was not captured');
+        }
+
+        const resultPayload: AsnBalanceJobResult = {
+          kind: 'asn-balance',
+          pagina: 'ASN',
+          operacion: 'consultar_saldo',
+          usuario: request.payload.usuario,
+          saldoTexto: balance.saldoTexto,
+          saldoNumero: roundToTwoDecimals(balance.saldoNumero)
+        };
+
+        steps.push({
+          name: '99-final',
+          status: 'ok',
+          startedAt: new Date().toISOString(),
+          finishedAt: new Date().toISOString()
+        });
+
+        return resultPayload;
       }
-      steps.push(readStep);
-      if (readStep.status === 'failed') {
-        throw new Error(`Step failed: ${readStep.name} (${readStep.error ?? 'unknown error'})`);
-      }
+    });
 
-      if (!balance) {
-        throw new Error('ASN balance was not captured');
-      }
-
-      const resultPayload: AsnBalanceJobResult = {
-        kind: 'asn-balance',
-        pagina: 'ASN',
-        operacion: 'consultar_saldo',
-        usuario: request.payload.usuario,
-        saldoTexto: balance.saldoTexto,
-        saldoNumero: roundToTwoDecimals(balance.saldoNumero)
-      };
-
-      steps.push({
-        name: '99-final',
-        status: 'ok',
-        startedAt: new Date().toISOString(),
-        finishedAt: new Date().toISOString()
-      });
-
-      return resultPayload;
+    return {
+      artifactPaths: runResult.artifactPaths,
+      steps: runResult.steps,
+      result: runResult.payload
+    };
+  } catch (error) {
+    const friendlyError = toFriendlyAsnUserError(request.payload.usuario, error);
+    if (!friendlyError) {
+      throw error;
     }
-  });
 
-  return {
-    artifactPaths: runResult.artifactPaths,
-    steps: runResult.steps,
-    result: runResult.payload
-  };
+    const wrapped = new Error(friendlyError.message, {
+      cause: friendlyError.cause ?? (error instanceof Error ? error : undefined)
+    });
+    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).steps = (error as Error & { steps?: JobStepResult[] }).steps;
+    (wrapped as Error & { steps?: JobStepResult[]; artifactPaths?: string[] }).artifactPaths =
+      (error as Error & { artifactPaths?: string[] }).artifactPaths;
+    throw wrapped;
+  }
 }

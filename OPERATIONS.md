@@ -83,6 +83,80 @@ Endpoints usados por el frontend:
 - `POST /mastercrm-link-cashier`
 - `POST /mastercrm-owner-financials`
 
+## Errores ASN para usuario inexistente
+
+Regla actual:
+
+- si una operacion ASN apunta a un `usuario` que no existe, la API no debe exponer errores tecnicos de Playwright
+- el mensaje estandar visible para cliente es:
+  - `No se ha encontrado el usuario xxxx`
+
+### Precheck antes de encolar
+
+Rutas cubiertas:
+
+- `POST /users/deposit` para:
+  - `consultar_saldo`
+  - `carga`
+  - `descarga`
+  - `descarga_total`
+  - `reporte`
+- `POST /users/assign-phone`
+
+Comportamiento:
+
+- si el checker ASN detecta que el usuario no existe:
+  - responde `404`
+  - no crea `jobId`
+  - no encola ningun job
+  - devuelve:
+
+```json
+{
+  "message": "No se ha encontrado el usuario xxxx",
+  "code": "ASN_USER_NOT_FOUND",
+  "details": {
+    "usuario": "xxxx"
+  }
+}
+```
+
+- si falla la verificacion ASN por otro motivo:
+  - responde `500`
+  - `code = ASN_USER_CHECK_FAILED`
+
+### Traduccion residual dentro de jobs
+
+Si un caso de usuario inexistente se escapa al precheck y explota dentro del job ASN:
+
+- `GET /jobs/:id` ya no debe mostrar mensajes como:
+  - `Step failed: 02-goto-user-cd (...)`
+  - `No visible element found for selector: ...`
+- el backend traduce esos errores a:
+  - `No se ha encontrado el usuario xxxx`
+
+Esto aplica sobre:
+
+- `src/asn-funds-job.ts`
+- `src/asn-report-job.ts`
+
+Helper central:
+
+- `src/asn-user-error.ts`
+
+### Verificacion recomendada
+
+```powershell
+npm test -- tests/server.test.ts tests/asn-user-error.test.ts
+npm run build
+```
+
+Cobertura validada:
+
+- `POST /users/deposit` devuelve `404` inmediato para usuario ASN inexistente
+- `POST /users/assign-phone` devuelve el mismo mensaje amigable
+- los jobs ASN traducen errores tecnicos residuales al mensaje limpio
+
 ### Contrato mensual actual
 
 `POST /mastercrm-clients` acepta:

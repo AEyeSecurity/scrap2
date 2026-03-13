@@ -12,6 +12,8 @@ import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phon
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
 
+const allowAsnUserExists = async (): Promise<void> => undefined;
+
 class FakeQueue {
   public readonly entries = new Map<string, JobStoreEntry>();
   public readonly requests: JobRequest[] = [];
@@ -411,7 +413,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1242,7 +1245,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1279,7 +1283,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1300,7 +1305,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1334,7 +1340,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1379,7 +1386,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1413,7 +1421,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1673,7 +1682,7 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({
-      message: 'El usuario no existe',
+      message: 'No se ha encontrado el usuario missing_player',
       code: 'ASN_USER_NOT_FOUND',
       details: { usuario: 'missing_player' }
     });
@@ -1940,7 +1949,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -1983,7 +1993,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -2022,7 +2033,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -2062,7 +2074,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -2105,7 +2118,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const response = await server.inject({
@@ -2142,7 +2156,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const descargaResponse = await server.inject({
@@ -2209,6 +2224,50 @@ describe('server routes', () => {
       expect(balanceJob.payload.pagina).toBe('ASN');
       expect(balanceJob.payload.operacion).toBe('consultar_saldo');
     }
+
+    await server.close();
+  });
+
+  it('POST /users/deposit returns 404 immediately for missing ASN users and does not enqueue jobs', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        asnUserExistsChecker: async () => {
+          throw new AsnUserCheckError('NOT_FOUND', 'El usuario no existe');
+        }
+      }
+    );
+
+    const operations = ['consultar_saldo', 'carga', 'descarga', 'descarga_total', 'reporte'] as const;
+    for (const operacion of operations) {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/users/deposit',
+        payload: {
+          pagina: 'ASN',
+          operacion,
+          usuario: 'missing_user',
+          agente: 'agent',
+          contrasena_agente: 'secret',
+          ...(operacion === 'carga' || operacion === 'descarga' ? { cantidad: 25 } : {})
+        }
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        message: 'No se ha encontrado el usuario missing_user',
+        code: 'ASN_USER_NOT_FOUND',
+        details: { usuario: 'missing_user' }
+      });
+    }
+
+    expect(queue.requests).toHaveLength(0);
 
     await server.close();
   });

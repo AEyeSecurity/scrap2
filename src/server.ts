@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import { AsnUserCheckError, assertAsnUserExists, type AssertAsnUserExistsInput } from './asn-user-check';
+import { formatAsnUserNotFoundMessage } from './asn-user-error';
 import { runAsnReportJob } from './asn-report-job';
 import { runBalanceJob } from './balance-job';
 import { runCreatePlayerJob } from './create-player-job';
@@ -393,6 +394,18 @@ function getBuenosAiresDateToken(now = new Date()): string {
     month: '2-digit',
     day: '2-digit'
   }).format(now);
+}
+
+function buildAsnUserNotFoundResponse(usuario: string): {
+  message: string;
+  code: 'ASN_USER_NOT_FOUND';
+  details: { usuario: string };
+} {
+  return {
+    message: formatAsnUserNotFoundMessage(usuario),
+    code: 'ASN_USER_NOT_FOUND',
+    details: { usuario }
+  };
 }
 
 function resolveExecutionOptions(
@@ -1132,11 +1145,7 @@ export function createServer(
     } catch (error) {
       if (error instanceof AsnUserCheckError) {
         if (error.code === 'NOT_FOUND') {
-          return reply.code(404).send({
-            message: error.message,
-            code: 'ASN_USER_NOT_FOUND',
-            details: { usuario: parsed.data.usuario }
-          });
+          return reply.code(404).send(buildAsnUserNotFoundResponse(parsed.data.usuario));
         }
         logger.error({ error }, 'Unexpected ASN user existence checker error');
         return reply.code(500).send({
@@ -1173,6 +1182,37 @@ export function createServer(
     }
 
     const payload = parsed.data;
+    if (payload.pagina === 'ASN') {
+      try {
+        await asnUserExistsChecker({
+          usuario: payload.usuario,
+          agente: payload.agente,
+          contrasenaAgente: payload.contrasena_agente,
+          appConfig,
+          logger
+        });
+      } catch (error) {
+        if (error instanceof AsnUserCheckError) {
+          if (error.code === 'NOT_FOUND') {
+            return reply.code(404).send(buildAsnUserNotFoundResponse(payload.usuario));
+          }
+          logger.error({ error }, 'Unexpected ASN user existence checker error before enqueue');
+          return reply.code(500).send({
+            message: 'Could not verify ASN user existence',
+            code: 'ASN_USER_CHECK_FAILED',
+            details: { usuario: payload.usuario }
+          });
+        }
+
+        logger.error({ error }, 'Unexpected ASN user precheck failure before enqueue');
+        return reply.code(500).send({
+          message: 'Could not verify ASN user existence',
+          code: 'ASN_USER_CHECK_FAILED',
+          details: { usuario: payload.usuario }
+        });
+      }
+    }
+
     if (payload.operacion === 'reporte') {
       if (payload.pagina !== 'ASN') {
         return reply.code(501).send({

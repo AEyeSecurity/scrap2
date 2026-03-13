@@ -1,5 +1,6 @@
 import { chromium, type Page } from 'playwright';
 import type { Logger } from 'pino';
+import { formatAsnUserNotFoundMessage } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { configureContext } from './browser';
 import { resolveSiteAppConfig } from './site-profile';
@@ -117,7 +118,7 @@ export async function assertAsnUserExists(input: AssertAsnUserExistsInput): Prom
     const exists = await userExistsInAsnPage(page, input.usuario, Math.min(runtimeConfig.timeoutMs, 8_000));
 
     if (!exists) {
-      throw new AsnUserCheckError('NOT_FOUND', 'El usuario no existe');
+      throw new AsnUserCheckError('NOT_FOUND', formatAsnUserNotFoundMessage(input.usuario));
     }
   } catch (error) {
     if (error instanceof AsnUserCheckError) {
