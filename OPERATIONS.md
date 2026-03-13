@@ -269,6 +269,43 @@ Con `month = 2026-02` para `Lucas10`:
 - KPIs de carga en `null`
 - intakes y asignaciones del mes en `0`
 
+## Corrida masiva ASN validada
+
+Estado validado el `2026-03-13` para principal `asnlucas10`:
+
+- `report_runs.id = 691c3997-3fa3-430d-a8b1-a8b281bf62af`
+- `status = completed`
+- `total_items = 59`
+- `done_items = 59`
+- `failed_items = 0`
+- `agente = Pity24`
+- `report_date = 2026-03-13`
+
+Estado resultante para `asnlucas10:lucas10` despues de esa corrida:
+
+- `totalClients = 73`
+- `assignedClients = 59`
+- `pendingClients = 14`
+- `reportDate = 2026-03-13`
+- `hasReport = true`
+- `cargadoHoyArs = 34500`
+- `cargadoMesArs = 1390859`
+- `clientesConReporte = 59`
+- `promedioCargaGeneralArs = 19052.86`
+- `financialInputs.adSpendArs = 500000`
+- `financialInputs.commissionPct = 60`
+- `gananciaEstimadaArs = 834515.4`
+- `roiEstimadoPct = 66.9`
+- `costoPorLeadRealArs = 11627.91`
+- `conversionAsignadoPct = 80.82`
+
+Notas operativas:
+
+- la API local puede estar levantada con `REPORT_WORKER_ENABLED = false`
+- eso no impide ver datos actualizados si la corrida ya fue procesada antes y los snapshots existen en Supabase
+- para `Lucas10`, al momento de esta validacion, los `59` clientes `assigned` ya tenian snapshot del `2026-03-13`
+- los `14` faltantes en snapshot correspondian a `pending`, no a fallo del reporte
+
 ## Regla de seguridad UI/API
 
 - `owner_key` sigue existiendo en API para vincular
