@@ -2,6 +2,10 @@
 
 ScrapSinoca es un servicio Node.js + Playwright orientado a automatizar operaciones sobre paneles de agentes y a exponer esas automatizaciones como CLI y como API HTTP.
 
+Guia operativa para retomar este repo sin contexto:
+
+- [OPERATIONS.md](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/OPERATIONS.md)
+
 Hoy el proyecto cubre dos frentes:
 
 - `run`: login en la web, reutilizacion opcional de sesion y extraccion de datos via endpoints autenticados.

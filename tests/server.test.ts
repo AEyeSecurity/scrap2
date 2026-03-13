@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { AsnUserCheckError } from '../src/asn-user-check';
 import { buildAppConfig } from '../src/config';
 import { createLogger } from '../src/logging';
-import { MastercrmUserStoreError, type MastercrmUserStore } from '../src/mastercrm-user-store';
+import {
+  MastercrmUserStoreError,
+  type MastercrmClientsDashboardRecord,
+  type MastercrmUserCashierLinkRecord,
+  type MastercrmUserStore
+} from '../src/mastercrm-user-store';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
@@ -193,6 +198,8 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   }> = [];
 
   public readonly getByIdInputs: number[] = [];
+  public readonly dashboardInputs: Array<{ userId: number; month?: string }> = [];
+  public readonly financialInputs: Array<{ userId: number; month: string; adSpendArs: number; commissionPct: number }> = [];
 
   public readonly linkInputs: Array<{
     userId: number;
@@ -264,14 +271,60 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public linkBehavior: (input: {
     userId: number;
     ownerKey: string;
-  }) => Promise<{
-    userId: number;
-    ownerKey: string;
-    linked: true;
-  }> = async (input) => ({
+  }) => Promise<MastercrmUserCashierLinkRecord> = async (input) => ({
     userId: input.userId,
     ownerKey: input.ownerKey,
-    linked: true
+    ownerLabel: 'Owner Label',
+    pagina: 'ASN',
+    linked: true,
+    replaced: false,
+    previousOwnerKey: null
+  });
+
+  public getClientsDashboardBehavior: (input: { userId: number; month?: string }) => Promise<MastercrmClientsDashboardRecord> = async (input) => ({
+    linkedOwner: null,
+    summary: null,
+    financialInputs: {
+      month: input.month ?? '2026-03',
+      adSpendArs: null,
+      commissionPct: null
+    },
+    primaryKpis: {
+      cargadoMesArs: null,
+      gananciaEstimadaArs: null,
+      roiEstimadoPct: null,
+      costoPorLeadRealArs: null,
+      conversionAsignadoPct: null
+    },
+    statsKpis: {
+      clientesTotales: 0,
+      asignados: 0,
+      pendientes: 0,
+      cargadoHoyArs: null,
+      cargadoMesArs: null,
+      intakesMes: 0,
+      asignacionesMes: 0,
+      tasaIntakeAsignacionPct: null,
+      clientesConReporte: 0,
+      promedioCargaGeneralArs: null,
+      tasaActivacionPct: null
+    },
+    clientes: []
+  });
+
+  public upsertOwnerFinancialsBehavior: (input: {
+    userId: number;
+    month: string;
+    adSpendArs: number;
+    commissionPct: number;
+  }) => Promise<{
+    month: string;
+    adSpendArs: number | null;
+    commissionPct: number | null;
+  }> = async (input) => ({
+    month: input.month,
+    adSpendArs: input.adSpendArs,
+    commissionPct: input.commissionPct
   });
 
   async createUser(input: {
@@ -324,13 +377,28 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   async linkCashierToUser(input: {
     userId: number;
     ownerKey: string;
-  }): Promise<{
-    userId: number;
-    ownerKey: string;
-    linked: true;
-  }> {
+  }): Promise<MastercrmUserCashierLinkRecord> {
     this.linkInputs.push(input);
     return this.linkBehavior(input);
+  }
+
+  async getClientsDashboard(input: { userId: number; month?: string }): Promise<MastercrmClientsDashboardRecord> {
+    this.dashboardInputs.push(input);
+    return this.getClientsDashboardBehavior(input);
+  }
+
+  async upsertOwnerFinancials(input: {
+    userId: number;
+    month: string;
+    adSpendArs: number;
+    commissionPct: number;
+  }): Promise<{
+    month: string;
+    adSpendArs: number | null;
+    commissionPct: number | null;
+  }> {
+    this.financialInputs.push(input);
+    return this.upsertOwnerFinancialsBehavior(input);
   }
 }
 
@@ -548,9 +616,66 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /mastercrm-clients accepts id aliases and returns placeholder array', async () => {
+  it('POST /mastercrm-clients accepts id aliases and returns the cashier dashboard payload', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
+    store.getClientsDashboardBehavior = async ({ userId, month }) => ({
+      linkedOwner: {
+        ownerId: `owner-${userId}`,
+        ownerKey: `owner-${userId}`,
+        ownerLabel: `Owner ${userId}`,
+        pagina: 'ASN',
+        telefono: `+54911${userId}`
+      },
+      summary: {
+        totalClients: 3,
+        assignedClients: 2,
+        pendingClients: 1,
+        reportDate: '2026-03-12',
+        cargadoHoyTotal: 1200,
+        cargadoMesTotal: 5600,
+        hasReport: true
+      },
+      financialInputs: {
+        month: month ?? '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      clientes: [
+        {
+          id: `link-${userId}`,
+          username: `player-${userId}`,
+          telefono: `54911${userId}`,
+          pagina: 'ASN',
+          estado: 'assigned',
+          ownerKey: `owner-${userId}`,
+          ownerLabel: `Owner ${userId}`,
+          cargadoHoy: 600,
+          cargadoMes: 2800,
+          reportDate: '2026-03-12'
+        }
+      ]
+    });
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
     const server = createServer(
@@ -564,7 +689,7 @@ describe('server routes', () => {
     const responseFromId = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
-      payload: { id: 101 }
+      payload: { id: 101, month: '2026-03' }
     });
     const responseFromUserId = await server.inject({
       method: 'POST',
@@ -580,10 +705,217 @@ describe('server routes', () => {
     expect(responseFromId.statusCode).toBe(200);
     expect(responseFromUserId.statusCode).toBe(200);
     expect(responseFromUsuarioId.statusCode).toBe(200);
-    expect(responseFromId.json()).toEqual([]);
-    expect(responseFromUserId.json()).toEqual([]);
-    expect(responseFromUsuarioId.json()).toEqual([]);
-    expect(store.getByIdInputs).toEqual([101, 202, 303]);
+    expect(responseFromId.json()).toEqual({
+      linkedOwner: {
+        ownerKey: 'owner-101',
+        ownerLabel: 'Owner 101',
+        pagina: 'ASN',
+        telefono: '+54911101'
+      },
+      summary: {
+        totalClients: 3,
+        assignedClients: 2,
+        pendingClients: 1,
+        reportDate: '2026-03-12',
+        cargadoHoyTotal: 1200,
+        cargadoMesTotal: 5600,
+        hasReport: true
+      },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      clientes: [
+        {
+          id: 'link-101',
+          username: 'player-101',
+          telefono: '54911101',
+          pagina: 'ASN',
+          estado: 'assigned',
+          ownerKey: 'owner-101',
+          ownerLabel: 'Owner 101',
+          cargadoHoy: 600,
+          cargadoMes: 2800,
+          reportDate: '2026-03-12'
+        }
+      ]
+    });
+    expect(responseFromUserId.json()).toEqual({
+      linkedOwner: {
+        ownerKey: 'owner-202',
+        ownerLabel: 'Owner 202',
+        pagina: 'ASN',
+        telefono: '+54911202'
+      },
+      summary: {
+        totalClients: 3,
+        assignedClients: 2,
+        pendingClients: 1,
+        reportDate: '2026-03-12',
+        cargadoHoyTotal: 1200,
+        cargadoMesTotal: 5600,
+        hasReport: true
+      },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      clientes: [
+        {
+          id: 'link-202',
+          username: 'player-202',
+          telefono: '54911202',
+          pagina: 'ASN',
+          estado: 'assigned',
+          ownerKey: 'owner-202',
+          ownerLabel: 'Owner 202',
+          cargadoHoy: 600,
+          cargadoMes: 2800,
+          reportDate: '2026-03-12'
+        }
+      ]
+    });
+    expect(responseFromUsuarioId.json()).toEqual({
+      linkedOwner: {
+        ownerKey: 'owner-303',
+        ownerLabel: 'Owner 303',
+        pagina: 'ASN',
+        telefono: '+54911303'
+      },
+      summary: {
+        totalClients: 3,
+        assignedClients: 2,
+        pendingClients: 1,
+        reportDate: '2026-03-12',
+        cargadoHoyTotal: 1200,
+        cargadoMesTotal: 5600,
+        hasReport: true
+      },
+      financialInputs: {
+        month: '2026-03',
+        adSpendArs: 2500,
+        commissionPct: 12.5
+      },
+      primaryKpis: {
+        cargadoMesArs: 5600,
+        gananciaEstimadaArs: 700,
+        roiEstimadoPct: -72,
+        costoPorLeadRealArs: 625,
+        conversionAsignadoPct: 66.67
+      },
+      statsKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        intakesMes: 4,
+        asignacionesMes: 2,
+        tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      clientes: [
+        {
+          id: 'link-303',
+          username: 'player-303',
+          telefono: '54911303',
+          pagina: 'ASN',
+          estado: 'assigned',
+          ownerKey: 'owner-303',
+          ownerLabel: 'Owner 303',
+          cargadoHoy: 600,
+          cargadoMes: 2800,
+          reportDate: '2026-03-12'
+        }
+      ]
+    });
+    expect(store.dashboardInputs).toEqual([{ userId: 101, month: '2026-03' }, { userId: 202 }, { userId: 303 }]);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-owner-financials persists monthly ad spend and commission', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-owner-financials',
+      payload: {
+        user_id: 101,
+        month: '2026-03',
+        ad_spend_ars: 250000,
+        commission_pct: 12.5
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.financialInputs).toEqual([
+      {
+        userId: 101,
+        month: '2026-03',
+        adSpendArs: 250000,
+        commissionPct: 12.5
+      }
+    ]);
+    expect(response.json()).toEqual({
+      month: '2026-03',
+      adSpendArs: 250000,
+      commissionPct: 12.5
+    });
 
     await server.close();
   });
@@ -591,7 +923,7 @@ describe('server routes', () => {
   it('POST /mastercrm-clients returns 404 when user is missing', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
-    store.getByIdBehavior = async () => {
+    store.getClientsDashboardBehavior = async () => {
       throw new MastercrmUserStoreError('NOT_FOUND', 'MasterCRM user not found');
     };
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -618,6 +950,8 @@ describe('server routes', () => {
   it('POST /mastercrm-link-cashier creates the user-owner link', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
     const server = createServer(
@@ -633,7 +967,8 @@ describe('server routes', () => {
       url: '/mastercrm-link-cashier',
       payload: {
         user_id: '123',
-        owner_key: '  OWNER_KEY_DEL_CAJERO  '
+        owner_key: '  OWNER_KEY_DEL_CAJERO  ',
+        staff_password: 'staff-secret'
       }
     });
 
@@ -650,11 +985,16 @@ describe('server routes', () => {
       data: {
         user_id: 123,
         owner_key: 'owner_key_del_cajero',
-        linked: true
+        owner_label: 'Owner Label',
+        pagina: 'ASN',
+        linked: true,
+        replaced: false,
+        previous_owner_key: null
       }
     });
 
     await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
   });
 
   it('POST /mastercrm-link-cashier validates payload', async () => {
@@ -684,7 +1024,8 @@ describe('server routes', () => {
       message: 'Faltan datos requeridos',
       issues: [
         { path: 'user_id', message: 'user_id is required' },
-        { path: 'owner_key', message: 'owner_key is required' }
+        { path: 'owner_key', message: 'owner_key is required' },
+        { path: 'staff_password', message: 'staff_password is required' }
       ]
     });
     expect(store.linkInputs).toHaveLength(0);
@@ -695,6 +1036,8 @@ describe('server routes', () => {
   it('POST /mastercrm-link-cashier returns 404 when user is missing', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
     store.linkBehavior = async () => {
       throw new MastercrmUserStoreError('NOT_FOUND', 'MasterCRM user not found');
     };
@@ -713,7 +1056,8 @@ describe('server routes', () => {
       url: '/mastercrm-link-cashier',
       payload: {
         user_id: 999,
-        owner_key: 'owner_1'
+        owner_key: 'owner_1',
+        staff_password: 'staff-secret'
       }
     });
 
@@ -724,11 +1068,14 @@ describe('server routes', () => {
     });
 
     await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
   });
 
   it('POST /mastercrm-link-cashier returns 404 when owner is missing', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
     store.linkBehavior = async () => {
       throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner_key not found');
     };
@@ -747,7 +1094,8 @@ describe('server routes', () => {
       url: '/mastercrm-link-cashier',
       payload: {
         user_id: 123,
-        owner_key: 'owner_missing'
+        owner_key: 'owner_missing',
+        staff_password: 'staff-secret'
       }
     });
 
@@ -758,14 +1106,14 @@ describe('server routes', () => {
     });
 
     await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
   });
 
-  it('POST /mastercrm-link-cashier returns 409 when the link already exists', async () => {
+  it('POST /mastercrm-link-cashier returns 403 when the staff password is invalid', async () => {
     const queue = new FakeQueue();
     const store = new FakeMastercrmUserStore();
-    store.linkBehavior = async () => {
-      throw new MastercrmUserStoreError('CONFLICT', 'MasterCRM user is already linked to this cashier');
-    };
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
     const server = createServer(
@@ -781,17 +1129,73 @@ describe('server routes', () => {
       url: '/mastercrm-link-cashier',
       payload: {
         user_id: 123,
-        owner_key: 'owner_1'
+        owner_key: 'owner_1',
+        staff_password: 'wrong-secret'
       }
     });
 
-    expect(response.statusCode).toBe(409);
+    expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({
       success: false,
-      message: 'El usuario ya esta vinculado a ese cajero'
+      message: 'Clave tecnica invalida'
+    });
+    expect(store.linkInputs).toHaveLength(0);
+
+    await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
+  });
+
+  it('POST /mastercrm-link-cashier reports replacement metadata when changing owner', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
+    store.linkBehavior = async (input) => ({
+      userId: input.userId,
+      ownerKey: input.ownerKey,
+      ownerLabel: 'Owner Replaced',
+      pagina: 'ASN',
+      linked: true,
+      replaced: true,
+      previousOwnerKey: 'owner_old'
+    });
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: 123,
+        owner_key: 'owner_1',
+        staff_password: 'staff-secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual({
+      success: true,
+      message: 'Usuario vinculado al cajero correctamente',
+      data: {
+        user_id: 123,
+        owner_key: 'owner_1',
+        owner_label: 'Owner Replaced',
+        pagina: 'ASN',
+        linked: true,
+        replaced: true,
+        previous_owner_key: 'owner_old'
+      }
     });
 
     await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
   });
 
   it('OPTIONS /mastercrm-login returns configured cors headers', async () => {

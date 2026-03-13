@@ -47,6 +47,7 @@ export interface ReportRunItemRecord {
   id: string;
   runId: string;
   ownerId: string;
+  identityId: string;
   clientId: string;
   linkId: string;
   username: string;
@@ -76,6 +77,7 @@ export interface ReportRunLease {
   agente: string;
   contrasenaAgente: string;
   ownerId: string;
+  identityId: string;
   clientId: string;
   linkId: string;
   username: string;
@@ -191,6 +193,7 @@ type ReportRunItemRow = {
   id: string;
   run_id: string;
   owner_id: string;
+  identity_id: string;
   client_id: string;
   link_id: string;
   username: string;
@@ -220,6 +223,7 @@ type ClaimRow = {
   agente: string;
   contrasena_agente: string;
   owner_id: string;
+  identity_id: string;
   client_id: string;
   link_id: string;
   username: string;
@@ -254,6 +258,7 @@ function asItemRecord(row: ReportRunItemRow): ReportRunItemRecord {
     id: row.id,
     runId: row.run_id,
     ownerId: row.owner_id,
+    identityId: row.identity_id,
     clientId: row.client_id,
     linkId: row.link_id,
     username: row.username,
@@ -285,6 +290,7 @@ function asLease(row: ClaimRow): ReportRunLease {
     agente: row.agente,
     contrasenaAgente: row.contrasena_agente,
     ownerId: row.owner_id,
+    identityId: row.identity_id,
     clientId: row.client_id,
     linkId: row.link_id,
     username: row.username,
@@ -423,6 +429,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
         report_date: lease.reportDate,
         principal_key: lease.principalKey,
         owner_id: lease.ownerId,
+        identity_id: lease.identityId,
         client_id: lease.clientId,
         link_id: lease.linkId,
         username: lease.username,
@@ -432,7 +439,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
         cargado_mes: result.cargadoNumero,
         raw_result: result
       },
-      { onConflict: 'report_date,username' }
+      { onConflict: 'report_date,pagina,username' }
     );
 
     if (error) {
