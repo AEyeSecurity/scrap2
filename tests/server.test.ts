@@ -2352,7 +2352,8 @@ describe('server routes', () => {
       appConfig,
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
-      queue
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
     );
 
     const aliasOperationResponse = await server.inject({
