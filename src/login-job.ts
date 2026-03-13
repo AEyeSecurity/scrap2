@@ -1,9 +1,8 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { chromium } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 import type { AppConfig, JobExecutionResult, JobStepResult, LoginJobRequest } from './types';
 
 async function captureStepScreenshot(
@@ -27,11 +26,7 @@ export async function runLoginJob(request: LoginJobRequest, appConfig: AppConfig
 
   await fs.mkdir(artifactDir, { recursive: true });
 
-  const browser = await chromium.launch({
-    headless: runtimeConfig.headless,
-    slowMo: runtimeConfig.slowMo,
-    args: runtimeConfig.headless ? undefined : ['--start-maximized']
-  });
+  const browser = await launchChromiumBrowser(runtimeConfig, logger);
 
   const context = await browser.newContext({
     baseURL: runtimeConfig.baseUrl,

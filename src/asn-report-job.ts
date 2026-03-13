@@ -1,11 +1,11 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { chromium, type Locator, type Page } from 'playwright';
+import type { Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { parseBalanceNumber } from './balance-job';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig, AsnReportJobRequest, AsnReportJobResult, JobExecutionResult, JobStepResult } from './types';
 
@@ -420,11 +420,7 @@ export async function runAsnReportJob(
 
   await fs.mkdir(artifactDir, { recursive: true });
 
-  const browser = await chromium.launch({
-    headless: runtimeConfig.headless,
-    slowMo: runtimeConfig.slowMo,
-    args: runtimeConfig.headless ? undefined : ['--start-maximized']
-  });
+  const browser = await launchChromiumBrowser(runtimeConfig, jobLogger);
   const context = await browser.newContext({
     baseURL: runtimeConfig.baseUrl,
     viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,

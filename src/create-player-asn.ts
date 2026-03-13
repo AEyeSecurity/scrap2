@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import { chromium, type BrowserContext, type Locator, type Page } from 'playwright';
+import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 import {
   buildExhaustedUsernameError,
   buildUsernameCandidates,
@@ -696,11 +696,7 @@ export async function runCreatePlayerAsnJob(
 
   await fs.mkdir(artifactDir, { recursive: true });
 
-  const browser = await chromium.launch({
-    headless: runtimeConfig.headless,
-    slowMo: runtimeConfig.slowMo,
-    args: runtimeConfig.headless ? undefined : ['--start-maximized']
-  });
+  const browser = await launchChromiumBrowser(runtimeConfig, jobLogger);
 
   const context = await browser.newContext({
     baseURL: runtimeConfig.baseUrl,

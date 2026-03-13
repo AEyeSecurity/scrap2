@@ -1,8 +1,8 @@
-import { chromium, type Page } from 'playwright';
+import type { Page } from 'playwright';
 import type { Logger } from 'pino';
 import { formatAsnUserNotFoundMessage } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig } from './types';
 
@@ -88,9 +88,7 @@ export async function assertAsnUserExists(input: AssertAsnUserExistsInput): Prom
     blockResources: true
   };
 
-  const browser = await chromium.launch({
-    headless: true
-  });
+  const browser = await launchChromiumBrowser(runtimeConfig, input.logger);
 
   const context = await browser.newContext({
     baseURL: runtimeConfig.baseUrl,

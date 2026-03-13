@@ -1,8 +1,7 @@
 import { promises as fs } from 'node:fs';
-import { chromium } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 import { extractApiData } from './extract';
 import { normalizeApiResults } from './normalize';
 import { writeOutputs } from './output';
@@ -13,11 +12,7 @@ export async function runScraper(cfg: RunConfig, logger: Logger): Promise<RunMet
   const errors: string[] = [];
   await fs.mkdir(cfg.artifactsDir, { recursive: true });
 
-  const browser = await chromium.launch({
-    headless: cfg.headless,
-    slowMo: cfg.slowMo,
-    args: cfg.headless ? undefined : ['--start-maximized']
-  });
+  const browser = await launchChromiumBrowser(cfg, logger);
 
   const storageState =
     cfg.reuseSession && (await fs.access(cfg.storageStatePath).then(() => true).catch(() => false))

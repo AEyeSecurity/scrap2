@@ -1,7 +1,7 @@
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
+import type { Browser, BrowserContext, Page } from 'playwright';
 import type { Logger } from 'pino';
 import type { AppConfig } from './types';
-import { configureContext } from './browser';
+import { configureContext, launchChromiumBrowser } from './browser';
 
 export interface FundsSessionLease {
   browser: Browser;
@@ -121,11 +121,7 @@ async function evictOldestIfNeeded(logger: Logger): Promise<void> {
 }
 
 async function createSession(cacheKey: string, cfg: AppConfig, logger: Logger): Promise<FundsSessionEntry> {
-  const browser = await chromium.launch({
-    headless: cfg.headless,
-    slowMo: cfg.slowMo,
-    args: cfg.headless ? undefined : ['--start-maximized']
-  });
+  const browser = await launchChromiumBrowser(cfg, logger);
 
   const context = await browser.newContext({
     baseURL: cfg.baseUrl,
