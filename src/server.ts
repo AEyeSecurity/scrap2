@@ -1149,7 +1149,7 @@ export function createServer(
         }
         logger.error({ error }, 'Unexpected ASN user existence checker error');
         return reply.code(500).send({
-          message: 'Could not verify ASN user existence',
+          message: 'No se pudo verificar el usuario en ASN',
           code: 'ASN_USER_CHECK_FAILED',
           details: { usuario: parsed.data.usuario }
         });
@@ -1157,6 +1157,27 @@ export function createServer(
 
       const mappedError = toHttpError(error);
       if (mappedError) {
+        if (mappedError.code === 'USERNAME_ALREADY_EXISTS_IN_PAGINA') {
+          return reply.code(409).send({
+            message: 'Ese usuario ya esta vinculado a otro numero dentro de ASN',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+        if (mappedError.code === 'PHONE_ALREADY_ASSIGNED_FOR_OWNER') {
+          return reply.code(409).send({
+            message: 'Ese numero ya tiene otro usuario asignado para este cajero',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+        if (mappedError.code === 'OWNER_CLIENT_LINK_NOT_FOUND') {
+          return reply.code(404).send({
+            message: 'No se encontro el cliente dentro de la cartera del cajero',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
         return reply.code(mappedError.statusCode).send({
           message: mappedError.message,
           code: mappedError.code,

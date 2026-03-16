@@ -143,6 +143,62 @@ Flujo actual:
 - solo devuelve `NOT_FOUND` si ASN realmente muestra texto de usuario inexistente
 - si ninguna vista confirma ni niega, el resultado es `INTERNAL`
 
+### `POST /users/assign-phone` consumido por el CRM
+
+El dashboard web ahora usa directamente esta ruta para asignar o cambiar usernames desde `Estadisticas -> Detalle del cliente`.
+
+Payload esperado:
+
+```json
+{
+  "pagina": "ASN",
+  "usuario": "cindy45",
+  "agente": "Pity24",
+  "contrasena_agente": "secret",
+  "telefono": "+5492996051841",
+  "ownerContext": {
+    "ownerKey": "asnlucas10:lucas10",
+    "ownerLabel": "Lucas10"
+  }
+}
+```
+
+Reglas de negocio:
+
+- la validacion ASN se hace antes de persistir
+- la asignacion sigue siendo por `ownerContext`
+- aplica tanto a `pending` como a `assigned`
+- el frontend no guarda credenciales ASN; las pide en cada submit
+
+Mensajes HTTP visibles ya cerrados para esta ruta:
+
+- `404 ASN_USER_NOT_FOUND`
+  - `No se ha encontrado el usuario xxxx`
+- `500 ASN_USER_CHECK_FAILED`
+  - `No se pudo verificar el usuario en ASN`
+- `409 USERNAME_ASSIGNED_TO_OTHER_OWNER`
+  - `El usuario ya esta asignado a otro cajero`
+- `409 USERNAME_ALREADY_EXISTS_IN_PAGINA`
+  - `Ese usuario ya esta vinculado a otro numero dentro de ASN`
+- `409 PHONE_ALREADY_ASSIGNED_FOR_OWNER`
+  - `Ese numero ya tiene otro usuario asignado para este cajero`
+- `404 OWNER_CLIENT_LINK_NOT_FOUND`
+  - `No se encontro el cliente dentro de la cartera del cajero`
+
+Cobertura agregada:
+
+- conflicto por username ya tomado dentro de ASN
+- conflicto por telefono ya asignado dentro del owner
+- owner-link inexistente
+
+Smoke real validado para el flujo CRM:
+
+- `+5492325478199 -> gabrie16`
+- `+5492996051841 -> cindy45`
+- con login ASN:
+  - `agente = Pity24`
+  - `contrasena_agente = pityboca1509`
+
 ### Traduccion residual dentro de jobs
 
 Si un caso de usuario inexistente se escapa al precheck y explota dentro del job ASN:

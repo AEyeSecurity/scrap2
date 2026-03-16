@@ -1886,8 +1886,100 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({
-      message: 'username already exists in this pagina',
+      message: 'Ese usuario ya esta vinculado a otro numero dentro de ASN',
       code: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 409 when phone already has another username for the owner', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignByPhoneBehavior = async () => {
+      throw new PlayerPhoneStoreError('CONFLICT', 'telefono already assigned for this owner', {
+        reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+      });
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store,
+        asnUserExistsChecker: async () => undefined
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'ASN',
+        usuario: 'taken_username',
+        agente: 'luuucas10',
+        contrasena_agente: 'secret',
+        telefono: '+5493514867589',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({
+      message: 'Ese numero ya tiene otro usuario asignado para este cajero',
+      code: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 404 when owner link does not exist', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.assignByPhoneBehavior = async () => {
+      throw new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+        reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+      });
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store,
+        asnUserExistsChecker: async () => undefined
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'ASN',
+        usuario: 'taken_username',
+        agente: 'luuucas10',
+        contrasena_agente: 'secret',
+        telefono: '+5493514867589',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      message: 'No se encontro el cliente dentro de la cartera del cajero',
+      code: 'OWNER_CLIENT_LINK_NOT_FOUND'
     });
 
     await server.close();
