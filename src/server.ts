@@ -1182,37 +1182,6 @@ export function createServer(
     }
 
     const payload = parsed.data;
-    if (payload.pagina === 'ASN') {
-      try {
-        await asnUserExistsChecker({
-          usuario: payload.usuario,
-          agente: payload.agente,
-          contrasenaAgente: payload.contrasena_agente,
-          appConfig,
-          logger
-        });
-      } catch (error) {
-        if (error instanceof AsnUserCheckError) {
-          if (error.code === 'NOT_FOUND') {
-            return reply.code(404).send(buildAsnUserNotFoundResponse(payload.usuario));
-          }
-          logger.error({ error }, 'Unexpected ASN user existence checker error before enqueue');
-          return reply.code(500).send({
-            message: 'Could not verify ASN user existence',
-            code: 'ASN_USER_CHECK_FAILED',
-            details: { usuario: payload.usuario }
-          });
-        }
-
-        logger.error({ error }, 'Unexpected ASN user precheck failure before enqueue');
-        return reply.code(500).send({
-          message: 'Could not verify ASN user existence',
-          code: 'ASN_USER_CHECK_FAILED',
-          details: { usuario: payload.usuario }
-        });
-      }
-    }
-
     if (payload.operacion === 'reporte') {
       if (payload.pagina !== 'ASN') {
         return reply.code(501).send({
@@ -1244,6 +1213,27 @@ export function createServer(
         status: 'queued',
         statusUrl: `/jobs/${id}`
       });
+    }
+
+    if (payload.pagina === 'ASN') {
+      try {
+        await asnUserExistsChecker({
+          usuario: payload.usuario,
+          agente: payload.agente,
+          contrasenaAgente: payload.contrasena_agente,
+          appConfig,
+          logger
+        });
+      } catch (error) {
+        if (error instanceof AsnUserCheckError && error.code === 'NOT_FOUND') {
+          return reply.code(404).send(buildAsnUserNotFoundResponse(payload.usuario));
+        }
+
+        logger.warn(
+          { error, usuario: payload.usuario, operacion: payload.operacion },
+          'ASN user precheck was inconclusive; continuing with turbo job enqueue'
+        );
+      }
     }
 
     const createdAt = new Date().toISOString();

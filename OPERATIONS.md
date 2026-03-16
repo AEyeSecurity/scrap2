@@ -100,7 +100,6 @@ Rutas cubiertas:
   - `carga`
   - `descarga`
   - `descarga_total`
-  - `reporte`
 - `POST /users/assign-phone`
 
 Comportamiento:
@@ -121,9 +120,28 @@ Comportamiento:
 }
 ```
 
-- si falla la verificacion ASN por otro motivo:
-  - responde `500`
+- si el checker ASN no puede confirmar por una razon tecnica pero tampoco detecta `NOT_FOUND`:
+  - `POST /users/deposit` no corta
+  - se encola el job turbo igual
+  - se registra warning en logs:
+    - `ASN user precheck was inconclusive; continuing with turbo job enqueue`
+- `POST /users/assign-phone` sigue siendo estricto:
+  - `NOT_FOUND` devuelve `404`
+  - cualquier falla tecnica sigue devolviendo `500`
   - `code = ASN_USER_CHECK_FAILED`
+
+### Verificacion ASN robustecida
+
+`src/asn-user-check.ts` ya no depende de una sola navegacion a `JugadoresCD.php`.
+
+Flujo actual:
+
+- login headless
+- probea `JugadoresCD.php?usr=...`
+- si la navegacion se aborta por redireccion, espera estabilizacion en vez de fallar de inmediato
+- si no alcanza con esa vista, probea tambien `Jugadores.php?usr=...`
+- solo devuelve `NOT_FOUND` si ASN realmente muestra texto de usuario inexistente
+- si ninguna vista confirma ni niega, el resultado es `INTERNAL`
 
 ### Traduccion residual dentro de jobs
 
@@ -154,8 +172,66 @@ npm run build
 Cobertura validada:
 
 - `POST /users/deposit` devuelve `404` inmediato para usuario ASN inexistente
+- `POST /users/deposit` sigue encolando cuando el precheck es inconcluso
+- `POST /users/deposit` no hace precheck para `reporte`
 - `POST /users/assign-phone` devuelve el mismo mensaje amigable
 - los jobs ASN traducen errores tecnicos residuales al mensaje limpio
+
+## Modo turbo ASN para Docker
+
+Regla operativa actual:
+
+- el path final de ASN para fondos corre en modo turbo:
+  - `headless = true`
+  - `debug = false`
+  - `slowMo = 0`
+  - `timeoutMs <= 15000`
+- para `POST /users/deposit`, ese modo se impone desde `resolveDepositExecutionOptions`
+
+### Cambio importante en lectura post-operacion
+
+El error viejo:
+
+- `Step failed: 06-read-saldo-after (page.goto ... is interrupted by another navigation ...)`
+
+venia de competir contra la redireccion propia de ASN despues del submit.
+
+Correccion aplicada en `src/asn-funds-job.ts`:
+
+- despues del submit ya no hace `goto` inmediato al panel del usuario
+- primero espera que la pagina se estabilice
+- solo hace un refresh tardio si sigue sin poder leer el saldo esperado
+- `gotoWithRetry` ahora trata tambien `interrupted by another navigation` como navegacion abortada tolerable
+
+### Smoke real validado en Docker
+
+Validacion hecha el `2026-03-16` con imagen construida desde el `Dockerfile` y API expuesta en `127.0.0.1:3001`.
+
+Credenciales ASN usadas:
+
+- agente: `luuucas10`
+- password: `australopitecus12725`
+
+Operacion 1:
+
+- usuario: `Ariel728`
+- operacion: `carga`
+- cantidad: `15238`
+- resultado: `succeeded`
+- `06-read-saldo-after = ok`
+
+Operacion 2:
+
+- usuario: `Ariel728`
+- operacion: `descarga_total`
+- resultado: `succeeded`
+- `06-read-saldo-after = ok`
+
+Resultado observado:
+
+- carga aplicada: `15.238,00`
+- descarga total aplicada: `15.238,00`
+- sin reproduccion del choque de navegacion post-submit
 
 ### Contrato mensual actual
 

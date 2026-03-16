@@ -2244,7 +2244,7 @@ describe('server routes', () => {
       }
     );
 
-    const operations = ['consultar_saldo', 'carga', 'descarga', 'descarga_total', 'reporte'] as const;
+    const operations = ['consultar_saldo', 'carga', 'descarga', 'descarga_total'] as const;
     for (const operacion of operations) {
       const response = await server.inject({
         method: 'POST',
@@ -2268,6 +2268,80 @@ describe('server routes', () => {
     }
 
     expect(queue.requests).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /users/deposit keeps enqueuing ASN jobs when the user precheck is inconclusive', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        asnUserExistsChecker: async () => {
+          throw new AsnUserCheckError('INTERNAL', 'Could not verify ASN user existence');
+        }
+      }
+    );
+
+    const operations = ['consultar_saldo', 'carga', 'descarga', 'descarga_total'] as const;
+    for (const operacion of operations) {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/users/deposit',
+        payload: {
+          pagina: 'ASN',
+          operacion,
+          usuario: 'existing_user',
+          agente: 'agent',
+          contrasena_agente: 'secret',
+          ...(operacion === 'carga' || operacion === 'descarga' ? { cantidad: 25 } : {})
+        }
+      });
+
+      expect(response.statusCode).toBe(202);
+    }
+
+    expect(queue.requests).toHaveLength(4);
+
+    await server.close();
+  });
+
+  it('POST /users/deposit does not run ASN user precheck for reporte', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        asnUserExistsChecker: async () => {
+          throw new AsnUserCheckError('INTERNAL', 'Should not run for reporte');
+        }
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/deposit',
+      payload: {
+        pagina: 'ASN',
+        operacion: 'reporte',
+        usuario: 'ignored_for_report',
+        agente: 'agent',
+        contrasena_agente: 'secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(queue.requests).toHaveLength(1);
+    expect(queue.requests[0]?.jobType).toBe('report');
 
     await server.close();
   });

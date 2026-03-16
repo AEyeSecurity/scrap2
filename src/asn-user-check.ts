@@ -7,6 +7,7 @@ import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig } from './types';
 
 type AsnUserCheckErrorCode = 'NOT_FOUND' | 'INTERNAL';
+type AsnUserProbeStatus = 'FOUND' | 'NOT_FOUND' | 'UNKNOWN';
 
 const ASN_USER_NOT_FOUND_REGEX = /usuario no existe|jugador no existe|no existe el usuario|no existe el jugador|sin resultados/i;
 
@@ -47,6 +48,28 @@ function extractVisibleJugadorUsername(text: string): string | null {
 }
 
 async function userExistsInAsnPage(page: Page, usuario: string, timeoutMs: number): Promise<boolean> {
+  return (await probeAsnUserInPage(page, usuario, timeoutMs)) === 'FOUND';
+}
+
+function isNavigationAbortLike(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ERR_ABORTED|interrupted by another navigation/i.test(message);
+}
+
+async function gotoWithSoftAbortHandling(page: Page, path: string, timeoutMs: number): Promise<void> {
+  try {
+    await page.goto(path, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    return;
+  } catch (error) {
+    if (!isNavigationAbortLike(error)) {
+      throw error;
+    }
+
+    await page.waitForLoadState('domcontentloaded', { timeout: Math.min(timeoutMs, 2_000) }).catch(() => undefined);
+  }
+}
+
+async function probeAsnUserInPage(page: Page, usuario: string, timeoutMs: number): Promise<AsnUserProbeStatus> {
   const startedAt = Date.now();
   const expected = normalizeUsername(usuario);
   const expectedLineRegex = new RegExp(`\\bjugador\\s*:\\s*${escapeRegex(expected)}\\b`, 'i');
@@ -59,22 +82,49 @@ async function userExistsInAsnPage(page: Page, usuario: string, timeoutMs: numbe
     }
 
     if (ASN_USER_NOT_FOUND_REGEX.test(bodyText)) {
-      return false;
+      return 'NOT_FOUND';
     }
 
     if (expectedLineRegex.test(bodyText)) {
-      return true;
+      return 'FOUND';
     }
 
     const extracted = extractVisibleJugadorUsername(bodyText);
     if (extracted) {
-      return extracted === expected;
+      return extracted === expected ? 'FOUND' : 'NOT_FOUND';
     }
 
     await page.waitForTimeout(120);
   }
 
-  return false;
+  return 'UNKNOWN';
+}
+
+async function probeAsnUserExists(page: Page, usuario: string, timeoutMs: number): Promise<AsnUserProbeStatus> {
+  const encodedUsuario = encodeURIComponent(usuario);
+  const paths = [
+    `/NewAdmin/JugadoresCD.php?usr=${encodedUsuario}`,
+    `/NewAdmin/Jugadores.php?usr=${encodedUsuario}`
+  ];
+
+  let sawNotFound = false;
+
+  for (const path of paths) {
+    try {
+      await gotoWithSoftAbortHandling(page, path, timeoutMs);
+      const probe = await probeAsnUserInPage(page, usuario, Math.min(timeoutMs, 5_000));
+      if (probe === 'FOUND') {
+        return 'FOUND';
+      }
+      if (probe === 'NOT_FOUND') {
+        sawNotFound = true;
+      }
+    } catch {
+      // Probe the alternate user page before escalating to INTERNAL.
+    }
+  }
+
+  return sawNotFound ? 'NOT_FOUND' : 'UNKNOWN';
 }
 
 export async function assertAsnUserExists(input: AssertAsnUserExistsInput): Promise<void> {
@@ -111,12 +161,13 @@ export async function assertAsnUserExists(input: AssertAsnUserExistsInput): Prom
       { persistSession: false }
     );
 
-    const userPath = `/NewAdmin/JugadoresCD.php?usr=${encodeURIComponent(input.usuario)}`;
-    await page.goto(userPath, { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
-    const exists = await userExistsInAsnPage(page, input.usuario, Math.min(runtimeConfig.timeoutMs, 8_000));
+    const probe = await probeAsnUserExists(page, input.usuario, Math.min(runtimeConfig.timeoutMs, 8_000));
 
-    if (!exists) {
+    if (probe === 'NOT_FOUND') {
       throw new AsnUserCheckError('NOT_FOUND', formatAsnUserNotFoundMessage(input.usuario));
+    }
+    if (probe !== 'FOUND') {
+      throw new AsnUserCheckError('INTERNAL', 'Could not verify ASN user existence');
     }
   } catch (error) {
     if (error instanceof AsnUserCheckError) {

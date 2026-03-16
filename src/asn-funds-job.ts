@@ -596,10 +596,8 @@ async function submitAsnFundsForm(
     timeoutMs
   );
 
-  await Promise.all([
-    page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => undefined),
-    clickLocator(submitButton, timeoutMs)
-  ]);
+  await clickLocator(submitButton, timeoutMs);
+  await waitForAsnPageToSettle(page, Math.min(timeoutMs, 3_000));
 
   const uiError = await readVisibleAsnUiError(page);
   if (uiError) {
@@ -714,7 +712,8 @@ async function waitForExpectedAsnBalance(
     }
 
     if (!refreshed && Date.now() - startedAt > timeoutMs / 2) {
-      await page.goto(refreshPath, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => undefined);
+      await waitForAsnPageToSettle(page, Math.min(timeoutMs, 2_000));
+      await gotoWithRetry(page, refreshPath, Math.min(timeoutMs, 2_500)).catch(() => undefined);
       refreshed = true;
     }
 
@@ -752,7 +751,8 @@ async function waitForExpectedAsnTransferBalance(
     }
 
     if (!refreshed && Date.now() - startedAt > timeoutMs / 2) {
-      await page.goto(refreshPath, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => undefined);
+      await waitForAsnPageToSettle(page, Math.min(timeoutMs, 2_000));
+      await gotoWithRetry(page, refreshPath, Math.min(timeoutMs, 2_500)).catch(() => undefined);
       refreshed = true;
     }
 
@@ -770,7 +770,27 @@ async function waitForExpectedAsnTransferBalance(
 
 function isNavigationAbortedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /ERR_ABORTED/i.test(message);
+  return /ERR_ABORTED|interrupted by another navigation/i.test(message);
+}
+
+async function waitForAsnPageToSettle(page: Page, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  let lastUrl = page.url();
+  let stableSince = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    await page.waitForLoadState('domcontentloaded', { timeout: 400 }).catch(() => undefined);
+
+    const currentUrl = page.url();
+    if (currentUrl !== lastUrl) {
+      lastUrl = currentUrl;
+      stableSince = Date.now();
+    } else if (Date.now() - stableSince >= 250) {
+      return;
+    }
+
+    await page.waitForTimeout(100);
+  }
 }
 
 async function gotoWithRetry(page: Page, path: string, timeoutMs: number): Promise<void> {
@@ -1107,10 +1127,6 @@ export async function runAsnDepositJob(
             if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
               saldoDespues = saldoAntes;
               return;
-            }
-
-            if (request.payload.operacion === 'carga' && isTurbo) {
-              await gotoWithRetry(page, userPath, cfg.timeoutMs);
             }
 
             saldoDespues = useTransferBalanceValidation

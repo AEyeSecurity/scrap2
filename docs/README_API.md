@@ -113,6 +113,7 @@ Errores esperables:
 - `404`: usuario ASN inexistente.
 - `409`: conflicto de username entre owners.
 - `501`: pagina distinta de ASN.
+- `500`: solo si la verificacion ASN falla tecnicamente y no se puede continuar con seguridad.
 
 Contrato de error:
 
@@ -156,6 +157,41 @@ Internamente:
 - `consultar_saldo` genera un job de tipo `balance`;
 - `reporte` genera un job de tipo `report`;
 - el resto genera jobs de tipo `deposit`.
+
+Reglas ASN actuales:
+
+- para `consultar_saldo`, `carga`, `descarga` y `descarga_total`:
+  - si ASN confirma que el usuario no existe, responde `404` inmediato con `ASN_USER_NOT_FOUND`
+  - si el precheck es inconcluso por una falla tecnica intermitente, la API ya no devuelve `500`; encola el job turbo igual
+- para `reporte`:
+  - no se hace precheck de usuario, porque el job de reporte no depende de validar un panel puntual antes de encolar
+
+Contrato de error para usuario inexistente:
+
+```json
+{
+  "message": "No se ha encontrado el usuario Ariel728",
+  "code": "ASN_USER_NOT_FOUND",
+  "details": {
+    "usuario": "Ariel728"
+  }
+}
+```
+
+Comportamiento turbo en Docker:
+
+- `headless = true`
+- `debug = false`
+- `slowMo = 0`
+- `timeoutMs` capped en `15000` para `POST /users/deposit`
+
+Correccion aplicada al flujo ASN:
+
+- la lectura de saldo post-operacion ya no hace un `goto` inmediato que compita con la redireccion de ASN
+- primero espera estabilizacion de pagina
+- solo refresca una vez si hace falta
+- esto evita errores como:
+  - `Step failed: 06-read-saldo-after (page.goto ... is interrupted by another navigation ...)`
 
 ### `GET /jobs/:id`
 
