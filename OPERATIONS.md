@@ -376,6 +376,15 @@ KPIs de estadisticas:
 - `promedioCargaGeneralArs`
 - `tasaActivacionPct`
 
+Definiciones operativas vigentes:
+
+- `intakesMes` cuenta leads unicos del mes, no eventos repetidos de intake
+- `asignacionesMes` sigue contando clientes unicos que tuvieron `assign_username` dentro del mes
+- `tasaIntakeAsignacionPct` ya no usa `asignacionesMes / intakesMes`
+- ahora mide:
+  - `leads unicos del mes que hoy quedaron assigned / leads unicos del mes`
+- con esta formula la tasa queda acotada a `<= 100%`
+
 ### Regla cerrada
 
 Un usuario CRM tiene un solo cajero activo.

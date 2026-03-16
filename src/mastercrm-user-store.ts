@@ -214,7 +214,8 @@ interface OwnerMonthlyAdSpendRow {
 }
 
 interface OwnerClientEventRow {
-  event_type: 'intake' | 'assign_username';
+  client_id: string | null;
+  event_type: 'intake' | 'assign_username' | 'unassign_username' | 'create_player' | 'link_sent';
 }
 
 interface ReportRunFinishedAtRow {
@@ -716,7 +717,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .maybeSingle(),
         this.client
           .from('owner_client_events')
-          .select('event_type')
+          .select('client_id, event_type')
           .eq('owner_id', owner.id)
           .gte('created_at', monthWindow.startedAtIso)
           .lt('created_at', monthWindow.endedAtIso)
@@ -833,9 +834,24 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const commissionPct = toFiniteNumber(financialSettings?.commission_pct);
     const adSpendArs = toFiniteNumber(adSpendRow?.ad_spend_ars);
     const events = (eventsResult.data as OwnerClientEventRow[] | null) ?? [];
-    const intakesMes = events.filter((event) => event.event_type === 'intake').length;
-    const asignacionesMes = events.filter((event) => event.event_type === 'assign_username').length;
-    const tasaIntakeAsignacionPct = intakesMes > 0 ? roundTo((asignacionesMes / intakesMes) * 100) : null;
+    const intakeClientIds = new Set(
+      events
+        .filter((event) => event.event_type === 'intake' && typeof event.client_id === 'string' && event.client_id.length > 0)
+        .map((event) => event.client_id as string)
+    );
+    const assignmentClientIds = new Set(
+      events
+        .filter(
+          (event) => event.event_type === 'assign_username' && typeof event.client_id === 'string' && event.client_id.length > 0
+        )
+        .map((event) => event.client_id as string)
+    );
+    const intakesMes = intakeClientIds.size;
+    const asignacionesMes = assignmentClientIds.size;
+    const assignedIntakeClientCount = ownerClientLinks.filter(
+      (link) => link.status === 'assigned' && intakeClientIds.has(link.client_id)
+    ).length;
+    const tasaIntakeAsignacionPct = intakesMes > 0 ? roundTo((assignedIntakeClientCount / intakesMes) * 100) : null;
     const promedioCargaGeneralArs =
       cargadoMesTotal !== null && totalClients > 0 ? roundTo(cargadoMesTotal / totalClients) : null;
     const tasaActivacionPct =

@@ -554,4 +554,98 @@ describe('mastercrm clients dashboard', () => {
       }
     ]);
   });
+
+  it('calculates intake to assignment rate from unique monthly leads that ended assigned', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 777,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'asnlucas10:lucas10',
+          owner_label: 'Lucas10',
+          pagina: 'ASN'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [
+        {
+          id: 'link-1',
+          status: 'assigned',
+          client_id: 'client-1',
+          clients: { id: 'client-1', phone_e164: '+5491111111111', pagina: 'ASN' }
+        },
+        {
+          id: 'link-2',
+          status: 'assigned',
+          client_id: 'client-2',
+          clients: { id: 'client-2', phone_e164: '+5492222222222', pagina: 'ASN' }
+        },
+        {
+          id: 'link-3',
+          status: 'assigned',
+          client_id: 'client-3',
+          clients: { id: 'client-3', phone_e164: '+5493333333333', pagina: 'ASN' }
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_client_identities', 'select', {
+      data: [
+        { id: 'identity-1', owner_client_link_id: 'link-1', username: 'uno', is_active: true },
+        { id: 'identity-2', owner_client_link_id: 'link-2', username: 'dos', is_active: true },
+        { id: 'identity-3', owner_client_link_id: 'link-3', username: 'tres', is_active: true }
+      ],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [
+        { client_id: 'client-1', event_type: 'intake' },
+        { client_id: 'client-1', event_type: 'intake' },
+        { client_id: 'client-2', event_type: 'intake' },
+        { client_id: 'client-1', event_type: 'assign_username' },
+        { client_id: 'client-2', event_type: 'assign_username' },
+        { client_id: 'client-3', event_type: 'assign_username' }
+      ],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-03' });
+
+    expect(dashboard.statsKpis.intakesMes).toBe(2);
+    expect(dashboard.statsKpis.asignacionesMes).toBe(3);
+    expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
+  });
 });
