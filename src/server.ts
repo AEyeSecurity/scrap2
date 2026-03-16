@@ -134,6 +134,12 @@ const assignPhoneBodySchema = z.object({
   ownerContext: ownerContextSchema
 });
 
+const unassignPhoneBodySchema = z.object({
+  pagina: paginaCodeSchema,
+  telefono: z.string().trim().min(1),
+  ownerContext: ownerContextSchema
+});
+
 const intakePendingBodySchema = z.object({
   pagina: paginaCodeSchema,
   telefono: z.string().trim().min(1),
@@ -1186,6 +1192,58 @@ export function createServer(
       }
 
       logger.error({ error }, 'Unexpected /users/assign-phone error');
+      return reply.code(500).send({
+        message: 'Unexpected persistence error',
+        code: 'UNEXPECTED_PERSISTENCE_ERROR'
+      });
+    }
+  });
+
+  fastify.post('/users/unassign-phone', async (request, reply) => {
+    const parsed = unassignPhoneBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        code: 'INVALID_PAYLOAD',
+        details: {
+          issues: toValidationIssues(parsed.error)
+        }
+      });
+    }
+
+    try {
+      const store = getPlayerPhoneStore();
+      const unassignment = await store.unassignUsernameByPhone({
+        pagina: parsed.data.pagina,
+        telefono: parsed.data.telefono,
+        ownerContext: parsed.data.ownerContext
+      });
+
+      return reply.code(200).send({
+        status: 'ok',
+        previousUsername: unassignment.previousUsername,
+        currentStatus: unassignment.currentStatus,
+        unlinked: unassignment.unlinked
+      });
+    } catch (error) {
+      const mappedError = toHttpError(error);
+      if (mappedError) {
+        if (mappedError.code === 'OWNER_CLIENT_LINK_NOT_FOUND') {
+          return reply.code(404).send({
+            message: 'No se encontro el cliente dentro de la cartera del cajero',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          code: mappedError.code,
+          ...(mappedError.details ? { details: mappedError.details } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /users/unassign-phone error');
       return reply.code(500).send({
         message: 'Unexpected persistence error',
         code: 'UNEXPECTED_PERSISTENCE_ERROR'

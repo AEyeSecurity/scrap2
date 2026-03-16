@@ -199,6 +199,55 @@ Smoke real validado para el flujo CRM:
   - `agente = Pity24`
   - `contrasena_agente = pityboca1509`
 
+### `POST /users/unassign-phone` consumido por el CRM
+
+El dashboard web ahora usa esta ruta para desvincular un username desde `Estadisticas -> Detalle del cliente`, con el icono de link roto debajo del lapiz.
+
+Payload esperado:
+
+```json
+{
+  "pagina": "ASN",
+  "telefono": "+5492996051841",
+  "ownerContext": {
+    "ownerKey": "asnlucas10:lucas10",
+    "ownerLabel": "Lucas10"
+  }
+}
+```
+
+Comportamiento:
+
+- resuelve el owner exacto por `ownerKey + pagina`
+- resuelve el cliente global por `phone_e164`
+- busca el `owner_client_link` de ese owner y ese telefono
+- desactiva la identidad activa en `owner_client_identities`
+- ejecuta `refresh_owner_client_link_status_v1`
+- registra evento `unassign_username`
+- deja el link nuevamente en `pending`
+
+Respuesta exitosa:
+
+```json
+{
+  "status": "ok",
+  "previousUsername": "cindy45",
+  "currentStatus": "pending",
+  "unlinked": true
+}
+```
+
+Errores legibles:
+
+- `404 OWNER_CLIENT_LINK_NOT_FOUND`
+  - `No se encontro el cliente dentro de la cartera del cajero`
+
+Smoke real validado:
+
+- se disparo la desvinculacion sobre `+5492996051841 -> cindy45`
+- el backend dejo el cliente en `pending`
+- despues se restauro a `assigned` para no dejar datos alterados en Supabase
+
 ### Traduccion residual dentro de jobs
 
 Si un caso de usuario inexistente se escapa al precheck y explota dentro del job ASN:

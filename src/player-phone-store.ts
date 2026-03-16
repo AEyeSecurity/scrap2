@@ -41,6 +41,31 @@ interface NormalizedOwnerContext {
   actorPhone: string | null;
 }
 
+interface OwnerRow {
+  id: string;
+  owner_key: string;
+  pagina: PaginaCode;
+}
+
+interface ClientPhoneRow {
+  id: string;
+  pagina: PaginaCode;
+  phone_e164: string;
+}
+
+interface OwnerClientLinkRow {
+  id: string;
+  owner_id: string;
+  client_id: string;
+  status: 'assigned' | 'pending';
+}
+
+interface OwnerClientIdentityRow {
+  id: string;
+  username: string;
+  is_active: boolean;
+}
+
 export interface SyncCreatePlayerLinkInput {
   pagina: PaginaCode;
   jugadorUsername: string;
@@ -70,6 +95,12 @@ export interface AssignPhoneInput {
   ownerContext: OwnerContextInput;
 }
 
+export interface UnassignPhoneInput {
+  pagina: PaginaCode;
+  telefono: string;
+  ownerContext: OwnerContextInput;
+}
+
 export interface AssignUsernameByPhoneResult {
   previousUsername: string | null;
   currentUsername: string;
@@ -80,12 +111,19 @@ export interface AssignUsernameByPhoneResult {
   deletedOldPhone: boolean;
 }
 
+export interface UnassignUsernameByPhoneResult {
+  previousUsername: string | null;
+  currentStatus: 'pending';
+  unlinked: boolean;
+}
+
 export interface PlayerPhoneStore {
   intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult>;
   syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void>;
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
   assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
+  unassignUsernameByPhone(input: UnassignPhoneInput): Promise<UnassignUsernameByPhoneResult>;
 }
 
 interface PlayerPhoneStoreErrorOptions extends ErrorOptions {
@@ -544,6 +582,140 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     return asAssignUsernameByPhoneResult(data);
+  }
+
+  async unassignUsernameByPhone(input: UnassignPhoneInput): Promise<UnassignUsernameByPhoneResult> {
+    const pagina = input.pagina;
+    const telefono = normalizePhone(input.telefono);
+    const ownerContext = requireOwnerContext(input.ownerContext);
+
+    const { data: ownerData, error: ownerError } = await this.client
+      .from('owners')
+      .select('id, owner_key, pagina')
+      .eq('owner_key', ownerContext.ownerKey)
+      .eq('pagina', pagina)
+      .maybeSingle();
+
+    if (ownerError) {
+      throw mapPostgrestError(ownerError, 'Could not resolve owner');
+    }
+
+    const owner = ownerData as OwnerRow | null;
+    if (!owner) {
+      throw new PlayerPhoneStoreError('VALIDATION', 'ownerContext does not match an existing owner', {
+        reason: 'INVALID_OWNER_CONTEXT'
+      });
+    }
+
+    const { data: clientData, error: clientError } = await this.client
+      .from('clients')
+      .select('id, pagina, phone_e164')
+      .eq('pagina', pagina)
+      .eq('phone_e164', telefono)
+      .maybeSingle();
+
+    if (clientError) {
+      throw mapPostgrestError(clientError, 'Could not resolve client phone');
+    }
+
+    const clientRow = clientData as ClientPhoneRow | null;
+    if (!clientRow) {
+      throw new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+        reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+      });
+    }
+
+    const { data: linkData, error: linkError } = await this.client
+      .from('owner_client_links')
+      .select('id, owner_id, client_id, status')
+      .eq('owner_id', owner.id)
+      .eq('client_id', clientRow.id)
+      .maybeSingle();
+
+    if (linkError) {
+      throw mapPostgrestError(linkError, 'Could not resolve owner-client link');
+    }
+
+    const link = linkData as OwnerClientLinkRow | null;
+    if (!link) {
+      throw new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+        reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+      });
+    }
+
+    const { data: identityData, error: identityError } = await this.client
+      .from('owner_client_identities')
+      .select('id, username, is_active')
+      .eq('owner_client_link_id', link.id)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (identityError) {
+      throw mapPostgrestError(identityError, 'Could not resolve owner-client identity');
+    }
+
+    const activeIdentity = identityData as OwnerClientIdentityRow | null;
+    const nowIso = new Date().toISOString();
+
+    if (!activeIdentity) {
+      const { error: refreshError } = await this.client.rpc('refresh_owner_client_link_status_v1', {
+        p_link_id: link.id
+      });
+
+      if (refreshError) {
+        throw mapPostgrestError(refreshError, 'Could not refresh owner-client link status');
+      }
+
+      return {
+        previousUsername: null,
+        currentStatus: 'pending',
+        unlinked: false
+      };
+    }
+
+    const { error: updateIdentityError } = await this.client
+      .from('owner_client_identities')
+      .update({
+        is_active: false,
+        valid_to: nowIso,
+        updated_at: nowIso
+      })
+      .eq('id', activeIdentity.id);
+
+    if (updateIdentityError) {
+      throw mapPostgrestError(updateIdentityError, 'Could not deactivate owner-client identity');
+    }
+
+    const { error: refreshError } = await this.client.rpc('refresh_owner_client_link_status_v1', {
+      p_link_id: link.id
+    });
+
+    if (refreshError) {
+      throw mapPostgrestError(refreshError, 'Could not refresh owner-client link status');
+    }
+
+    const { error: eventError } = await this.client.rpc('append_owner_client_event_v4', {
+      p_owner_id: owner.id,
+      p_client_id: clientRow.id,
+      p_alias_id: null,
+      p_actor_alias: ownerContext.actorAlias,
+      p_actor_phone: ownerContext.actorPhone,
+      p_event_type: 'unassign_username',
+      p_payload: {
+        previous_username: activeIdentity.username,
+        action: 'unlink_username'
+      }
+    });
+
+    if (eventError) {
+      throw mapPostgrestError(eventError, 'Could not append owner-client unlink event');
+    }
+
+    return {
+      previousUsername: activeIdentity.username,
+      currentStatus: 'pending',
+      unlinked: true
+    };
   }
 }
 

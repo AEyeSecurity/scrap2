@@ -76,6 +76,17 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     };
   }> = [];
 
+  public readonly unassignByPhoneInputs: Array<{
+    pagina: 'RdA' | 'ASN';
+    telefono: string;
+    ownerContext: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
+  }> = [];
+
   public assignByPhoneBehavior: () => Promise<{
     previousUsername: string | null;
     currentUsername: string;
@@ -92,6 +103,16 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     createdLink: false,
     movedFromPhone: null,
     deletedOldPhone: false
+  });
+
+  public unassignByPhoneBehavior: () => Promise<{
+    previousUsername: string | null;
+    currentStatus: 'pending';
+    unlinked: boolean;
+  }> = async () => ({
+    previousUsername: 'player_1',
+    currentStatus: 'pending',
+    unlinked: true
   });
 
   async intakePendingCliente(input: {
@@ -183,6 +204,24 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
   }> {
     this.assignByPhoneInputs.push(input);
     return this.assignByPhoneBehavior();
+  }
+
+  async unassignUsernameByPhone(input: {
+    pagina: 'RdA' | 'ASN';
+    telefono: string;
+    ownerContext: {
+      ownerKey: string;
+      ownerLabel: string;
+      actorAlias?: string | null;
+      actorPhone?: string | null;
+    };
+  }): Promise<{
+    previousUsername: string | null;
+    currentStatus: 'pending';
+    unlinked: boolean;
+  }> {
+    this.unassignByPhoneInputs.push(input);
+    return this.unassignByPhoneBehavior();
   }
 }
 
@@ -2028,6 +2067,125 @@ describe('server routes', () => {
       message: 'telefono must follow strict E.164 format',
       code: 'INVALID_PHONE_FORMAT',
       details: { field: 'telefono', value: 'abc' }
+    });
+
+    await server.close();
+  });
+
+  it('POST /users/unassign-phone validates payload and requires ownerContext', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/unassign-phone',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: 'Invalid payload',
+      code: 'INVALID_PAYLOAD',
+      details: {
+        issues: [{ path: 'ownerContext', message: 'Invalid input: expected object, received undefined' }]
+      }
+    });
+    expect(store.unassignByPhoneInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /users/unassign-phone returns success and leaves client pending', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/unassign-phone',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: 'ok',
+      previousUsername: 'player_1',
+      currentStatus: 'pending',
+      unlinked: true
+    });
+    expect(store.unassignByPhoneInputs).toHaveLength(1);
+
+    await server.close();
+  });
+
+  it('POST /users/unassign-phone returns 404 when owner link does not exist', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    store.unassignByPhoneBehavior = async () => {
+      throw new PlayerPhoneStoreError('NOT_FOUND', 'owner-client link does not exist', {
+        reason: 'OWNER_CLIENT_LINK_NOT_FOUND'
+      });
+    };
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/unassign-phone',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      message: 'No se encontro el cliente dentro de la cartera del cajero',
+      code: 'OWNER_CLIENT_LINK_NOT_FOUND'
     });
 
     await server.close();
