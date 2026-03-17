@@ -118,6 +118,7 @@ docker run --rm `
 
 - API y endpoints: [docs/README_API.md](docs/README_API.md)
 - Configuracion de Supabase para Docker: [docs/README_SUPABASE.md](docs/README_SUPABASE.md)
+- Meta CAPI para Click-to-WhatsApp: [docs/README_META_CAPI_CTWA.md](docs/README_META_CAPI_CTWA.md)
 - Login y registro MasterCRM: [docs/README_MASTERCRM_AUTH.md](docs/README_MASTERCRM_AUTH.md)
 - JSON listos para copiar: [docs/README_JSON_EJEMPLOS.md](docs/README_JSON_EJEMPLOS.md)
 - Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)

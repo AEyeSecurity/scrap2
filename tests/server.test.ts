@@ -8,6 +8,7 @@ import {
   type MastercrmUserCashierLinkRecord,
   type MastercrmUserStore
 } from '../src/mastercrm-user-store';
+import type { MetaConversionsStore } from '../src/meta-conversions-store';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
@@ -50,6 +51,18 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       actorAlias?: string | null;
       actorPhone?: string | null;
     };
+    sourceContext?: {
+      ctwaClid?: string | null;
+      referralSourceId?: string | null;
+      referralSourceUrl?: string | null;
+      referralHeadline?: string | null;
+      referralBody?: string | null;
+      referralSourceType?: string | null;
+      waId?: string | null;
+      messageSid?: string | null;
+      accountSid?: string | null;
+      profileName?: string | null;
+    } | null;
   }> = [];
 
   public readonly syncInputs: Array<{
@@ -124,12 +137,25 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       actorAlias?: string | null;
       actorPhone?: string | null;
     };
+    sourceContext?: {
+      ctwaClid?: string | null;
+      referralSourceId?: string | null;
+      referralSourceUrl?: string | null;
+      referralHeadline?: string | null;
+      referralBody?: string | null;
+      referralSourceType?: string | null;
+      waId?: string | null;
+      messageSid?: string | null;
+      accountSid?: string | null;
+      profileName?: string | null;
+    } | null;
   }): Promise<{
     cajeroId: string;
     jugadorId: string;
     linkId: string;
     estado: string;
     ownerId?: string;
+    clientId?: string;
   }> {
     this.intakeInputs.push(input);
     return {
@@ -137,7 +163,8 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       jugadorId: 'jugador-1',
       linkId: 'link-1',
       estado: 'pendiente',
-      ownerId: 'owner-1'
+      ownerId: 'owner-1',
+      clientId: 'client-1'
     };
   }
 
@@ -222,6 +249,46 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
   }> {
     this.unassignByPhoneInputs.push(input);
     return this.unassignByPhoneBehavior();
+  }
+}
+
+class FakeMetaConversionsStore implements MetaConversionsStore {
+  public readonly leadInputs: Array<{
+    ownerId: string;
+    clientId: string;
+    phoneE164: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext: Record<string, unknown>;
+  }> = [];
+
+  async enqueueLead(input: {
+    ownerId: string;
+    clientId: string;
+    phoneE164: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext: Record<string, unknown>;
+  }): Promise<void> {
+    this.leadInputs.push(input);
+  }
+
+  async scanForQualifiedLeads(_limit: number): Promise<number> {
+    return 0;
+  }
+
+  async leaseNextEvent(_leaseSeconds: number, _maxAttempts: number): Promise<null> {
+    return null;
+  }
+
+  async markSent(_id: string): Promise<void> {
+    // no-op
+  }
+
+  async markRetry(_id: string, _error: string, _retryAfterSeconds: number): Promise<void> {
+    // no-op
+  }
+
+  async markFailed(_id: string, _error: string): Promise<void> {
+    // no-op
   }
 }
 
@@ -1520,6 +1587,98 @@ describe('server routes', () => {
         actorPhone: '+5491122334999'
       }
     });
+
+    await server.close();
+  });
+
+  it('POST /users/intake-pending forwards sourceContext and enqueues an attributable Meta lead', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const metaStore = new FakeMetaConversionsStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore,
+        metaConversionsStore: metaStore,
+        metaEnabled: true,
+        metaWorkerEnabled: false
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/intake-pending',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_001',
+          ownerLabel: 'Lucas 10'
+        },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceId: '6904268485256',
+          referralSourceUrl: 'https://fb.me/8cuWQu6gD',
+          referralHeadline: 'ROYAL LUCK',
+          referralBody: 'Quiero mi bono',
+          referralSourceType: 'ad',
+          waId: '5491138294407',
+          messageSid: 'SM123',
+          accountSid: 'AC123',
+          profileName: 'Raul Rodriguez'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(playerPhoneStore.intakeInputs[0]).toEqual({
+      pagina: 'ASN',
+      telefono: '+5491122334455',
+      ownerContext: {
+        ownerKey: 'wf_001',
+        ownerLabel: 'Lucas 10'
+      },
+      sourceContext: {
+        ctwaClid: 'clid-123',
+        referralSourceId: '6904268485256',
+        referralSourceUrl: 'https://fb.me/8cuWQu6gD',
+        referralHeadline: 'ROYAL LUCK',
+        referralBody: 'Quiero mi bono',
+        referralSourceType: 'ad',
+        waId: '5491138294407',
+        messageSid: 'SM123',
+        accountSid: 'AC123',
+        profileName: 'Raul Rodriguez'
+      }
+    });
+    expect(metaStore.leadInputs).toEqual([
+      {
+        ownerId: 'owner-1',
+        clientId: 'client-1',
+        phoneE164: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_001',
+          ownerLabel: 'Lucas 10'
+        },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceId: '6904268485256',
+          referralSourceUrl: 'https://fb.me/8cuWQu6gD',
+          referralHeadline: 'ROYAL LUCK',
+          referralBody: 'Quiero mi bono',
+          referralSourceType: 'ad',
+          waId: '5491138294407',
+          messageSid: 'SM123',
+          accountSid: 'AC123',
+          profileName: 'Raul Rodriguez'
+        }
+      }
+    ]);
 
     await server.close();
   });
