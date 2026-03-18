@@ -150,6 +150,19 @@ export interface OwnerContext {
   actorPhone?: string | null;
 }
 
+export interface MetaSourceContext {
+  ctwaClid?: string | null;
+  referralSourceId?: string | null;
+  referralSourceUrl?: string | null;
+  referralHeadline?: string | null;
+  referralBody?: string | null;
+  referralSourceType?: string | null;
+  waId?: string | null;
+  messageSid?: string | null;
+  accountSid?: string | null;
+  profileName?: string | null;
+}
+
 export interface CreatePlayerJobPayload {
   pagina: PaginaCode;
   loginUsername: string;

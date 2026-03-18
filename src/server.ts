@@ -12,6 +12,13 @@ import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
+import { buildMetaConversionsConfigFromEnv, MetaConversionsHttpDispatcher, type MetaConversionsDispatcher } from './meta-conversions';
+import {
+  createMetaConversionsStoreFromEnv,
+  type MetaConversionsStore
+} from './meta-conversions-store';
+import { isAttributableMetaSourceContext } from './meta-source-context';
+import { MetaConversionsWorker } from './meta-conversions-worker';
 import {
   createMastercrmUserStoreFromEnv,
   normalizeMastercrmNombre,
@@ -46,6 +53,7 @@ import type {
   JobRequest,
   JobStoreEntry,
   LoginJobRequest,
+  MetaSourceContext,
   ServerConfig
 } from './types';
 
@@ -59,7 +67,16 @@ interface ServerDependencies {
   mastercrmUserStore?: MastercrmUserStore;
   playerPhoneStore?: PlayerPhoneStore;
   reportRunStore?: ReportRunStore;
+  metaConversionsStore?: MetaConversionsStore;
   asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
+  metaEnabled?: boolean;
+  metaWorkerEnabled?: boolean;
+  metaWorkerConcurrency?: number;
+  metaWorkerPollMs?: number;
+  metaWorkerLeaseSeconds?: number;
+  metaWorkerMaxAttempts?: number;
+  metaWorkerScanLimit?: number;
+  metaConversionsDispatcher?: MetaConversionsDispatcher;
   reportWorkerEnabled?: boolean;
   reportWorkerConcurrency?: number;
   reportWorkerPollMs?: number;
@@ -94,6 +111,19 @@ const ownerContextSchema = z.object({
   ownerLabel: z.string().trim().min(1),
   actorAlias: z.string().trim().min(1).nullable().optional(),
   actorPhone: z.string().trim().min(1).nullable().optional()
+});
+
+const sourceContextSchema = z.object({
+  ctwaClid: z.string().trim().min(1).nullable().optional(),
+  referralSourceId: z.string().trim().min(1).nullable().optional(),
+  referralSourceUrl: z.string().trim().min(1).nullable().optional(),
+  referralHeadline: z.string().trim().min(1).nullable().optional(),
+  referralBody: z.string().trim().min(1).nullable().optional(),
+  referralSourceType: z.string().trim().min(1).nullable().optional(),
+  waId: z.string().trim().min(1).nullable().optional(),
+  messageSid: z.string().trim().min(1).nullable().optional(),
+  accountSid: z.string().trim().min(1).nullable().optional(),
+  profileName: z.string().trim().min(1).nullable().optional()
 });
 
 const loginBodySchema = z
@@ -143,7 +173,8 @@ const unassignPhoneBodySchema = z.object({
 const intakePendingBodySchema = z.object({
   pagina: paginaCodeSchema,
   telefono: z.string().trim().min(1),
-  ownerContext: ownerContextSchema
+  ownerContext: ownerContextSchema,
+  sourceContext: sourceContextSchema.optional()
 });
 
 const depositBodySchema = z
@@ -650,11 +681,28 @@ export function createServer(
   let cachedMastercrmUserStore: MastercrmUserStore | null = dependencies?.mastercrmUserStore ?? null;
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
   let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
+  let cachedMetaConversionsStore: MetaConversionsStore | null = dependencies?.metaConversionsStore ?? null;
   let reportWorker: ReportRunWorker | null = null;
+  let metaWorker: MetaConversionsWorker | null = null;
   const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
   const hasSupabaseConfig = Boolean(
     process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   );
+  const rawMetaEnabled = parseBooleanEnv(process.env.META_ENABLED) ?? false;
+  const metaConfiguredFromEnv = Boolean(
+    process.env.META_DATASET_ID?.trim() && process.env.META_ACCESS_TOKEN?.trim() && hasSupabaseConfig
+  );
+  const metaEnabled = dependencies?.metaEnabled ?? (rawMetaEnabled && metaConfiguredFromEnv);
+  const metaWorkerEnabled = dependencies?.metaWorkerEnabled ?? metaEnabled;
+  const metaWorkerConcurrency =
+    dependencies?.metaWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.META_WORKER_CONCURRENCY, 2);
+  const metaWorkerPollMs = dependencies?.metaWorkerPollMs ?? parsePositiveIntegerEnv(process.env.META_WORKER_POLL_MS, 1000);
+  const metaWorkerLeaseSeconds =
+    dependencies?.metaWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.META_WORKER_LEASE_SECONDS, 60);
+  const metaWorkerMaxAttempts =
+    dependencies?.metaWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.META_WORKER_MAX_ATTEMPTS, 5);
+  const metaWorkerScanLimit =
+    dependencies?.metaWorkerScanLimit ?? parsePositiveIntegerEnv(process.env.META_WORKER_SCAN_LIMIT, 100);
   const reportWorkerEnabled =
     dependencies?.reportWorkerEnabled ??
     ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
@@ -695,6 +743,56 @@ export function createServer(
 
     cachedReportRunStore = createReportRunStoreFromEnv();
     return cachedReportRunStore;
+  }
+
+  function getMetaConversionsStore(): MetaConversionsStore {
+    if (cachedMetaConversionsStore) {
+      return cachedMetaConversionsStore;
+    }
+
+    cachedMetaConversionsStore = createMetaConversionsStoreFromEnv();
+    return cachedMetaConversionsStore;
+  }
+
+  async function enqueueMetaLeadIfEligible(input: {
+    intake: { ownerId?: string; clientId?: string };
+    telefono: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext?: MetaSourceContext;
+  }): Promise<void> {
+    if (!metaEnabled || !input.sourceContext || !isAttributableMetaSourceContext(input.sourceContext)) {
+      return;
+    }
+
+    if (!input.intake.ownerId || !input.intake.clientId) {
+      logger.warn(
+        {
+          ownerId: input.intake.ownerId,
+          clientId: input.intake.clientId
+        },
+        'Meta lead was eligible but intake did not return owner/client ids'
+      );
+      return;
+    }
+
+    try {
+      await getMetaConversionsStore().enqueueLead({
+        ownerId: input.intake.ownerId,
+        clientId: input.intake.clientId,
+        phoneE164: input.telefono,
+        ownerContext: input.ownerContext,
+        sourceContext: input.sourceContext
+      });
+    } catch (error) {
+      logger.error(
+        {
+          error,
+          ownerId: input.intake.ownerId,
+          clientId: input.intake.clientId
+        },
+        'Could not enqueue Meta lead conversion'
+      );
+    }
   }
 
   const internalQueue =
@@ -753,6 +851,20 @@ export function createServer(
       maxAttempts: reportWorkerMaxAttempts
     }, executor);
     reportWorker.start();
+  }
+
+  if (metaEnabled && metaWorkerEnabled) {
+    const dispatcher =
+      dependencies?.metaConversionsDispatcher ??
+      new MetaConversionsHttpDispatcher(buildMetaConversionsConfigFromEnv());
+    metaWorker = new MetaConversionsWorker(getMetaConversionsStore(), dispatcher, logger, {
+      concurrency: metaWorkerConcurrency,
+      pollMs: metaWorkerPollMs,
+      leaseSeconds: metaWorkerLeaseSeconds,
+      maxAttempts: metaWorkerMaxAttempts,
+      scanLimit: metaWorkerScanLimit
+    });
+    metaWorker.start();
   }
 
   fastify.post('/login', async (request, reply) => {
@@ -1082,7 +1194,15 @@ export function createServer(
       const intake = await getPlayerPhoneStore().intakePendingCliente({
         pagina: payload.pagina,
         telefono: payload.telefono,
-        ownerContext: payload.ownerContext
+        ownerContext: payload.ownerContext,
+        ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {})
+      });
+
+      await enqueueMetaLeadIfEligible({
+        intake,
+        telefono: payload.telefono,
+        ownerContext: payload.ownerContext,
+        sourceContext: payload.sourceContext
       });
 
       return reply.code(200).send({
@@ -1488,6 +1608,9 @@ export function createServer(
   fastify.addHook('onClose', async () => {
     if (reportWorker) {
       await reportWorker.stop();
+    }
+    if (metaWorker) {
+      await metaWorker.stop();
     }
     await internalQueue.shutdown();
   });

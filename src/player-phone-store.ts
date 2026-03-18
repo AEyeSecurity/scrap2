@@ -1,5 +1,6 @@
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
-import type { PaginaCode } from './types';
+import { normalizeMetaSourceContext } from './meta-source-context';
+import type { MetaSourceContext, PaginaCode } from './types';
 
 type PlayerPhoneStoreErrorCode = 'CONFIGURATION' | 'VALIDATION' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL';
 
@@ -77,6 +78,7 @@ export interface IntakePendingInput {
   pagina: PaginaCode;
   telefono: string;
   ownerContext: OwnerContextInput;
+  sourceContext?: MetaSourceContext | null;
 }
 
 export interface IntakePendingResult {
@@ -359,7 +361,7 @@ function mapSyncCreatePlayerLinkRpcError(error: PostgrestError): PlayerPhoneStor
 function asIntakePendingResult(data: unknown): IntakePendingResult {
   const row = Array.isArray(data) ? data[0] : data;
   if (!row || typeof row !== 'object') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 did not return row', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 did not return row', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
@@ -374,32 +376,32 @@ function asIntakePendingResult(data: unknown): IntakePendingResult {
   };
 
   if (typeof payload.cajero_id !== 'string' || !payload.cajero_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid cajero_id', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid cajero_id', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
   if (typeof payload.jugador_id !== 'string' || !payload.jugador_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid jugador_id', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid jugador_id', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
   if (typeof payload.link_id !== 'string' || !payload.link_id) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid link_id', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid link_id', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
   if (typeof payload.estado !== 'string' || !payload.estado) {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid estado', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid estado', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
   if (payload.owner_id !== undefined && payload.owner_id !== null && typeof payload.owner_id !== 'string') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid owner_id', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid owner_id', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
   if (payload.client_id !== undefined && payload.client_id !== null && typeof payload.client_id !== 'string') {
-    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v3 returned invalid client_id', {
+    throw new PlayerPhoneStoreError('INTERNAL', 'intake_pending_cliente_v4 returned invalid client_id', {
       reason: 'UNEXPECTED_PERSISTENCE_ERROR'
     });
   }
@@ -494,14 +496,16 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const pagina = input.pagina;
     const telefono = normalizePhone(input.telefono);
     const ownerContext = requireOwnerContext(input.ownerContext);
+    const sourceContext = normalizeMetaSourceContext(input.sourceContext);
 
-    const { data, error } = await this.client.rpc('intake_pending_cliente_v3', {
+    const { data, error } = await this.client.rpc('intake_pending_cliente_v4', {
       p_owner_key: ownerContext.ownerKey,
       p_cliente_telefono: telefono,
       p_pagina: pagina,
       p_owner_label: ownerContext.ownerLabel,
       p_actor_alias: ownerContext.actorAlias,
-      p_actor_phone: ownerContext.actorPhone
+      p_actor_phone: ownerContext.actorPhone,
+      p_source_context: sourceContext
     });
 
     if (error) {
