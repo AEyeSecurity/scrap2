@@ -123,12 +123,23 @@ export interface MastercrmOwnerClientRecord {
   reportDate: string | null;
 }
 
+export interface MastercrmMonthlyTrendPoint {
+  month: string;
+  reportDate: string | null;
+  cargadoMesArs: number | null;
+}
+
+export interface MastercrmDashboardChartsRecord {
+  monthlyTrend: MastercrmMonthlyTrendPoint[];
+}
+
 export interface MastercrmClientsDashboardRecord {
   linkedOwner: MastercrmLinkedOwnerRecord | null;
   summary: MastercrmOwnerSummary | null;
   financialInputs: MastercrmOwnerFinancialInputsRecord;
   primaryKpis: MastercrmPrimaryKpisRecord;
   statsKpis: MastercrmStatsKpisRecord;
+  charts: MastercrmDashboardChartsRecord;
   clientes: MastercrmOwnerClientRecord[];
 }
 
@@ -460,7 +471,37 @@ function buildMonthWindow(month: string): {
   };
 }
 
+function buildMonthTrail(month: string, count = 6): Array<{
+  month: string;
+  monthStartDate: string;
+  nextMonthStartDate: string;
+}> {
+  const normalizedMonth = normalizeMastercrmMonth(month);
+  const [yearToken, monthToken] = normalizedMonth.split('-');
+  const baseYear = Number(yearToken);
+  const baseMonthIndex = Number(monthToken) - 1;
+  const trail = [];
+
+  for (let offset = count - 1; offset >= 0; offset -= 1) {
+    const currentDate = new Date(Date.UTC(baseYear, baseMonthIndex - offset, 1));
+    const year = currentDate.getUTCFullYear();
+    const monthIndex = currentDate.getUTCMonth();
+    const nextDate = new Date(Date.UTC(year, monthIndex + 1, 1));
+    const monthValue = `${year}-${String(monthIndex + 1).padStart(2, '0')}`;
+
+    trail.push({
+      month: monthValue,
+      monthStartDate: `${monthValue}-01`,
+      nextMonthStartDate: `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, '0')}-01`
+    });
+  }
+
+  return trail;
+}
+
 function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
+  const monthTrail = buildMonthTrail(month);
+
   return {
     linkedOwner: null,
     summary: null,
@@ -488,6 +529,13 @@ function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
       clientesConReporte: 0,
       promedioCargaGeneralArs: null,
       tasaActivacionPct: null
+    },
+    charts: {
+      monthlyTrend: monthTrail.map((point) => ({
+        month: point.month,
+        reportDate: null,
+        cargadoMesArs: null
+      }))
     },
     clientes: []
   };
@@ -679,12 +727,22 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     await this.getActiveUserById(input.userId);
     const monthWindow = buildMonthWindow(input.month ?? getBuenosAiresMonthToken());
+    const monthTrail = buildMonthTrail(monthWindow.month);
     const owner = await this.getLinkedOwnerRow(input.userId);
     if (!owner) {
       return buildEmptyDashboard(monthWindow.month);
     }
 
-    const [ownerPhone, ownerClientLinksResult, ownerClientIdentitiesResult, latestReportDateResult, financialSettingsResult, adSpendResult, eventsResult] =
+    const [
+      ownerPhone,
+      ownerClientLinksResult,
+      ownerClientIdentitiesResult,
+      latestReportDateResult,
+      financialSettingsResult,
+      adSpendResult,
+      eventsResult,
+      monthlyTrendSnapshotsResult
+    ] =
       await Promise.all([
         this.getOwnerPhone(owner.id),
         this.client
@@ -721,6 +779,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .eq('owner_id', owner.id)
           .gte('created_at', monthWindow.startedAtIso)
           .lt('created_at', monthWindow.endedAtIso)
+        ,
+        this.client
+          .from('report_daily_snapshots')
+          .select('report_date, cargado_mes')
+          .eq('owner_id', owner.id)
+          .gte('report_date', monthTrail[0]?.monthStartDate ?? monthWindow.monthStartDate)
+          .lt('report_date', monthWindow.nextMonthStartDate)
       ]);
 
     if (ownerClientLinksResult.error) {
@@ -740,6 +805,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
     if (eventsResult.error) {
       throw mapPostgrestError(eventsResult.error, 'Could not read owner events');
+    }
+    if (monthlyTrendSnapshotsResult.error) {
+      throw mapPostgrestError(monthlyTrendSnapshotsResult.error, 'Could not read owner monthly trend snapshots');
     }
 
     const linkedOwner: MastercrmLinkedOwnerRecord = {
@@ -831,6 +899,43 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const financialSettings = financialSettingsResult.data as OwnerFinancialSettingsRow | null;
     const adSpendRow = adSpendResult.data as OwnerMonthlyAdSpendRow | null;
+    const monthlyTrendSnapshots =
+      (monthlyTrendSnapshotsResult.data as Array<{ report_date: string; cargado_mes: number | string | null }> | null) ?? [];
+    const monthlyTrendByMonth = new Map<string, { reportDate: string; cargadoMesArs: number }>();
+
+    for (const snapshot of monthlyTrendSnapshots) {
+      const monthToken = snapshot.report_date.slice(0, 7);
+      if (!monthTrail.some((point) => point.month === monthToken)) {
+        continue;
+      }
+
+      const cargadoMes = toFiniteNumber(snapshot.cargado_mes) ?? 0;
+      const existing = monthlyTrendByMonth.get(monthToken);
+      if (!existing || compareIsoDatesDesc(existing.reportDate, snapshot.report_date) > 0) {
+        monthlyTrendByMonth.set(monthToken, {
+          reportDate: snapshot.report_date,
+          cargadoMesArs: cargadoMes
+        });
+        continue;
+      }
+
+      if (existing.reportDate === snapshot.report_date) {
+        monthlyTrendByMonth.set(monthToken, {
+          reportDate: existing.reportDate,
+          cargadoMesArs: roundTo(existing.cargadoMesArs + cargadoMes)
+        });
+      }
+    }
+
+    const monthlyTrend: MastercrmMonthlyTrendPoint[] = monthTrail.map((point) => {
+      const entry = monthlyTrendByMonth.get(point.month);
+      return {
+        month: point.month,
+        reportDate: entry?.reportDate ?? null,
+        cargadoMesArs: entry?.cargadoMesArs ?? null
+      };
+    });
+
     const commissionPct = toFiniteNumber(financialSettings?.commission_pct);
     const adSpendArs = toFiniteNumber(adSpendRow?.ad_spend_ars);
     const events = (eventsResult.data as OwnerClientEventRow[] | null) ?? [];
@@ -923,6 +1028,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         clientesConReporte,
         promedioCargaGeneralArs,
         tasaActivacionPct
+      },
+      charts: {
+        monthlyTrend
       },
       clientes
     };

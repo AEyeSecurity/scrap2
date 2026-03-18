@@ -350,6 +350,9 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
       promedioCargaGeneralArs: null,
       tasaActivacionPct: null
     },
+    charts: {
+      monthlyTrend: []
+    },
     clientes: []
   });
 
@@ -703,6 +706,16 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      charts: {
+        monthlyTrend: [
+          { month: '2025-10', reportDate: null, cargadoMesArs: null },
+          { month: '2025-11', reportDate: null, cargadoMesArs: null },
+          { month: '2025-12', reportDate: null, cargadoMesArs: null },
+          { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 4100 },
+          { month: '2026-02', reportDate: '2026-02-28', cargadoMesArs: 4700 },
+          { month: '2026-03', reportDate: '2026-03-15', cargadoMesArs: 5600 }
+        ]
+      },
       clientes: [
         {
           id: `link-${userId}`,
@@ -788,6 +801,16 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      charts: {
+        monthlyTrend: [
+          { month: '2025-10', reportDate: null, cargadoMesArs: null },
+          { month: '2025-11', reportDate: null, cargadoMesArs: null },
+          { month: '2025-12', reportDate: null, cargadoMesArs: null },
+          { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 4100 },
+          { month: '2026-02', reportDate: '2026-02-28', cargadoMesArs: 4700 },
+          { month: '2026-03', reportDate: '2026-03-15', cargadoMesArs: 5600 }
+        ]
+      },
       clientes: [
         {
           id: 'link-101',
@@ -844,6 +867,16 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      charts: {
+        monthlyTrend: [
+          { month: '2025-10', reportDate: null, cargadoMesArs: null },
+          { month: '2025-11', reportDate: null, cargadoMesArs: null },
+          { month: '2025-12', reportDate: null, cargadoMesArs: null },
+          { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 4100 },
+          { month: '2026-02', reportDate: '2026-02-28', cargadoMesArs: 4700 },
+          { month: '2026-03', reportDate: '2026-03-15', cargadoMesArs: 5600 }
+        ]
+      },
       clientes: [
         {
           id: 'link-202',
@@ -899,6 +932,16 @@ describe('server routes', () => {
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
+      },
+      charts: {
+        monthlyTrend: [
+          { month: '2025-10', reportDate: null, cargadoMesArs: null },
+          { month: '2025-11', reportDate: null, cargadoMesArs: null },
+          { month: '2025-12', reportDate: null, cargadoMesArs: null },
+          { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 4100 },
+          { month: '2026-02', reportDate: '2026-02-28', cargadoMesArs: 4700 },
+          { month: '2026-03', reportDate: '2026-03-15', cargadoMesArs: 5600 }
+        ]
       },
       clientes: [
         {

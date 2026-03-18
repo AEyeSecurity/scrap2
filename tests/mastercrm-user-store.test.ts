@@ -406,6 +406,10 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
     client.queue('owner_financial_settings', 'select', {
       data: null,
       error: null
@@ -465,6 +469,16 @@ describe('mastercrm clients dashboard', () => {
         promedioCargaGeneralArs: null,
         tasaActivacionPct: null
       },
+      charts: {
+        monthlyTrend: [
+          { month: '2025-10', reportDate: null, cargadoMesArs: null },
+          { month: '2025-11', reportDate: null, cargadoMesArs: null },
+          { month: '2025-12', reportDate: null, cargadoMesArs: null },
+          { month: '2026-01', reportDate: null, cargadoMesArs: null },
+          { month: '2026-02', reportDate: null, cargadoMesArs: null },
+          { month: '2026-03', reportDate: null, cargadoMesArs: null }
+        ]
+      },
       clientes: []
     });
   });
@@ -516,6 +530,10 @@ describe('mastercrm clients dashboard', () => {
       error: null
     });
     client.queue('owner_client_identities', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
       data: [],
       error: null
     });
@@ -621,6 +639,10 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
     client.queue('owner_financial_settings', 'select', {
       data: null,
       error: null
@@ -647,5 +669,88 @@ describe('mastercrm clients dashboard', () => {
     expect(dashboard.statsKpis.intakesMes).toBe(2);
     expect(dashboard.statsKpis.asignacionesMes).toBe(3);
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
+  });
+
+  it('builds monthly trend from the latest snapshot date of each month', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 777,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'asnlucas10:lucas10',
+          owner_label: 'Lucas10',
+          pagina: 'ASN'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_identities', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [
+        { report_date: '2025-11-29', cargado_mes: 10000 },
+        { report_date: '2025-11-29', cargado_mes: 5000 },
+        { report_date: '2025-12-31', cargado_mes: 14000 },
+        { report_date: '2026-01-30', cargado_mes: 20000 },
+        { report_date: '2026-01-31', cargado_mes: 30000 },
+        { report_date: '2026-02-15', cargado_mes: 22000 },
+        { report_date: '2026-03-12', cargado_mes: 25000 },
+        { report_date: '2026-03-16', cargado_mes: 41000 },
+        { report_date: '2026-03-16', cargado_mes: 9000 }
+      ],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-03' });
+
+    expect(dashboard.charts.monthlyTrend).toEqual([
+      { month: '2025-10', reportDate: null, cargadoMesArs: null },
+      { month: '2025-11', reportDate: '2025-11-29', cargadoMesArs: 15000 },
+      { month: '2025-12', reportDate: '2025-12-31', cargadoMesArs: 14000 },
+      { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 30000 },
+      { month: '2026-02', reportDate: '2026-02-15', cargadoMesArs: 22000 },
+      { month: '2026-03', reportDate: '2026-03-16', cargadoMesArs: 50000 }
+    ]);
   });
 });

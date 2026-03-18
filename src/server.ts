@@ -903,6 +903,13 @@ export function createServer(
           promedioCargaGeneralArs: dashboard.statsKpis.promedioCargaGeneralArs,
           tasaActivacionPct: dashboard.statsKpis.tasaActivacionPct
         },
+        charts: {
+          monthlyTrend: dashboard.charts.monthlyTrend.map((point) => ({
+            month: point.month,
+            reportDate: point.reportDate,
+            cargadoMesArs: point.cargadoMesArs
+          }))
+        },
         clientes: dashboard.clientes.map((client) => ({
           id: client.id,
           username: client.username,
