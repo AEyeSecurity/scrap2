@@ -230,9 +230,29 @@ Validado en codigo:
 - `Lead` usa `receivedAt` si viene en `sourceContext`
 - backend compila y tests cubren payload de Meta + intake atribuible
 
+Validado contra Meta real el `2026-03-18`:
+
+- test event code usado: `TEST87269`
+- `action_source = system_generated`
+- `event_name = Lead`
+- respuesta del Graph API:
+  - `HTTP 200`
+  - `events_received = 1`
+  - `messages = []`
+- `fbtrace_id = ARasLcKtl8KkMZ-x4-LjLdB`
+- el payload enviado incluyo:
+  - `ctwa_clid` dentro de `user_data`
+  - `client_ip_address` dentro de `user_data`
+  - `client_user_agent` dentro de `user_data`
+  - `test_event_code = TEST87269`
+
+Observacion:
+
+- esta validacion confirma recepcion correcta del `Lead` en Meta sin errores de API
+- la revision fina de warnings o match quality debe hacerse en `Test Events` / `Events Manager`
+
 ## Pendientes operativos
 
-- aplicar la migracion `20260318_meta_conversions_v2.sql` en Supabase
 - publicar el workflow de `n8n`
 - redeploy del contenedor backend con las nuevas variables
 - si se quiere probar `business_messaging`, hacerlo primero en modo test

@@ -719,6 +719,23 @@ Pendiente para test publicitario real:
 - revisar Events Manager despues del dispatch
 - si Meta devuelve algo raro, contrastarlo contra `docs/README_META_CAPI_CTWA.md`
 
+Validacion real con Meta:
+
+- el `2026-03-18` se disparo un `Lead` real al dataset usando `TEST87269`
+- `action_source = system_generated`
+- respuesta del Graph API:
+  - `HTTP 200`
+  - `events_received = 1`
+  - `messages = []`
+- `fbtrace_id = ARasLcKtl8KkMZ-x4-LjLdB`
+- el request incluyo:
+  - `event_name = Lead`
+  - `ctwa_clid` dentro de `user_data`
+  - `client_ip_address` dentro de `user_data`
+  - `client_user_agent` dentro de `user_data`
+- eso valida que el pipeline actual ya puede enviar un `Lead` de prueba sin error de API
+- falta solo la lectura manual de `Test Events` para revisar warnings de calidad o recomendaciones de Meta
+
 ## Si otro chat retoma este repo
 
 Checklist:
