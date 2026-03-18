@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
 import type { MetaSourceContext, OwnerContext } from './types';
 import { buildStoredMetaSourcePayload, normalizeMetaSourceContext } from './meta-source-context';
@@ -93,9 +94,18 @@ function normalizeEventTime(value: string | undefined): string {
   return parsed.toISOString();
 }
 
-function buildStableEventId(stage: MetaConversionStage, ownerId: string, clientId: string): string {
-  const seed = `${stage}:${ownerId}:${clientId}`.toLowerCase();
-  return `${stage}:${Buffer.from(seed).toString('base64url')}`;
+function sha256hex(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function buildLeadAttributionKey(sourceContext: MetaSourceContext | null): string | null {
+  const clid = sourceContext?.ctwaClid?.trim().toLowerCase();
+  return clid && clid.length > 0 ? clid : null;
+}
+
+function buildStableEventId(stage: MetaConversionStage, ownerId: string, clientId: string, attributionKey?: string | null): string {
+  const parts = stage === 'lead' ? [ownerId, clientId, attributionKey ?? ''] : [ownerId, clientId];
+  return `${stage}:${sha256hex(parts.join(':').toLowerCase())}`;
 }
 
 function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): MetaConversionsStoreError {
@@ -150,30 +160,34 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
     if (!normalizedSource) {
       throw new MetaConversionsStoreError('VALIDATION', 'sourceContext is required');
     }
+    const attributionKey = buildLeadAttributionKey(normalizedSource);
+    if (!attributionKey) {
+      throw new MetaConversionsStoreError('VALIDATION', 'ctwaClid is required for attributable Meta leads');
+    }
 
-    const { error } = await this.client.from('meta_conversion_outbox').upsert(
+    const { error } = await this.client.from('meta_conversion_outbox').insert(
       {
         owner_id: ownerId,
         client_id: clientId,
         event_stage: 'lead',
         meta_event_name: 'Lead',
-        event_id: buildStableEventId('lead', ownerId, clientId),
+        event_id: buildStableEventId('lead', ownerId, clientId, attributionKey),
+        attribution_key: attributionKey,
         status: 'pending',
-        event_time: normalizeEventTime(input.eventTime),
+        event_time: normalizeEventTime(input.eventTime ?? normalizedSource.receivedAt ?? undefined),
         phone_e164: phoneE164,
         username: null,
         source_payload: buildStoredMetaSourcePayload({
           ownerContext: input.ownerContext,
           sourceContext: normalizedSource
         })
-      },
-      {
-        onConflict: 'owner_id,client_id,event_stage',
-        ignoreDuplicates: true
       }
     );
 
     if (error) {
+      if (error.code === '23505') {
+        return;
+      }
       throw mapPostgrestError(error, 'Could not enqueue Meta lead conversion');
     }
   }

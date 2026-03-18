@@ -14,6 +14,9 @@ export interface StoredMetaSourcePayload extends Record<string, unknown> {
   MessageSid?: string;
   AccountSid?: string;
   ProfileName?: string;
+  ClientIpAddress?: string;
+  ClientUserAgent?: string;
+  ReceivedAt?: string;
 }
 
 function normalizeOptionalText(value: string | null | undefined): string | null {
@@ -23,6 +26,20 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeOptionalTimestamp(value: string | null | undefined): string | null {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  return parsed.toISOString();
 }
 
 export function normalizeMetaSourceContext(input: MetaSourceContext | null | undefined): MetaSourceContext | null {
@@ -40,7 +57,10 @@ export function normalizeMetaSourceContext(input: MetaSourceContext | null | und
     waId: normalizeOptionalText(input.waId),
     messageSid: normalizeOptionalText(input.messageSid),
     accountSid: normalizeOptionalText(input.accountSid),
-    profileName: normalizeOptionalText(input.profileName)
+    profileName: normalizeOptionalText(input.profileName),
+    clientIpAddress: normalizeOptionalText(input.clientIpAddress),
+    clientUserAgent: normalizeOptionalText(input.clientUserAgent),
+    receivedAt: normalizeOptionalTimestamp(input.receivedAt)
   };
 
   return Object.values(normalized).some((value) => value != null) ? normalized : null;
@@ -77,7 +97,10 @@ export function buildStoredMetaSourcePayload(input: {
     WaId: sourceContext?.waId ?? null,
     MessageSid: sourceContext?.messageSid ?? null,
     AccountSid: sourceContext?.accountSid ?? null,
-    ProfileName: sourceContext?.profileName ?? null
+    ProfileName: sourceContext?.profileName ?? null,
+    ClientIpAddress: sourceContext?.clientIpAddress ?? null,
+    ClientUserAgent: sourceContext?.clientUserAgent ?? null,
+    ReceivedAt: sourceContext?.receivedAt ?? null
   });
 
   return payload as StoredMetaSourcePayload;
@@ -122,6 +145,14 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
     accountSid:
       readPayloadField(payload, 'AccountSid') ?? (nestedSource ? readPayloadField(nestedSource, 'accountSid') : null),
     profileName:
-      readPayloadField(payload, 'ProfileName') ?? (nestedSource ? readPayloadField(nestedSource, 'profileName') : null)
+      readPayloadField(payload, 'ProfileName') ?? (nestedSource ? readPayloadField(nestedSource, 'profileName') : null),
+    clientIpAddress:
+      readPayloadField(payload, 'ClientIpAddress') ??
+      (nestedSource ? readPayloadField(nestedSource, 'clientIpAddress') : null),
+    clientUserAgent:
+      readPayloadField(payload, 'ClientUserAgent') ??
+      (nestedSource ? readPayloadField(nestedSource, 'clientUserAgent') : null),
+    receivedAt:
+      readPayloadField(payload, 'ReceivedAt') ?? (nestedSource ? readPayloadField(nestedSource, 'receivedAt') : null)
   });
 }

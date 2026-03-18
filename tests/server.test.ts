@@ -62,6 +62,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       messageSid?: string | null;
       accountSid?: string | null;
       profileName?: string | null;
+      clientIpAddress?: string | null;
+      clientUserAgent?: string | null;
+      receivedAt?: string | null;
     } | null;
   }> = [];
 
@@ -148,6 +151,9 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       messageSid?: string | null;
       accountSid?: string | null;
       profileName?: string | null;
+      clientIpAddress?: string | null;
+      clientUserAgent?: string | null;
+      receivedAt?: string | null;
     } | null;
   }): Promise<{
     cajeroId: string;
@@ -259,6 +265,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    eventTime?: string;
   }> = [];
 
   async enqueueLead(input: {
@@ -267,6 +274,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    eventTime?: string;
   }): Promise<void> {
     this.leadInputs.push(input);
   }
@@ -1663,6 +1671,7 @@ describe('server routes', () => {
           ownerKey: 'wf_001',
           ownerLabel: 'Lucas 10'
         },
+        eventTime: '2026-03-17T09:58:00.000Z',
         sourceContext: {
           ctwaClid: 'clid-123',
           referralSourceId: '6904268485256',
@@ -1673,7 +1682,10 @@ describe('server routes', () => {
           waId: '5491138294407',
           messageSid: 'SM123',
           accountSid: 'AC123',
-          profileName: 'Raul Rodriguez'
+          profileName: 'Raul Rodriguez',
+          clientIpAddress: '181.45.10.22',
+          clientUserAgent: 'Mozilla/5.0',
+          receivedAt: '2026-03-17T09:58:00.000Z'
         }
       }
     });
@@ -1696,7 +1708,10 @@ describe('server routes', () => {
         waId: '5491138294407',
         messageSid: 'SM123',
         accountSid: 'AC123',
-        profileName: 'Raul Rodriguez'
+        profileName: 'Raul Rodriguez',
+        clientIpAddress: '181.45.10.22',
+        clientUserAgent: 'Mozilla/5.0',
+        receivedAt: '2026-03-17T09:58:00.000Z'
       }
     });
     expect(metaStore.leadInputs).toEqual([
@@ -1708,6 +1723,7 @@ describe('server routes', () => {
           ownerKey: 'wf_001',
           ownerLabel: 'Lucas 10'
         },
+        eventTime: '2026-03-17T09:58:00.000Z',
         sourceContext: {
           ctwaClid: 'clid-123',
           referralSourceId: '6904268485256',
@@ -1718,7 +1734,10 @@ describe('server routes', () => {
           waId: '5491138294407',
           messageSid: 'SM123',
           accountSid: 'AC123',
-          profileName: 'Raul Rodriguez'
+          profileName: 'Raul Rodriguez',
+          clientIpAddress: '181.45.10.22',
+          clientUserAgent: 'Mozilla/5.0',
+          receivedAt: '2026-03-17T09:58:00.000Z'
         }
       }
     ]);

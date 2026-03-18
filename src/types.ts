@@ -161,6 +161,9 @@ export interface MetaSourceContext {
   messageSid?: string | null;
   accountSid?: string | null;
   profileName?: string | null;
+  clientIpAddress?: string | null;
+  clientUserAgent?: string | null;
+  receivedAt?: string | null;
 }
 
 export interface CreatePlayerJobPayload {

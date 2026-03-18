@@ -76,6 +76,7 @@ interface ServerDependencies {
   metaWorkerLeaseSeconds?: number;
   metaWorkerMaxAttempts?: number;
   metaWorkerScanLimit?: number;
+  metaWorkerBatchSize?: number;
   metaConversionsDispatcher?: MetaConversionsDispatcher;
   reportWorkerEnabled?: boolean;
   reportWorkerConcurrency?: number;
@@ -123,7 +124,10 @@ const sourceContextSchema = z.object({
   waId: z.string().trim().min(1).nullable().optional(),
   messageSid: z.string().trim().min(1).nullable().optional(),
   accountSid: z.string().trim().min(1).nullable().optional(),
-  profileName: z.string().trim().min(1).nullable().optional()
+  profileName: z.string().trim().min(1).nullable().optional(),
+  clientIpAddress: z.string().trim().min(1).nullable().optional(),
+  clientUserAgent: z.string().trim().min(1).nullable().optional(),
+  receivedAt: z.string().trim().min(1).nullable().optional()
 });
 
 const loginBodySchema = z
@@ -703,6 +707,8 @@ export function createServer(
     dependencies?.metaWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.META_WORKER_MAX_ATTEMPTS, 5);
   const metaWorkerScanLimit =
     dependencies?.metaWorkerScanLimit ?? parsePositiveIntegerEnv(process.env.META_WORKER_SCAN_LIMIT, 100);
+  const metaWorkerBatchSize =
+    dependencies?.metaWorkerBatchSize ?? parsePositiveIntegerEnv(process.env.META_BATCH_SIZE, 1);
   const reportWorkerEnabled =
     dependencies?.reportWorkerEnabled ??
     ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
@@ -781,7 +787,8 @@ export function createServer(
         clientId: input.intake.clientId,
         phoneE164: input.telefono,
         ownerContext: input.ownerContext,
-        sourceContext: input.sourceContext
+        sourceContext: input.sourceContext,
+        eventTime: input.sourceContext.receivedAt ?? undefined
       });
     } catch (error) {
       logger.error(
@@ -862,7 +869,8 @@ export function createServer(
       pollMs: metaWorkerPollMs,
       leaseSeconds: metaWorkerLeaseSeconds,
       maxAttempts: metaWorkerMaxAttempts,
-      scanLimit: metaWorkerScanLimit
+      scanLimit: metaWorkerScanLimit,
+      batchSize: metaWorkerBatchSize
     });
     metaWorker.start();
   }

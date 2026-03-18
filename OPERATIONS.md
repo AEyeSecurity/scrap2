@@ -667,13 +667,65 @@ Notas operativas:
 - pero no debe mostrarse visualmente al usuario final
 - la clave staff se valida solo en backend
 
+## Meta CAPI v2
+
+Estado validado el `2026-03-18` en `scrap2`:
+
+- se implemento `Meta CAPI v2` para CTWA en backend
+- `ctwa_clid` ahora viaja en `user_data`
+- `sourceContext` soporta `clientIpAddress`, `clientUserAgent` y `receivedAt`
+- `Lead` ya no deduplica solo por `owner + client`; ahora usa `attribution_key = lower(ctwaClid)`
+- `CompleteRegistration` sigue siendo unico por `owner + client`
+- `event_id` de `Lead` y `qualified_lead` quedo unificado con `sha256 hex`
+
+Archivos principales:
+
+- `src/meta-conversions.ts`
+- `src/meta-conversions-store.ts`
+- `src/meta-conversions-worker.ts`
+- `src/meta-source-context.ts`
+- `src/server.ts`
+- `src/types.ts`
+- `db/migrations/20260318_meta_conversions_v2.sql`
+- `docs/README_META_CAPI_CTWA.md`
+
+Supabase real:
+
+- se aplico la migracion `20260318_meta_conversions_v2.sql`
+- `meta_conversion_outbox.attribution_key` ya existe
+- `enqueue_meta_qualified_leads(...)` fue validada en remoto
+- hubo que ajustar la funcion SQL para usar `extensions.digest(...)`
+  porque en este proyecto `pgcrypto` esta instalado en schema `extensions`
+  y no en `public`
+- ese ajuste tambien quedo reflejado en el archivo de migracion del repo
+
+Pruebas reales contra Supabase:
+
+- enqueue real de `Lead` OK
+- mismo `ctwa_clid` no duplica
+- `ctwa_clid` distinto genera otro `Lead`
+- las filas de prueba del outbox se limpiaron despues de validar
+
+Validacion local:
+
+- `npm test -- tests/meta-conversions.test.ts tests/server.test.ts` OK
+- `70 passed`
+- `npm run build` OK
+
+Pendiente para test publicitario real:
+
+- cargar `META_ACCESS_TOKEN` y levantar un worker Meta activo
+- usar `META_TEST_EVENT_CODE`
+- revisar Events Manager despues del dispatch
+- si Meta devuelve algo raro, contrastarlo contra `docs/README_META_CAPI_CTWA.md`
+
 ## Si otro chat retoma este repo
 
 Checklist:
 
 1. leer `README.md`
 2. leer `OPERATIONS.md`
-3. confirmar branch `codex/back-local`
+3. confirmar branch `main`
 4. confirmar remoto `AEyeSecurity/scrap2`
 5. definir variables de entorno
 6. correr `npm test`

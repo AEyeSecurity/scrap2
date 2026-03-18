@@ -8,6 +8,7 @@ export interface MetaConversionsWorkerOptions {
   leaseSeconds: number;
   maxAttempts: number;
   scanLimit: number;
+  batchSize?: number;
 }
 
 function isRetryableError(error: unknown): error is MetaConversionsDispatchError {
@@ -25,6 +26,7 @@ export class MetaConversionsWorker {
   private readonly leaseSeconds: number;
   private readonly maxAttempts: number;
   private readonly scanLimit: number;
+  private readonly batchSize: number;
   private timer: NodeJS.Timeout | null = null;
   private active = 0;
   private pumping = false;
@@ -41,6 +43,7 @@ export class MetaConversionsWorker {
     this.leaseSeconds = Math.max(1, Math.trunc(options.leaseSeconds));
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.scanLimit = Math.max(1, Math.trunc(options.scanLimit));
+    this.batchSize = Math.max(1, Math.trunc(options.batchSize ?? 1));
   }
 
   start(): void {
@@ -76,13 +79,19 @@ export class MetaConversionsWorker {
     try {
       await this.store.scanForQualifiedLeads(this.scanLimit);
 
-      while (!this.stopping && this.active < this.concurrency) {
+      let claimedInThisPump = 0;
+      while (
+        !this.stopping &&
+        this.active < this.concurrency &&
+        claimedInThisPump < this.batchSize
+      ) {
         const lease = await this.store.leaseNextEvent(this.leaseSeconds, this.maxAttempts);
         if (!lease) {
           break;
         }
 
         this.active += 1;
+        claimedInThisPump += 1;
         void this.processLease(lease).finally(() => {
           this.active -= 1;
           if (!this.stopping) {

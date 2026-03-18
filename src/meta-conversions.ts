@@ -7,6 +7,8 @@ export interface MetaConversionsConfig {
   datasetId: string;
   accessToken: string;
   apiVersion: string;
+  actionSource: 'system_generated' | 'business_messaging';
+  batchSize: number;
   testEventCode?: string;
 }
 
@@ -48,6 +50,27 @@ function normalizeExternalId(ownerId: string, clientId: string): string {
   return sha256(`${ownerId}:${clientId}`.toLowerCase());
 }
 
+function normalizeActionSource(value: string | undefined): 'system_generated' | 'business_messaging' {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized || normalized === 'system_generated') {
+    return 'system_generated';
+  }
+  if (normalized === 'business_messaging') {
+    return 'business_messaging';
+  }
+
+  throw new Error('META_ACTION_SOURCE must be system_generated or business_messaging');
+}
+
+function normalizeBatchSize(value: string | undefined): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return 1;
+  }
+
+  return Math.trunc(parsed);
+}
+
 function normalizeApiVersion(value: string): string {
   const normalized = value.trim();
   if (!/^v\d+\.\d+$/.test(normalized)) {
@@ -73,6 +96,8 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   const datasetId = env.META_DATASET_ID?.trim() ?? '';
   const accessToken = env.META_ACCESS_TOKEN?.trim() ?? '';
   const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v23.0');
+  const actionSource = normalizeActionSource(env.META_ACTION_SOURCE);
+  const batchSize = normalizeBatchSize(env.META_BATCH_SIZE);
   const testEventCode = env.META_TEST_EVENT_CODE?.trim() || undefined;
 
   if (!enabled) {
@@ -81,6 +106,8 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
       datasetId,
       accessToken,
       apiVersion,
+      actionSource,
+      batchSize,
       ...(testEventCode ? { testEventCode } : {})
     };
   }
@@ -94,13 +121,15 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
     datasetId,
     accessToken,
     apiVersion,
+    actionSource,
+    batchSize,
     ...(testEventCode ? { testEventCode } : {})
   };
 }
 
 export function buildMetaConversionsRequestBody(
   lease: MetaConversionLease,
-  config: Pick<MetaConversionsConfig, 'testEventCode'>
+  config: Pick<MetaConversionsConfig, 'testEventCode' | 'actionSource'>
 ): MetaConversionsRequestBody {
   const normalizedPhone = normalizePhoneForMeta(lease.phoneE164);
   const sourceContext = extractMetaSourceContext(lease.sourcePayload);
@@ -108,7 +137,10 @@ export function buildMetaConversionsRequestBody(
   const ownerLabel = typeof lease.sourcePayload.owner_label === 'string' ? lease.sourcePayload.owner_label : null;
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
-    external_id: [normalizeExternalId(lease.ownerId, lease.clientId)]
+    external_id: [normalizeExternalId(lease.ownerId, lease.clientId)],
+    ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {}),
+    ...(sourceContext?.clientIpAddress ? { client_ip_address: sourceContext.clientIpAddress } : {}),
+    ...(sourceContext?.clientUserAgent ? { client_user_agent: sourceContext.clientUserAgent } : {})
   };
 
   const customData = Object.fromEntries(
@@ -123,6 +155,9 @@ export function buildMetaConversionsRequestBody(
       message_sid: sourceContext?.messageSid ?? null,
       account_sid: sourceContext?.accountSid ?? null,
       profile_name: sourceContext?.profileName ?? null,
+      client_ip_address: sourceContext?.clientIpAddress ?? null,
+      client_user_agent: sourceContext?.clientUserAgent ?? null,
+      received_at: sourceContext?.receivedAt ?? null,
       owner_key: ownerKey,
       owner_label: ownerLabel,
       username: lease.username
@@ -133,7 +168,7 @@ export function buildMetaConversionsRequestBody(
     event_name: lease.metaEventName,
     event_time: Math.floor(new Date(lease.eventTime).getTime() / 1000),
     event_id: lease.eventId,
-    action_source: 'system_generated',
+    action_source: config.actionSource,
     user_data: userData,
     ...(Object.keys(customData).length > 0 ? { custom_data: customData } : {})
   };

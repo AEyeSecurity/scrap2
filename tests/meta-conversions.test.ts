@@ -5,7 +5,12 @@ import {
   MetaConversionsDispatchError,
   MetaConversionsHttpDispatcher
 } from '../src/meta-conversions';
-import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conversions-store';
+import {
+  MetaConversionsStoreError,
+  SupabaseMetaConversionsStore,
+  type MetaConversionLease,
+  type MetaConversionsStore
+} from '../src/meta-conversions-store';
 import { buildStoredMetaSourcePayload, extractMetaSourceContext, isAttributableMetaSourceContext } from '../src/meta-source-context';
 import { MetaConversionsWorker } from '../src/meta-conversions-worker';
 import { createLogger } from '../src/logging';
@@ -72,7 +77,11 @@ function buildLease(overrides: Partial<MetaConversionLease> = {}): MetaConversio
         waId: '5491138294407',
         messageSid: 'SM123',
         accountSid: 'AC123',
-        profileName: 'Raul Rodriguez'
+      profileName: 'Raul Rodriguez'
+      ,
+      clientIpAddress: '181.45.10.22',
+      clientUserAgent: 'Mozilla/5.0',
+      receivedAt: '2026-03-17T09:58:00.000Z'
       }
     }),
     attempts: 1,
@@ -109,7 +118,10 @@ describe('meta source context helpers', () => {
       waId: null,
       messageSid: null,
       accountSid: null,
-      profileName: null
+      profileName: null,
+      clientIpAddress: null,
+      clientUserAgent: null,
+      receivedAt: null
     });
     expect(isAttributableMetaSourceContext(extractMetaSourceContext(payload))).toBe(true);
   });
@@ -117,7 +129,10 @@ describe('meta source context helpers', () => {
 
 describe('meta conversions dispatcher', () => {
   it('builds a Graph API payload with hashed user data', () => {
-    const body = buildMetaConversionsRequestBody(buildLease(), { testEventCode: 'TEST87269' });
+    const body = buildMetaConversionsRequestBody(buildLease(), {
+      testEventCode: 'TEST87269',
+      actionSource: 'system_generated'
+    });
     expect(body.test_event_code).toBe('TEST87269');
     expect(body.data).toHaveLength(1);
     expect(body.data[0]).toMatchObject({
@@ -126,9 +141,36 @@ describe('meta conversions dispatcher', () => {
       action_source: 'system_generated'
     });
     expect(body.data[0]).not.toHaveProperty('event_source_url');
-    expect((body.data[0].user_data as { ph?: string[]; external_id?: string[] }).ph?.[0]).toMatch(/^[a-f0-9]{64}$/);
-    expect((body.data[0].user_data as { ph?: string[]; external_id?: string[] }).external_id?.[0]).toMatch(
+    expect(
+      (
+        body.data[0].user_data as {
+          ph?: string[];
+          external_id?: string[];
+          ctwa_clid?: string;
+          client_ip_address?: string;
+          client_user_agent?: string;
+        }
+      ).ph?.[0]
+    ).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      (
+        body.data[0].user_data as {
+          ph?: string[];
+          external_id?: string[];
+          ctwa_clid?: string;
+          client_ip_address?: string;
+          client_user_agent?: string;
+        }
+      ).external_id?.[0]
+    ).toMatch(
       /^[a-f0-9]{64}$/
+    );
+    expect((body.data[0].user_data as { ctwa_clid?: string }).ctwa_clid).toBe('clid-123');
+    expect((body.data[0].user_data as { client_ip_address?: string }).client_ip_address).toBe('181.45.10.22');
+    expect((body.data[0].user_data as { client_user_agent?: string }).client_user_agent).toBe('Mozilla/5.0');
+    expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).ctwa_clid).toBe('clid-123');
+    expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).received_at).toBe(
+      '2026-03-17T09:58:00.000Z'
     );
   });
 
@@ -144,6 +186,8 @@ describe('meta conversions dispatcher', () => {
         datasetId: '900004339427467',
         accessToken: 'secret-token',
         apiVersion: 'v23.0',
+        actionSource: 'system_generated',
+        batchSize: 1,
         testEventCode: 'TEST87269'
       },
       fetchMock as unknown as typeof fetch
@@ -171,7 +215,9 @@ describe('meta conversions dispatcher', () => {
         enabled: true,
         datasetId: '900004339427467',
         accessToken: 'secret-token',
-        apiVersion: 'v23.0'
+        apiVersion: 'v23.0',
+        actionSource: 'system_generated',
+        batchSize: 1
       },
       fetchMock as unknown as typeof fetch
     );
@@ -190,6 +236,155 @@ describe('meta conversions dispatcher', () => {
         META_ACCESS_TOKEN: ''
       })
     ).toThrow(/META_DATASET_ID and META_ACCESS_TOKEN/i);
+  });
+
+  it('reads configurable action source and batch size from env', () => {
+    expect(
+      buildMetaConversionsConfigFromEnv({
+        META_ENABLED: 'true',
+        META_DATASET_ID: '900004339427467',
+        META_ACCESS_TOKEN: 'secret-token',
+        META_ACTION_SOURCE: 'business_messaging',
+        META_BATCH_SIZE: '3'
+      })
+    ).toMatchObject({
+      enabled: true,
+      actionSource: 'business_messaging',
+      batchSize: 3
+    });
+  });
+});
+
+describe('meta conversions store', () => {
+  it('stores lead attribution_key and stable event metadata from ctwa_clid', async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    const client = {
+      from: vi.fn().mockReturnValue({
+        insert
+      })
+    } as any;
+    const store = new SupabaseMetaConversionsStore(client);
+
+    await store.enqueueLead({
+      ownerId: 'owner-1',
+      clientId: 'client-1',
+      phoneE164: '+5491122334455',
+      ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+      sourceContext: {
+        ctwaClid: 'CLID-123',
+        referralSourceType: 'ad',
+        clientIpAddress: '181.45.10.22',
+        clientUserAgent: 'Mozilla/5.0',
+        receivedAt: '2026-03-17T09:58:00.000Z'
+      }
+    });
+
+    expect(client.from).toHaveBeenCalledWith('meta_conversion_outbox');
+    expect(insert).toHaveBeenCalledTimes(1);
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner_id: 'owner-1',
+        client_id: 'client-1',
+        event_stage: 'lead',
+        meta_event_name: 'Lead',
+        attribution_key: 'clid-123',
+        event_time: '2026-03-17T09:58:00.000Z',
+        phone_e164: '+5491122334455',
+        source_payload: expect.objectContaining({
+          ReferralCtwaClid: 'CLID-123',
+          ClientIpAddress: '181.45.10.22',
+          ClientUserAgent: 'Mozilla/5.0',
+          ReceivedAt: '2026-03-17T09:58:00.000Z'
+        })
+      })
+    );
+    const insertedLead = insert.mock.calls[0][0] as { event_id: string };
+    expect(insertedLead.event_id).toMatch(/^lead:[a-f0-9]{64}$/);
+  });
+
+  it('uses a different stable event id for a different ctwa_clid', async () => {
+    const insert = vi.fn().mockResolvedValue({ error: null });
+    const client = {
+      from: vi.fn().mockReturnValue({
+        insert
+      })
+    } as any;
+    const store = new SupabaseMetaConversionsStore(client);
+
+    await store.enqueueLead({
+      ownerId: 'owner-1',
+      clientId: 'client-1',
+      phoneE164: '+5491122334455',
+      ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+      sourceContext: {
+        ctwaClid: 'clid-123',
+        referralSourceType: 'ad'
+      }
+    });
+
+    await store.enqueueLead({
+      ownerId: 'owner-1',
+      clientId: 'client-1',
+      phoneE164: '+5491122334455',
+      ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+      sourceContext: {
+        ctwaClid: 'clid-456',
+        referralSourceType: 'ad'
+      }
+    });
+
+    const firstInsert = insert.mock.calls[0][0] as { event_id: string; attribution_key: string };
+    const secondInsert = insert.mock.calls[1][0] as { event_id: string; attribution_key: string };
+
+    expect(firstInsert.attribution_key).toBe('clid-123');
+    expect(secondInsert.attribution_key).toBe('clid-456');
+    expect(firstInsert.event_id).not.toBe(secondInsert.event_id);
+  });
+
+  it('treats duplicate lead inserts as a no-op when the database returns 23505', async () => {
+    const insert = vi.fn().mockResolvedValue({
+      error: { code: '23505', message: 'duplicate key value violates unique constraint' }
+    });
+    const client = {
+      from: vi.fn().mockReturnValue({
+        insert
+      })
+    } as any;
+    const store = new SupabaseMetaConversionsStore(client);
+
+    await expect(
+      store.enqueueLead({
+        ownerId: 'owner-1',
+        clientId: 'client-1',
+        phoneE164: '+5491122334455',
+        ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceType: 'ad'
+        }
+      })
+    ).resolves.toBeUndefined();
+  });
+
+  it('rejects attributable lead enqueue when ctwa_clid is missing', async () => {
+    const client = {
+      from: vi.fn()
+    } as any;
+    const store = new SupabaseMetaConversionsStore(client);
+
+    await expect(
+      store.enqueueLead({
+        ownerId: 'owner-1',
+        clientId: 'client-1',
+        phoneE164: '+5491122334455',
+        ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+        sourceContext: {
+          referralSourceType: 'ad'
+        }
+      })
+    ).rejects.toMatchObject<Partial<MetaConversionsStoreError>>({
+      code: 'VALIDATION'
+    });
   });
 });
 
