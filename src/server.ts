@@ -17,7 +17,6 @@ import {
   createMetaConversionsStoreFromEnv,
   type MetaConversionsStore
 } from './meta-conversions-store';
-import { isAttributableMetaSourceContext } from './meta-source-context';
 import { MetaConversionsWorker } from './meta-conversions-worker';
 import {
   createMastercrmUserStoreFromEnv,
@@ -53,7 +52,6 @@ import type {
   JobRequest,
   JobStoreEntry,
   LoginJobRequest,
-  MetaSourceContext,
   ServerConfig
 } from './types';
 
@@ -760,48 +758,6 @@ export function createServer(
     return cachedMetaConversionsStore;
   }
 
-  async function enqueueMetaLeadIfEligible(input: {
-    intake: { ownerId?: string; clientId?: string };
-    telefono: string;
-    ownerContext: { ownerKey: string; ownerLabel: string };
-    sourceContext?: MetaSourceContext;
-  }): Promise<void> {
-    if (!metaEnabled || !input.sourceContext || !isAttributableMetaSourceContext(input.sourceContext)) {
-      return;
-    }
-
-    if (!input.intake.ownerId || !input.intake.clientId) {
-      logger.warn(
-        {
-          ownerId: input.intake.ownerId,
-          clientId: input.intake.clientId
-        },
-        'Meta lead was eligible but intake did not return owner/client ids'
-      );
-      return;
-    }
-
-    try {
-      await getMetaConversionsStore().enqueueLead({
-        ownerId: input.intake.ownerId,
-        clientId: input.intake.clientId,
-        phoneE164: input.telefono,
-        ownerContext: input.ownerContext,
-        sourceContext: input.sourceContext,
-        eventTime: input.sourceContext.receivedAt ?? undefined
-      });
-    } catch (error) {
-      logger.error(
-        {
-          error,
-          ownerId: input.intake.ownerId,
-          clientId: input.intake.clientId
-        },
-        'Could not enqueue Meta lead conversion'
-      );
-    }
-  }
-
   const internalQueue =
     queue ??
     new JobManager({
@@ -1204,13 +1160,6 @@ export function createServer(
         telefono: payload.telefono,
         ownerContext: payload.ownerContext,
         ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {})
-      });
-
-      await enqueueMetaLeadIfEligible({
-        intake,
-        telefono: payload.telefono,
-        ownerContext: payload.ownerContext,
-        sourceContext: payload.sourceContext
       });
 
       return reply.code(200).send({

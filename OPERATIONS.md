@@ -736,6 +736,30 @@ Validacion real con Meta:
 - eso valida que el pipeline actual ya puede enviar un `Lead` de prueba sin error de API
 - falta solo la lectura manual de `Test Events` para revisar warnings de calidad o recomendaciones de Meta
 
+Actualizacion `2026-03-25`:
+
+- el `Lead` inmediato desde `POST /users/intake-pending` quedo desactivado
+- la nueva regla publicitaria pasa a ser:
+  - intake atribuible por ad
+  - primer `report_daily_snapshots` observado despues de ese intake
+  - `cargado_hoy >= 10000` en ese primer snapshot
+- el evento visible en Meta sigue siendo `Lead`
+- internamente se sigue usando `event_stage = qualified_lead`
+- la migracion nueva es:
+  - `db/migrations/20260325_meta_lead_first_day_10k.sql`
+- la migracion limpia de la outbox los eventos pendientes/viejos de `lead` y `qualified_lead`
+- despues del deploy hay que validar en Meta `Test Events` solo un `Lead` tardio y no el `Lead` inmediato anterior
+- validacion real en Supabase:
+  - migracion aplicada OK
+  - `select public.enqueue_meta_qualified_leads(20)` devolvio `0`
+  - control de candidatos:
+    - `total_candidates = 1`
+    - `qualifying_candidates = 0`
+  - conclusion:
+    - la logica nueva ya esta activa en base
+    - hoy no hay ningun caso real con `primer dia observado + cargado_hoy >= 10000`
+    - por eso todavia no hay evento nuevo para mirar en Meta bajo esta regla
+
 ## Si otro chat retoma este repo
 
 Checklist:

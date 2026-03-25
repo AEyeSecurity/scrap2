@@ -4,18 +4,16 @@ Esta guia documenta la integracion `v2` entre `n8n/Twilio`, `scrap2`, `Supabase`
 
 ## Objetivo
 
-La integracion envia dos conversiones server-side a Meta:
+La integracion envia un unico evento server-side a Meta:
 
-- `Lead`: cuando entra un intake atribuible a un anuncio CTWA.
-- `CompleteRegistration`: cuando ese mismo lead ya tiene identidad activa y aparece por primera vez con `cargado_mes > 0` en `report_daily_snapshots`.
-
-No se implementa todavia el umbral `>= 5000`. Eso queda fuera de esta version.
+- `Lead`: cuando un intake atribuible a un anuncio CTWA tiene un primer dia observado con `cargado_hoy >= 10000`.
 
 Cambios relevantes de esta version:
 
 - `ctwa_clid` se envia en `user_data`.
-- `Lead` ya no se deduplica solo por `owner_id + client_id`; admite multiples leads por cliente si entraron con `ctwa_clid` distintos.
-- `CompleteRegistration` mantiene una sola conversion por `owner + cliente`, pero toma el intake atribuible mas reciente previo a la primera calificacion observada.
+- ya no se encola `Lead` en el intake inmediato;
+- el evento visible en Meta sigue llamandose `Lead`, pero se dispara de forma tardia;
+- la calificacion usa el primer snapshot observado despues del intake atribuible y exige `cargado_hoy >= 10000`;
 - `META_ACTION_SOURCE` queda configurable, con default conservador `system_generated`.
 - `sourceContext` soporta opcionalmente `clientIpAddress`, `clientUserAgent` y `receivedAt`.
 
@@ -43,32 +41,31 @@ Cambios relevantes de esta version:
    - `sourceContext`
 4. `scrap2` persiste el intake con `intake_pending_cliente_v4`.
 5. El backend guarda la metadata de CTWA en `owner_client_events.payload`.
-6. Si el intake es atribuible (`ReferralSourceType = ad` y `ReferralCtwaClid` presente), el backend encola un `Lead` en `meta_conversion_outbox`.
-7. El worker de Meta consume la outbox y envia el evento al Graph API.
-8. En paralelo, el worker escanea candidatos de `qualified_lead` usando:
-   - `owner_client_links.status = assigned`
-   - `owner_client_identities.is_active = true`
-   - primer `report_daily_snapshots.cargado_mes > 0`
+6. El intake no encola un `Lead` inmediato.
+7. En paralelo, el worker escanea candidatos usando:
+   - primer `report_daily_snapshots` observado despues del intake atribuible
+   - `cargado_hoy >= 10000` en ese primer snapshot
    - ultimo intake atribuible anterior o igual a ese momento
-9. Si se cumple eso, se encola y envia `CompleteRegistration`.
+8. Si se cumple eso, se encola un evento interno `qualified_lead` pero con `meta_event_name = Lead`.
+9. El worker de Meta consume la outbox y envia ese `Lead` al Graph API.
 
 ## Reglas de atribucion
 
-- `Lead` solo se encola cuando:
+- Un intake es atribuible cuando:
   - `ReferralSourceType = ad`
   - `ctwaClid` existe
-- `Lead.attribution_key = lower(ctwaClid)`
-- para el mismo `owner + client`, un `ctwaClid` nuevo genera un `Lead` nuevo
-- `CompleteRegistration` se envia una sola vez por `owner + client`
-- el `source_payload` de `CompleteRegistration` sale del intake atribuible mas reciente ocurrido antes o en el momento de la primera calificacion observada
+- El `Lead` visible en Meta se encola solo cuando:
+  - existe un intake atribuible para ese `owner + client`
+  - el primer snapshot observado despues de ese intake tiene `cargado_hoy >= 10000`
+- El evento interno usa `event_stage = qualified_lead`, pero el nombre enviado a Meta es `Lead`.
+- Se envia una sola vez por `owner + client`.
+- El `source_payload` sale del intake atribuible mas reciente ocurrido antes o en el momento del primer snapshot observado.
 
 ## Semantica de `event_time`
 
 - `Lead.event_time`:
-  - usa `sourceContext.receivedAt` si llega y es valido
-  - si no, usa el momento del enqueue server-side
-- `CompleteRegistration.event_time`:
-  - usa `created_at` del primer `report_daily_snapshots` con `cargado_mes > 0`
+  - usa `created_at` del primer `report_daily_snapshots` observado despues del intake atribuible
+  - solo se envia si en ese snapshot `cargado_hoy >= 10000`
   - representa el primer momento observado por reportes, no necesariamente la hora exacta de la primera carga real
 
 ## Componentes
@@ -173,8 +170,11 @@ Etapas:
 
 Unicidad:
 
-- `Lead`: unico por `owner_id + client_id + event_stage + attribution_key`
-- `qualified_lead`: unico por `owner_id + client_id + event_stage`
+- `Lead` inmediato:
+  - queda desactivado logicamente en el backend
+- `qualified_lead`:
+  - sigue siendo unico por `owner_id + client_id + event_stage`
+  - se usa para representar el `Lead` tardio visible en Meta
 
 ## Workflow de n8n
 
@@ -197,7 +197,7 @@ Para Meta:
 
 1. Abrir `CRM RL -> Probar eventos`.
 2. Mantener abierta la pantalla.
-3. Verificar eventos `Lead` y `CompleteRegistration` con `META_TEST_EVENT_CODE`.
+3. Verificar que aparezca un unico `Lead` con `META_TEST_EVENT_CODE`.
 4. Confirmar que `ctwa_clid` aparezca dentro de `user_data`.
 
 Para Supabase:
@@ -227,8 +227,7 @@ Validado en codigo:
 
 - `ctwa_clid` presente en `user_data`
 - `clientIpAddress` y `clientUserAgent` se envian solo cuando existen
-- `Lead` usa `receivedAt` si viene en `sourceContext`
-- backend compila y tests cubren payload de Meta + intake atribuible
+- backend compila y tests cubren payload de Meta + persistencia del intake atribuible sin enqueue inmediato
 
 Validado contra Meta real el `2026-03-18`:
 
@@ -248,11 +247,25 @@ Validado contra Meta real el `2026-03-18`:
 
 Observacion:
 
-- esta validacion confirma recepcion correcta del `Lead` en Meta sin errores de API
+- esta validacion confirma recepcion correcta del `Lead` en Meta sin errores de API para la version anterior
 - la revision fina de warnings o match quality debe hacerse en `Test Events` / `Events Manager`
+
+Validado en Supabase real el `2026-03-25` para la nueva regla:
+
+- migracion aplicada:
+  - `db/migrations/20260325_meta_lead_first_day_10k.sql`
+- `enqueue_meta_qualified_leads(20)` devolvio `0`
+- conteo de control:
+  - `total_candidates = 1`
+  - `qualifying_candidates = 0`
+- conclusion:
+  - la regla nueva ya esta activa en base
+  - hoy no existe ningun caso real cuyo primer snapshot observado tenga `cargado_hoy >= 10000`
+  - por eso todavia no hay un `Lead` nuevo para revisar en Meta con este criterio
 
 ## Pendientes operativos
 
 - publicar el workflow de `n8n`
 - redeploy del contenedor backend con las nuevas variables
+- validar un caso real donde el primer snapshot observado tenga `cargado_hoy >= 10000`
 - si se quiere probar `business_messaging`, hacerlo primero en modo test
