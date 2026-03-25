@@ -87,7 +87,7 @@ $env:MASTERCRM_STAFF_LINK_PASSWORD="..."
 $env:META_ENABLED="true"
 $env:META_DATASET_ID="900004339427467"
 $env:META_ACCESS_TOKEN="..."
-$env:META_ACTION_SOURCE="business_messaging"
+$env:META_ACTION_SOURCE="system_generated"
 $env:META_LEAD_ENABLED="true"
 $env:META_PURCHASE_ENABLED="true"
 $env:META_VALUE_SIGNAL_THRESHOLD="10000"
@@ -130,6 +130,16 @@ Campos descartados explícitamente en este flujo:
 - Pixel/browser events
 - email
 - nombre/apellido
+
+Compatibilidad real del asset:
+
+- `system_generated` esta validado con Meta y hoy es el modo funcional por defecto
+- `business_messaging` solo debe activarse si tambien se configuran:
+  - `META_PAGE_ID` o
+  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+- en ese modo, Meta exige:
+  - `messaging_channel = whatsapp`
+  - `LeadSubmitted` en lugar de `Lead` para la señal de intención
 
 Auditoria:
 

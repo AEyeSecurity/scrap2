@@ -132,7 +132,7 @@ describe('meta conversions dispatcher', () => {
   it('builds a Graph API payload with hashed user data', () => {
     const body = buildMetaConversionsRequestBody(buildLease(), {
       testEventCode: 'TEST87269',
-      actionSource: 'business_messaging',
+      actionSource: 'system_generated',
       valueSignalCurrency: 'ARS'
     });
     expect(body.test_event_code).toBe('TEST87269');
@@ -140,7 +140,7 @@ describe('meta conversions dispatcher', () => {
     expect(body.data[0]).toMatchObject({
       event_name: 'Lead',
       event_id: 'lead:test',
-      action_source: 'business_messaging'
+      action_source: 'system_generated'
     });
     expect(body.data[0]).not.toHaveProperty('event_source_url');
     expect(
@@ -188,7 +188,7 @@ describe('meta conversions dispatcher', () => {
         }
       }),
       {
-        actionSource: 'business_messaging',
+        actionSource: 'system_generated',
         valueSignalCurrency: 'ARS'
       }
     );
@@ -196,7 +196,7 @@ describe('meta conversions dispatcher', () => {
     expect(body.data[0]).toMatchObject({
       event_name: 'Purchase',
       event_id: 'value_signal:test',
-      action_source: 'business_messaging',
+      action_source: 'system_generated',
       custom_data: {
         value: 12500,
         currency: 'ARS',
@@ -219,7 +219,7 @@ describe('meta conversions dispatcher', () => {
         datasetId: '900004339427467',
         accessToken: 'secret-token',
         apiVersion: 'v23.0',
-        actionSource: 'business_messaging',
+        actionSource: 'system_generated',
         batchSize: 1,
         valueSignalCurrency: 'ARS',
         testEventCode: 'TEST87269'
@@ -251,7 +251,7 @@ describe('meta conversions dispatcher', () => {
         datasetId: '900004339427467',
         accessToken: 'secret-token',
         apiVersion: 'v23.0',
-        actionSource: 'business_messaging',
+        actionSource: 'system_generated',
         batchSize: 1,
         valueSignalCurrency: 'ARS'
       },
@@ -288,6 +288,32 @@ describe('meta conversions dispatcher', () => {
       actionSource: 'business_messaging',
       batchSize: 3,
       valueSignalCurrency: 'ARS'
+    });
+  });
+
+  it('requires page_id or whatsapp_business_account_id for business_messaging', () => {
+    expect(() =>
+      buildMetaConversionsRequestBody(buildLease(), {
+        actionSource: 'business_messaging',
+        valueSignalCurrency: 'ARS'
+      })
+    ).toThrow(/META_PAGE_ID or META_WHATSAPP_BUSINESS_ACCOUNT_ID/i);
+  });
+
+  it('maps Lead to LeadSubmitted for business_messaging and includes whatsapp ids', () => {
+    const body = buildMetaConversionsRequestBody(buildLease(), {
+      actionSource: 'business_messaging',
+      valueSignalCurrency: 'ARS',
+      whatsappBusinessAccountId: '1234567890'
+    });
+
+    expect(body.data[0]).toMatchObject({
+      event_name: 'LeadSubmitted',
+      action_source: 'business_messaging',
+      messaging_channel: 'whatsapp',
+      user_data: {
+        whatsapp_business_account_id: '1234567890'
+      }
     });
   });
 });

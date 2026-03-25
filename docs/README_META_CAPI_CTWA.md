@@ -108,7 +108,7 @@ Unicidad:
       "event_name": "Lead",
       "event_time": 1774453513,
       "event_id": "lead:<sha256hex(owner_id:client_id:ctwa_clid)>",
-      "action_source": "business_messaging",
+      "action_source": "system_generated",
       "user_data": {
         "ph": ["<sha256hex(phone_digits)>"],
         "external_id": ["<sha256hex(owner_id:client_id)>"],
@@ -143,7 +143,7 @@ Unicidad:
       "event_name": "Purchase",
       "event_time": 1774454044,
       "event_id": "value_signal:<sha256hex(owner_id:client_id)>",
-      "action_source": "business_messaging",
+      "action_source": "system_generated",
       "user_data": {
         "ph": ["<sha256hex(phone_digits)>"],
         "external_id": ["<sha256hex(owner_id:client_id)>"],
@@ -182,7 +182,9 @@ META_DATASET_ID=900004339427467
 META_ACCESS_TOKEN=tu_token_de_meta
 META_API_VERSION=v23.0
 META_TEST_EVENT_CODE=
-META_ACTION_SOURCE=business_messaging
+META_ACTION_SOURCE=system_generated
+META_PAGE_ID=
+META_WHATSAPP_BUSINESS_ACCOUNT_ID=
 META_LEAD_ENABLED=true
 META_PURCHASE_ENABLED=true
 META_VALUE_SIGNAL_THRESHOLD=10000
@@ -199,9 +201,12 @@ META_WORKER_SCAN_LIMIT=100
 Notas:
 
 - `META_ACTION_SOURCE` soporta:
-  - `business_messaging`
   - `system_generated`
-- `business_messaging` es el default de `v3`.
+  - `business_messaging`
+- El modo funcional verificado hoy es `system_generated`.
+- `business_messaging` requiere ademas:
+  - `META_PAGE_ID` o `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+- Cuando `business_messaging` se usa para eventos de intención, el payload se adapta a `LeadSubmitted` porque Meta no acepta `Lead` en ese contexto.
 - `META_VALUE_SIGNAL_WINDOW_MODE` hoy solo soporta:
   - `intake_local_day`
 
@@ -295,3 +300,20 @@ order by created_at asc;
    - `response_status`
    - `response_body`
    - `fbtrace_id`
+
+## Resultado real validado
+
+Con `TEST82610` se validó exitosamente en Meta:
+
+- `Lead`
+  - `event_id = lead:f979e13221e395d8fece1e855d5b3e5ffa32523e0803ffb55817dd1d420d38d7`
+  - `fbtrace_id = AzMQc_5IGAg8jckotXXcXop`
+- `Purchase`
+  - `event_id = value_signal:63df5368fb35dd4077964355a724c695dffa0098dd58bfa430df9f38d3e54898`
+  - `fbtrace_id = AQigW0al4FPWUBv2NmUbvyE`
+
+Intentos reales rechazados por Meta:
+
+- `business_messaging` sin `messaging_channel`
+- `business_messaging` con `Lead`
+- `business_messaging` sin `page_id` o `whatsapp_business_account_id`

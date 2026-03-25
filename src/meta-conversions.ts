@@ -10,6 +10,8 @@ export interface MetaConversionsConfig {
   actionSource: 'system_generated' | 'business_messaging';
   batchSize: number;
   valueSignalCurrency: string;
+  pageId?: string;
+  whatsappBusinessAccountId?: string;
   testEventCode?: string;
 }
 
@@ -116,9 +118,11 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   const datasetId = env.META_DATASET_ID?.trim() ?? '';
   const accessToken = env.META_ACCESS_TOKEN?.trim() ?? '';
   const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v23.0');
-  const actionSource = normalizeActionSource(env.META_ACTION_SOURCE || 'business_messaging');
+  const actionSource = normalizeActionSource(env.META_ACTION_SOURCE || 'system_generated');
   const batchSize = normalizeBatchSize(env.META_BATCH_SIZE);
   const valueSignalCurrency = normalizeCurrency(env.META_VALUE_SIGNAL_CURRENCY);
+  const pageId = env.META_PAGE_ID?.trim() || undefined;
+  const whatsappBusinessAccountId = env.META_WHATSAPP_BUSINESS_ACCOUNT_ID?.trim() || undefined;
   const testEventCode = env.META_TEST_EVENT_CODE?.trim() || undefined;
 
   if (!enabled) {
@@ -130,6 +134,8 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
       actionSource,
       batchSize,
       valueSignalCurrency,
+      ...(pageId ? { pageId } : {}),
+      ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
       ...(testEventCode ? { testEventCode } : {})
     };
   }
@@ -146,6 +152,8 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
     actionSource,
     batchSize,
     valueSignalCurrency,
+    ...(pageId ? { pageId } : {}),
+    ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
     ...(testEventCode ? { testEventCode } : {})
   };
 }
@@ -167,7 +175,10 @@ function readNumericSourcePayloadField(payload: Record<string, unknown>, key: st
 
 export function buildMetaConversionsRequestBody(
   lease: MetaConversionLease,
-  config: Pick<MetaConversionsConfig, 'testEventCode' | 'actionSource' | 'valueSignalCurrency'>
+  config: Pick<
+    MetaConversionsConfig,
+    'testEventCode' | 'actionSource' | 'valueSignalCurrency' | 'pageId' | 'whatsappBusinessAccountId'
+  >
 ): MetaConversionsRequestBody {
   const normalizedPhone = normalizePhoneForMeta(lease.phoneE164);
   const sourceContext = extractMetaSourceContext(lease.sourcePayload);
@@ -188,6 +199,32 @@ export function buildMetaConversionsRequestBody(
       'Purchase event is missing first_day_cargado_hoy in source payload',
       false,
       undefined
+    );
+  }
+
+  const resolvedEventName =
+    config.actionSource === 'business_messaging' && lease.metaEventName === 'Lead'
+      ? 'LeadSubmitted'
+      : lease.metaEventName;
+
+  const businessMessagingUserData =
+    config.actionSource === 'business_messaging'
+      ? {
+          ...(config.pageId ? { page_id: config.pageId } : {}),
+          ...(config.whatsappBusinessAccountId
+            ? { whatsapp_business_account_id: config.whatsappBusinessAccountId }
+            : {})
+        }
+      : {};
+
+  if (
+    config.actionSource === 'business_messaging' &&
+    !('page_id' in businessMessagingUserData) &&
+    !('whatsapp_business_account_id' in businessMessagingUserData)
+  ) {
+    throw new MetaConversionsDispatchError(
+      'business_messaging requires META_PAGE_ID or META_WHATSAPP_BUSINESS_ACCOUNT_ID',
+      false
     );
   }
 
@@ -222,11 +259,15 @@ export function buildMetaConversionsRequestBody(
   );
 
   const event = {
-    event_name: lease.metaEventName,
+    event_name: resolvedEventName,
     event_time: Math.floor(new Date(lease.eventTime).getTime() / 1000),
     event_id: lease.eventId,
     action_source: config.actionSource,
-    user_data: userData,
+    ...(config.actionSource === 'business_messaging' ? { messaging_channel: 'whatsapp' } : {}),
+    user_data: {
+      ...userData,
+      ...businessMessagingUserData
+    },
     ...(Object.keys(customData).length > 0 ? { custom_data: customData } : {})
   };
 
