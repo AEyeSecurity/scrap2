@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import type { MetaConversionsDispatcher, MetaConversionsDispatchError } from './meta-conversions';
-import type { MetaConversionLease, MetaConversionsStore } from './meta-conversions-store';
+import type { MetaConversionLease, MetaConversionsStore, MetaValueSignalScanOptions } from './meta-conversions-store';
 
 export interface MetaConversionsWorkerOptions {
   concurrency: number;
@@ -8,6 +8,8 @@ export interface MetaConversionsWorkerOptions {
   leaseSeconds: number;
   maxAttempts: number;
   scanLimit: number;
+  scanEnabled?: boolean;
+  scanOptions?: MetaValueSignalScanOptions;
   batchSize?: number;
 }
 
@@ -26,6 +28,8 @@ export class MetaConversionsWorker {
   private readonly leaseSeconds: number;
   private readonly maxAttempts: number;
   private readonly scanLimit: number;
+  private readonly scanEnabled: boolean;
+  private readonly scanOptions: MetaValueSignalScanOptions;
   private readonly batchSize: number;
   private timer: NodeJS.Timeout | null = null;
   private active = 0;
@@ -43,6 +47,8 @@ export class MetaConversionsWorker {
     this.leaseSeconds = Math.max(1, Math.trunc(options.leaseSeconds));
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.scanLimit = Math.max(1, Math.trunc(options.scanLimit));
+    this.scanEnabled = options.scanEnabled ?? true;
+    this.scanOptions = options.scanOptions ?? {};
     this.batchSize = Math.max(1, Math.trunc(options.batchSize ?? 1));
   }
 
@@ -77,7 +83,9 @@ export class MetaConversionsWorker {
 
     this.pumping = true;
     try {
-      await this.store.scanForQualifiedLeads(this.scanLimit);
+      if (this.scanEnabled) {
+        await this.store.scanForValueSignals(this.scanLimit, this.scanOptions);
+      }
 
       let claimedInThisPump = 0;
       while (
@@ -110,11 +118,18 @@ export class MetaConversionsWorker {
 
   private async processLease(lease: MetaConversionLease): Promise<void> {
     try {
-      await this.dispatcher.dispatch(lease);
-      await this.store.markSent(lease.id);
+      const result = await this.dispatcher.dispatch(lease);
+      await this.store.markSent({
+        id: lease.id,
+        requestPayload: result.requestBody,
+        responseStatus: result.responseStatus,
+        responseBody: result.responseBody,
+        fbtraceId: result.fbtraceId
+      });
       return;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const dispatchError = error as Partial<MetaConversionsDispatchError> | null;
       this.logger.warn(
         {
           error: message,
@@ -126,12 +141,51 @@ export class MetaConversionsWorker {
       );
 
       if (lease.attempts >= lease.maxAttempts || !isRetryableError(error)) {
-        await this.store.markFailed(lease.id, message);
+        await this.store.markFailed({
+          id: lease.id,
+          error: message,
+          requestPayload:
+            dispatchError && typeof dispatchError === 'object' && 'requestBody' in dispatchError
+              ? dispatchError.requestBody
+              : undefined,
+          responseStatus:
+            dispatchError && typeof dispatchError === 'object' && 'statusCode' in dispatchError
+              ? (dispatchError.statusCode as number | undefined)
+              : undefined,
+          responseBody:
+            dispatchError && typeof dispatchError === 'object' && 'responseBody' in dispatchError
+              ? dispatchError.responseBody
+              : undefined,
+          fbtraceId:
+            dispatchError && typeof dispatchError === 'object' && 'fbtraceId' in dispatchError
+              ? (dispatchError.fbtraceId as string | null | undefined)
+              : undefined
+        });
         return;
       }
 
       const retryAfterSeconds = lease.attempts >= lease.maxAttempts - 1 ? 300 : 60;
-      await this.store.markRetry(lease.id, message, retryAfterSeconds);
+      await this.store.markRetry({
+        id: lease.id,
+        error: message,
+        retryAfterSeconds,
+        requestPayload:
+          dispatchError && typeof dispatchError === 'object' && 'requestBody' in dispatchError
+            ? dispatchError.requestBody
+            : undefined,
+        responseStatus:
+          dispatchError && typeof dispatchError === 'object' && 'statusCode' in dispatchError
+            ? (dispatchError.statusCode as number | undefined)
+            : undefined,
+        responseBody:
+          dispatchError && typeof dispatchError === 'object' && 'responseBody' in dispatchError
+            ? dispatchError.responseBody
+            : undefined,
+        fbtraceId:
+          dispatchError && typeof dispatchError === 'object' && 'fbtraceId' in dispatchError
+            ? (dispatchError.fbtraceId as string | null | undefined)
+            : undefined
+      });
     }
   }
 }

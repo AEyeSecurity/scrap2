@@ -9,11 +9,19 @@ export interface MetaConversionsConfig {
   apiVersion: string;
   actionSource: 'system_generated' | 'business_messaging';
   batchSize: number;
+  valueSignalCurrency: string;
   testEventCode?: string;
 }
 
+export interface MetaDispatchResult {
+  requestBody: MetaConversionsRequestBody;
+  responseStatus: number;
+  responseBody: unknown;
+  fbtraceId: string | null;
+}
+
 export interface MetaConversionsDispatcher {
-  dispatch(lease: MetaConversionLease): Promise<void>;
+  dispatch(lease: MetaConversionLease): Promise<MetaDispatchResult>;
 }
 
 export class MetaConversionsDispatchError extends Error {
@@ -21,6 +29,9 @@ export class MetaConversionsDispatchError extends Error {
     message: string,
     public readonly retryable: boolean,
     public readonly statusCode?: number,
+    public readonly requestBody?: MetaConversionsRequestBody,
+    public readonly responseBody?: unknown,
+    public readonly fbtraceId?: string | null,
     options?: ErrorOptions
   ) {
     super(message, options);
@@ -71,6 +82,15 @@ function normalizeBatchSize(value: string | undefined): number {
   return Math.trunc(parsed);
 }
 
+function normalizeCurrency(value: string | undefined): string {
+  const normalized = value?.trim().toUpperCase() || 'ARS';
+  if (!/^[A-Z]{3}$/.test(normalized)) {
+    throw new Error('META_VALUE_SIGNAL_CURRENCY must be a 3-letter ISO currency code');
+  }
+
+  return normalized;
+}
+
 function normalizeApiVersion(value: string): string {
   const normalized = value.trim();
   if (!/^v\d+\.\d+$/.test(normalized)) {
@@ -96,8 +116,9 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   const datasetId = env.META_DATASET_ID?.trim() ?? '';
   const accessToken = env.META_ACCESS_TOKEN?.trim() ?? '';
   const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v23.0');
-  const actionSource = normalizeActionSource(env.META_ACTION_SOURCE);
+  const actionSource = normalizeActionSource(env.META_ACTION_SOURCE || 'business_messaging');
   const batchSize = normalizeBatchSize(env.META_BATCH_SIZE);
+  const valueSignalCurrency = normalizeCurrency(env.META_VALUE_SIGNAL_CURRENCY);
   const testEventCode = env.META_TEST_EVENT_CODE?.trim() || undefined;
 
   if (!enabled) {
@@ -108,6 +129,7 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
       apiVersion,
       actionSource,
       batchSize,
+      valueSignalCurrency,
       ...(testEventCode ? { testEventCode } : {})
     };
   }
@@ -123,13 +145,29 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
     apiVersion,
     actionSource,
     batchSize,
+    valueSignalCurrency,
     ...(testEventCode ? { testEventCode } : {})
   };
 }
 
+function readNumericSourcePayloadField(payload: Record<string, unknown>, key: string): number | null {
+  const value = payload[key];
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
 export function buildMetaConversionsRequestBody(
   lease: MetaConversionLease,
-  config: Pick<MetaConversionsConfig, 'testEventCode' | 'actionSource'>
+  config: Pick<MetaConversionsConfig, 'testEventCode' | 'actionSource' | 'valueSignalCurrency'>
 ): MetaConversionsRequestBody {
   const normalizedPhone = normalizePhoneForMeta(lease.phoneE164);
   const sourceContext = extractMetaSourceContext(lease.sourcePayload);
@@ -138,13 +176,29 @@ export function buildMetaConversionsRequestBody(
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
     external_id: [normalizeExternalId(lease.ownerId, lease.clientId)],
-    ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {}),
-    ...(sourceContext?.clientIpAddress ? { client_ip_address: sourceContext.clientIpAddress } : {}),
-    ...(sourceContext?.clientUserAgent ? { client_user_agent: sourceContext.clientUserAgent } : {})
+    ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {})
   };
+
+  const monetaryValue = lease.metaEventName === 'Purchase'
+    ? readNumericSourcePayloadField(lease.sourcePayload, 'first_day_cargado_hoy')
+    : null;
+
+  if (lease.metaEventName === 'Purchase' && monetaryValue == null) {
+    throw new MetaConversionsDispatchError(
+      'Purchase event is missing first_day_cargado_hoy in source payload',
+      false,
+      undefined
+    );
+  }
 
   const customData = Object.fromEntries(
     Object.entries({
+      ...(lease.metaEventName === 'Purchase'
+        ? {
+            value: monetaryValue,
+            currency: config.valueSignalCurrency
+          }
+        : {}),
       ctwa_clid: sourceContext?.ctwaClid ?? null,
       referral_source_id: sourceContext?.referralSourceId ?? null,
       referral_source_url: sourceContext?.referralSourceUrl ?? null,
@@ -155,12 +209,15 @@ export function buildMetaConversionsRequestBody(
       message_sid: sourceContext?.messageSid ?? null,
       account_sid: sourceContext?.accountSid ?? null,
       profile_name: sourceContext?.profileName ?? null,
-      client_ip_address: sourceContext?.clientIpAddress ?? null,
-      client_user_agent: sourceContext?.clientUserAgent ?? null,
       received_at: sourceContext?.receivedAt ?? null,
       owner_key: ownerKey,
       owner_label: ownerLabel,
-      username: lease.username
+      username: lease.username,
+      first_day_report_date:
+        typeof lease.sourcePayload.first_day_report_date === 'string'
+          ? lease.sourcePayload.first_day_report_date
+          : null,
+      first_day_cargado_hoy: monetaryValue
     }).filter(([, value]) => value != null)
   );
 
@@ -185,11 +242,12 @@ export class MetaConversionsHttpDispatcher implements MetaConversionsDispatcher 
     private readonly fetchImpl: typeof fetch = fetch
   ) {}
 
-  async dispatch(lease: MetaConversionLease): Promise<void> {
+  async dispatch(lease: MetaConversionLease): Promise<MetaDispatchResult> {
     if (!this.config.enabled) {
       throw new MetaConversionsDispatchError('Meta conversions are disabled', false);
     }
 
+    const requestBody = buildMetaConversionsRequestBody(lease, this.config);
     const response = await this.fetchImpl(
       `https://graph.facebook.com/${this.config.apiVersion}/${this.config.datasetId}/events`,
       {
@@ -198,13 +256,16 @@ export class MetaConversionsHttpDispatcher implements MetaConversionsDispatcher 
           Authorization: `Bearer ${this.config.accessToken}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify(buildMetaConversionsRequestBody(lease, this.config))
+        body: JSON.stringify(requestBody)
       }
     ).catch((error) => {
       throw new MetaConversionsDispatchError(
         error instanceof Error ? error.message : 'Could not reach Meta Graph API',
         true,
         undefined,
+        requestBody,
+        undefined,
+        null,
         error instanceof Error ? { cause: error } : undefined
       );
     });
@@ -218,14 +279,28 @@ export class MetaConversionsHttpDispatcher implements MetaConversionsDispatcher 
         parsedBody = rawBody;
       }
     }
+    const fbtraceId =
+      parsedBody && typeof parsedBody === 'object' && 'fbtrace_id' in parsedBody
+        ? String((parsedBody as { fbtrace_id?: unknown }).fbtrace_id ?? '')
+        : null;
 
     if (!response.ok) {
       const summary = summarizeErrorBody(parsedBody);
       throw new MetaConversionsDispatchError(
         `Meta Graph API rejected the event (${response.status}): ${summary}`,
         response.status >= 500,
-        response.status
+        response.status,
+        requestBody,
+        parsedBody,
+        fbtraceId
       );
     }
+
+    return {
+      requestBody,
+      responseStatus: response.status,
+      responseBody: parsedBody,
+      fbtraceId
+    };
   }
 }

@@ -9,6 +9,8 @@ import {
   MetaConversionsStoreError,
   SupabaseMetaConversionsStore,
   type MetaConversionLease,
+  type MetaDispatchPersistenceInput,
+  type MetaFailurePersistenceInput,
   type MetaConversionsStore
 } from '../src/meta-conversions-store';
 import { buildStoredMetaSourcePayload, extractMetaSourceContext, isAttributableMetaSourceContext } from '../src/meta-source-context';
@@ -17,9 +19,9 @@ import { createLogger } from '../src/logging';
 
 class FakeMetaConversionsStore implements MetaConversionsStore {
   public scanned: number[] = [];
-  public retries: Array<{ id: string; error: string; retryAfterSeconds: number }> = [];
-  public failed: Array<{ id: string; error: string }> = [];
-  public sent: string[] = [];
+  public retries: Array<MetaFailurePersistenceInput & { retryAfterSeconds: number }> = [];
+  public failed: MetaFailurePersistenceInput[] = [];
+  public sent: MetaDispatchPersistenceInput[] = [];
   public leases: MetaConversionLease[] = [];
 
   async enqueueLead(_input: {
@@ -32,7 +34,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     // not used here
   }
 
-  async scanForQualifiedLeads(limit: number): Promise<number> {
+  async scanForValueSignals(limit: number): Promise<number> {
     this.scanned.push(limit);
     return 0;
   }
@@ -41,16 +43,16 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     return this.leases.shift() ?? null;
   }
 
-  async markSent(id: string): Promise<void> {
-    this.sent.push(id);
+  async markSent(input: MetaDispatchPersistenceInput): Promise<void> {
+    this.sent.push(input);
   }
 
-  async markRetry(id: string, error: string, retryAfterSeconds: number): Promise<void> {
-    this.retries.push({ id, error, retryAfterSeconds });
+  async markRetry(input: MetaFailurePersistenceInput & { retryAfterSeconds: number }): Promise<void> {
+    this.retries.push(input);
   }
 
-  async markFailed(id: string, error: string): Promise<void> {
-    this.failed.push({ id, error });
+  async markFailed(input: MetaFailurePersistenceInput): Promise<void> {
+    this.failed.push(input);
   }
 }
 
@@ -77,11 +79,10 @@ function buildLease(overrides: Partial<MetaConversionLease> = {}): MetaConversio
         waId: '5491138294407',
         messageSid: 'SM123',
         accountSid: 'AC123',
-      profileName: 'Raul Rodriguez'
-      ,
-      clientIpAddress: '181.45.10.22',
-      clientUserAgent: 'Mozilla/5.0',
-      receivedAt: '2026-03-17T09:58:00.000Z'
+        profileName: 'Raul Rodriguez',
+        clientIpAddress: '181.45.10.22',
+        clientUserAgent: 'Mozilla/5.0',
+        receivedAt: '2026-03-17T09:58:00.000Z'
       }
     }),
     attempts: 1,
@@ -131,14 +132,15 @@ describe('meta conversions dispatcher', () => {
   it('builds a Graph API payload with hashed user data', () => {
     const body = buildMetaConversionsRequestBody(buildLease(), {
       testEventCode: 'TEST87269',
-      actionSource: 'system_generated'
+      actionSource: 'business_messaging',
+      valueSignalCurrency: 'ARS'
     });
     expect(body.test_event_code).toBe('TEST87269');
     expect(body.data).toHaveLength(1);
     expect(body.data[0]).toMatchObject({
       event_name: 'Lead',
       event_id: 'lead:test',
-      action_source: 'system_generated'
+      action_source: 'business_messaging'
     });
     expect(body.data[0]).not.toHaveProperty('event_source_url');
     expect(
@@ -147,8 +149,6 @@ describe('meta conversions dispatcher', () => {
           ph?: string[];
           external_id?: string[];
           ctwa_clid?: string;
-          client_ip_address?: string;
-          client_user_agent?: string;
         }
       ).ph?.[0]
     ).toMatch(/^[a-f0-9]{64}$/);
@@ -158,20 +158,53 @@ describe('meta conversions dispatcher', () => {
           ph?: string[];
           external_id?: string[];
           ctwa_clid?: string;
-          client_ip_address?: string;
-          client_user_agent?: string;
         }
       ).external_id?.[0]
     ).toMatch(
       /^[a-f0-9]{64}$/
     );
     expect((body.data[0].user_data as { ctwa_clid?: string }).ctwa_clid).toBe('clid-123');
-    expect((body.data[0].user_data as { client_ip_address?: string }).client_ip_address).toBe('181.45.10.22');
-    expect((body.data[0].user_data as { client_user_agent?: string }).client_user_agent).toBe('Mozilla/5.0');
+    expect((body.data[0].user_data as Record<string, unknown>).client_ip_address).toBeUndefined();
+    expect((body.data[0].user_data as Record<string, unknown>).client_user_agent).toBeUndefined();
     expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).ctwa_clid).toBe('clid-123');
     expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).received_at).toBe(
       '2026-03-17T09:58:00.000Z'
     );
+    expect((body.data[0].custom_data as Record<string, unknown>).client_ip_address).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).client_user_agent).toBeUndefined();
+  });
+
+  it('builds Purchase payloads with real value and currency', () => {
+    const body = buildMetaConversionsRequestBody(
+      buildLease({
+        eventStage: 'value_signal',
+        metaEventName: 'Purchase',
+        eventId: 'value_signal:test',
+        username: 'leandro034',
+        sourcePayload: {
+          ...buildLease().sourcePayload,
+          first_day_report_date: '2026-03-25',
+          first_day_cargado_hoy: 12500
+        }
+      }),
+      {
+        actionSource: 'business_messaging',
+        valueSignalCurrency: 'ARS'
+      }
+    );
+
+    expect(body.data[0]).toMatchObject({
+      event_name: 'Purchase',
+      event_id: 'value_signal:test',
+      action_source: 'business_messaging',
+      custom_data: {
+        value: 12500,
+        currency: 'ARS',
+        first_day_report_date: '2026-03-25',
+        first_day_cargado_hoy: 12500,
+        username: 'leandro034'
+      }
+    });
   });
 
   it('posts events to Meta Graph API and includes the test event code', async () => {
@@ -186,14 +219,15 @@ describe('meta conversions dispatcher', () => {
         datasetId: '900004339427467',
         accessToken: 'secret-token',
         apiVersion: 'v23.0',
-        actionSource: 'system_generated',
+        actionSource: 'business_messaging',
         batchSize: 1,
+        valueSignalCurrency: 'ARS',
         testEventCode: 'TEST87269'
       },
       fetchMock as unknown as typeof fetch
     );
 
-    await dispatcher.dispatch(buildLease());
+    const result = await dispatcher.dispatch(buildLease());
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -202,6 +236,7 @@ describe('meta conversions dispatcher', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({
       test_event_code: 'TEST87269'
     });
+    expect(result.responseStatus).toBe(200);
   });
 
   it('marks 5xx responses as retryable dispatch errors', async () => {
@@ -216,8 +251,9 @@ describe('meta conversions dispatcher', () => {
         datasetId: '900004339427467',
         accessToken: 'secret-token',
         apiVersion: 'v23.0',
-        actionSource: 'system_generated',
-        batchSize: 1
+        actionSource: 'business_messaging',
+        batchSize: 1,
+        valueSignalCurrency: 'ARS'
       },
       fetchMock as unknown as typeof fetch
     );
@@ -250,7 +286,8 @@ describe('meta conversions dispatcher', () => {
     ).toMatchObject({
       enabled: true,
       actionSource: 'business_messaging',
-      batchSize: 3
+      batchSize: 3,
+      valueSignalCurrency: 'ARS'
     });
   });
 });
@@ -393,7 +430,12 @@ describe('meta conversions worker', () => {
     const store = new FakeMetaConversionsStore();
     store.leases.push(buildLease({ id: 'meta-1' }));
     const dispatcher = {
-      dispatch: vi.fn().mockResolvedValue(undefined)
+      dispatch: vi.fn().mockResolvedValue({
+        requestBody: { data: [{ event_name: 'Lead' }] },
+        responseStatus: 200,
+        responseBody: { events_received: 1 },
+        fbtraceId: 'TRACE123'
+      })
     };
     const worker = new MetaConversionsWorker(store, dispatcher, createLogger('silent', false), {
       concurrency: 1,
@@ -409,7 +451,15 @@ describe('meta conversions worker', () => {
 
     expect(store.scanned[0]).toBe(25);
     expect(dispatcher.dispatch).toHaveBeenCalledTimes(1);
-    expect(store.sent).toEqual(['meta-1']);
+    expect(store.sent).toEqual([
+      {
+        id: 'meta-1',
+        requestPayload: { data: [{ event_name: 'Lead' }] },
+        responseStatus: 200,
+        responseBody: { events_received: 1 },
+        fbtraceId: 'TRACE123'
+      }
+    ]);
     expect(store.failed).toEqual([]);
     expect(store.retries).toEqual([]);
   });
@@ -437,11 +487,11 @@ describe('meta conversions worker', () => {
     await retryWorker.stop();
 
     expect(retryStore.retries).toEqual([
-      {
+      expect.objectContaining({
         id: 'meta-retry',
         error: 'temporary',
         retryAfterSeconds: 60
-      }
+      })
     ]);
 
     const failedStore = new FakeMetaConversionsStore();
@@ -465,6 +515,6 @@ describe('meta conversions worker', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     await failedWorker.stop();
 
-    expect(failedStore.failed).toEqual([{ id: 'meta-failed', error: 'bad request' }]);
+    expect(failedStore.failed).toEqual([expect.objectContaining({ id: 'meta-failed', error: 'bad request' })]);
   });
 });

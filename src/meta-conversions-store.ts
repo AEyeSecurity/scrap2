@@ -10,8 +10,16 @@ interface DatabaseErrorLike {
   message: string;
 }
 
-export type MetaConversionStage = 'lead' | 'qualified_lead';
-export type MetaConversionStatus = 'pending' | 'leased' | 'retry_wait' | 'sent' | 'failed';
+export type MetaConversionStage = 'lead' | 'qualified_lead' | 'value_signal';
+export type MetaConversionStatus =
+  | 'pending'
+  | 'leased'
+  | 'retry_wait'
+  | 'sent'
+  | 'failed'
+  | 'discarded'
+  | 'not_qualified'
+  | 'missing_data';
 
 export interface EnqueueMetaLeadInput {
   ownerId: string;
@@ -27,7 +35,7 @@ export interface MetaConversionLease {
   ownerId: string;
   clientId: string;
   eventStage: MetaConversionStage;
-  metaEventName: 'Lead' | 'CompleteRegistration';
+  metaEventName: 'Lead' | 'CompleteRegistration' | 'Purchase';
   eventId: string;
   eventTime: string;
   phoneE164: string | null;
@@ -37,13 +45,36 @@ export interface MetaConversionLease {
   maxAttempts: number;
 }
 
+export interface MetaDispatchPersistenceInput {
+  id: string;
+  requestPayload?: unknown;
+  responseStatus?: number;
+  responseBody?: unknown;
+  fbtraceId?: string | null;
+}
+
+export interface MetaRetryPersistenceInput extends MetaDispatchPersistenceInput {
+  error: string;
+  retryAfterSeconds: number;
+}
+
+export interface MetaFailurePersistenceInput extends MetaDispatchPersistenceInput {
+  error: string;
+}
+
+export interface MetaValueSignalScanOptions {
+  threshold?: number;
+  timezone?: string;
+  windowMode?: string;
+}
+
 export interface MetaConversionsStore {
   enqueueLead(input: EnqueueMetaLeadInput): Promise<void>;
-  scanForQualifiedLeads(limit: number): Promise<number>;
+  scanForValueSignals(limit: number, options?: MetaValueSignalScanOptions): Promise<number>;
   leaseNextEvent(leaseSeconds: number, maxAttempts: number): Promise<MetaConversionLease | null>;
-  markSent(id: string): Promise<void>;
-  markRetry(id: string, error: string, retryAfterSeconds: number): Promise<void>;
-  markFailed(id: string, error: string): Promise<void>;
+  markSent(input: MetaDispatchPersistenceInput): Promise<void>;
+  markRetry(input: MetaRetryPersistenceInput): Promise<void>;
+  markFailed(input: MetaFailurePersistenceInput): Promise<void>;
 }
 
 export class MetaConversionsStoreError extends Error {
@@ -62,7 +93,7 @@ type MetaOutboxLeaseRow = {
   owner_id: string;
   client_id: string;
   event_stage: MetaConversionStage;
-  meta_event_name: 'Lead' | 'CompleteRegistration';
+  meta_event_name: 'Lead' | 'CompleteRegistration' | 'Purchase';
   event_id: string;
   event_time: string;
   phone_e164: string | null;
@@ -106,6 +137,11 @@ function buildLeadAttributionKey(sourceContext: MetaSourceContext | null): strin
 function buildStableEventId(stage: MetaConversionStage, ownerId: string, clientId: string, attributionKey?: string | null): string {
   const parts = stage === 'lead' ? [ownerId, clientId, attributionKey ?? ''] : [ownerId, clientId];
   return `${stage}:${sha256hex(parts.join(':').toLowerCase())}`;
+}
+
+function stringifyErrorMessage(error: string): string {
+  const normalized = error.trim();
+  return normalized.length > 0 ? normalized : 'Unknown Meta conversion error';
 }
 
 function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): MetaConversionsStoreError {
@@ -177,6 +213,8 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
         event_time: normalizeEventTime(input.eventTime ?? normalizedSource.receivedAt ?? undefined),
         phone_e164: phoneE164,
         username: null,
+        qualification_reason: 'attributable_ctwa_intake',
+        qualified_at: normalizeEventTime(input.eventTime ?? normalizedSource.receivedAt ?? undefined),
         source_payload: buildStoredMetaSourcePayload({
           ownerContext: input.ownerContext,
           sourceContext: normalizedSource
@@ -192,13 +230,16 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
     }
   }
 
-  async scanForQualifiedLeads(limit: number): Promise<number> {
-    const { data, error } = await this.client.rpc('enqueue_meta_qualified_leads', {
-      p_limit: Math.max(1, Math.trunc(limit))
+  async scanForValueSignals(limit: number, options: MetaValueSignalScanOptions = {}): Promise<number> {
+    const { data, error } = await this.client.rpc('enqueue_meta_value_signals', {
+      p_limit: Math.max(1, Math.trunc(limit)),
+      ...(typeof options.threshold === 'number' ? { p_threshold: options.threshold } : {}),
+      ...(options.timezone ? { p_timezone: options.timezone } : {}),
+      ...(options.windowMode ? { p_window_mode: options.windowMode } : {})
     });
 
     if (error) {
-      throw mapPostgrestError(error, 'Could not enqueue qualified Meta leads');
+      throw mapPostgrestError(error, 'Could not enqueue Meta value signals');
     }
 
     return Number(data ?? 0);
@@ -222,7 +263,7 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
     return asLease(rows[0] as MetaOutboxLeaseRow);
   }
 
-  async markSent(id: string): Promise<void> {
+  async markSent(input: MetaDispatchPersistenceInput): Promise<void> {
     const { error } = await this.client
       .from('meta_conversion_outbox')
       .update({
@@ -230,42 +271,54 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
         sent_at: new Date().toISOString(),
         lease_until: null,
         next_retry_at: null,
-        last_error: null
+        last_error: null,
+        request_payload: input.requestPayload ?? null,
+        response_status: input.responseStatus ?? null,
+        response_body: input.responseBody ?? null,
+        fbtrace_id: input.fbtraceId ?? null
       })
-      .eq('id', normalizeUuid(id, 'id'));
+      .eq('id', normalizeUuid(input.id, 'id'));
 
     if (error) {
       throw mapPostgrestError(error, 'Could not mark Meta conversion as sent');
     }
   }
 
-  async markRetry(id: string, errorMessage: string, retryAfterSeconds: number): Promise<void> {
-    const nextRetryAt = new Date(Date.now() + Math.max(1, retryAfterSeconds) * 1000).toISOString();
+  async markRetry(input: MetaRetryPersistenceInput): Promise<void> {
+    const nextRetryAt = new Date(Date.now() + Math.max(1, input.retryAfterSeconds) * 1000).toISOString();
     const { error } = await this.client
       .from('meta_conversion_outbox')
       .update({
         status: 'retry_wait',
         lease_until: null,
         next_retry_at: nextRetryAt,
-        last_error: errorMessage
+        last_error: stringifyErrorMessage(input.error),
+        request_payload: input.requestPayload ?? null,
+        response_status: input.responseStatus ?? null,
+        response_body: input.responseBody ?? null,
+        fbtrace_id: input.fbtraceId ?? null
       })
-      .eq('id', normalizeUuid(id, 'id'));
+      .eq('id', normalizeUuid(input.id, 'id'));
 
     if (error) {
       throw mapPostgrestError(error, 'Could not mark Meta conversion for retry');
     }
   }
 
-  async markFailed(id: string, errorMessage: string): Promise<void> {
+  async markFailed(input: MetaFailurePersistenceInput): Promise<void> {
     const { error } = await this.client
       .from('meta_conversion_outbox')
       .update({
         status: 'failed',
         lease_until: null,
         next_retry_at: null,
-        last_error: errorMessage
+        last_error: stringifyErrorMessage(input.error),
+        request_payload: input.requestPayload ?? null,
+        response_status: input.responseStatus ?? null,
+        response_body: input.responseBody ?? null,
+        fbtrace_id: input.fbtraceId ?? null
       })
-      .eq('id', normalizeUuid(id, 'id'));
+      .eq('id', normalizeUuid(input.id, 'id'));
 
     if (error) {
       throw mapPostgrestError(error, 'Could not mark Meta conversion as failed');

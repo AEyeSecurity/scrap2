@@ -279,7 +279,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     this.leadInputs.push(input);
   }
 
-  async scanForQualifiedLeads(_limit: number): Promise<number> {
+  async scanForValueSignals(_limit: number): Promise<number> {
     return 0;
   }
 
@@ -287,15 +287,15 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     return null;
   }
 
-  async markSent(_id: string): Promise<void> {
+  async markSent(_input: { id: string }): Promise<void> {
     // no-op
   }
 
-  async markRetry(_id: string, _error: string, _retryAfterSeconds: number): Promise<void> {
+  async markRetry(_input: { id: string; error: string; retryAfterSeconds: number }): Promise<void> {
     // no-op
   }
 
-  async markFailed(_id: string, _error: string): Promise<void> {
+  async markFailed(_input: { id: string; error: string }): Promise<void> {
     // no-op
   }
 }
@@ -1642,7 +1642,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/intake-pending forwards sourceContext and does not enqueue an immediate Meta lead', async () => {
+  it('POST /users/intake-pending forwards sourceContext and enqueues an immediate Meta lead when attributable', async () => {
     const queue = new FakeQueue();
     const playerPhoneStore = new FakePlayerPhoneStore();
     const metaStore = new FakeMetaConversionsStore();
@@ -1714,6 +1714,75 @@ describe('server routes', () => {
         receivedAt: '2026-03-17T09:58:00.000Z'
       }
     });
+    expect(metaStore.leadInputs).toEqual([
+      {
+        ownerId: 'owner-1',
+        clientId: 'client-1',
+        phoneE164: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_001',
+          ownerLabel: 'Lucas 10'
+        },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceId: '6904268485256',
+          referralSourceUrl: 'https://fb.me/8cuWQu6gD',
+          referralHeadline: 'ROYAL LUCK',
+          referralBody: 'Quiero mi bono',
+          referralSourceType: 'ad',
+          waId: '5491138294407',
+          messageSid: 'SM123',
+          accountSid: 'AC123',
+          profileName: 'Raul Rodriguez',
+          clientIpAddress: '181.45.10.22',
+          clientUserAgent: 'Mozilla/5.0',
+          receivedAt: '2026-03-17T09:58:00.000Z'
+        },
+        eventTime: '2026-03-17T09:58:00.000Z'
+      }
+    ]);
+
+    await server.close();
+  });
+
+  it('POST /users/intake-pending does not enqueue a Meta lead when sourceContext is not attributable', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const metaStore = new FakeMetaConversionsStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore,
+        metaConversionsStore: metaStore,
+        metaEnabled: true,
+        metaWorkerEnabled: false
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/intake-pending',
+      payload: {
+        pagina: 'ASN',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_001',
+          ownerLabel: 'Lucas 10'
+        },
+        sourceContext: {
+          referralSourceType: 'organic',
+          waId: '5491138294407',
+          receivedAt: '2026-03-17T09:58:00.000Z'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
     expect(metaStore.leadInputs).toEqual([]);
 
     await server.close();

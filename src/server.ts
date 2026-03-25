@@ -18,6 +18,7 @@ import {
   type MetaConversionsStore
 } from './meta-conversions-store';
 import { MetaConversionsWorker } from './meta-conversions-worker';
+import { isAttributableMetaSourceContext } from './meta-source-context';
 import {
   createMastercrmUserStoreFromEnv,
   normalizeMastercrmNombre,
@@ -300,6 +301,15 @@ function parsePositiveIntegerEnv(input: string | undefined, fallback: number): n
   }
 
   return Math.trunc(parsed);
+}
+
+function parsePositiveNumberEnv(input: string | undefined, fallback: number): number {
+  const parsed = Number(input);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+
+  return parsed;
 }
 
 function parseListEnv(input: string | undefined, fallback: string[]): string[] {
@@ -695,6 +705,11 @@ export function createServer(
     process.env.META_DATASET_ID?.trim() && process.env.META_ACCESS_TOKEN?.trim() && hasSupabaseConfig
   );
   const metaEnabled = dependencies?.metaEnabled ?? (rawMetaEnabled && metaConfiguredFromEnv);
+  const metaLeadEnabled = parseBooleanEnv(process.env.META_LEAD_ENABLED) ?? true;
+  const metaPurchaseEnabled = parseBooleanEnv(process.env.META_PURCHASE_ENABLED) ?? true;
+  const metaValueSignalThreshold = parsePositiveNumberEnv(process.env.META_VALUE_SIGNAL_THRESHOLD, 10_000);
+  const metaValueSignalWindowMode = process.env.META_VALUE_SIGNAL_WINDOW_MODE?.trim() || 'intake_local_day';
+  const metaValueSignalTimezone = 'America/Argentina/Buenos_Aires';
   const metaWorkerEnabled = dependencies?.metaWorkerEnabled ?? metaEnabled;
   const metaWorkerConcurrency =
     dependencies?.metaWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.META_WORKER_CONCURRENCY, 2);
@@ -826,6 +841,12 @@ export function createServer(
       leaseSeconds: metaWorkerLeaseSeconds,
       maxAttempts: metaWorkerMaxAttempts,
       scanLimit: metaWorkerScanLimit,
+      scanEnabled: metaPurchaseEnabled,
+      scanOptions: {
+        threshold: metaValueSignalThreshold,
+        timezone: metaValueSignalTimezone,
+        windowMode: metaValueSignalWindowMode
+      },
       batchSize: metaWorkerBatchSize
     });
     metaWorker.start();
@@ -1161,6 +1182,36 @@ export function createServer(
         ownerContext: payload.ownerContext,
         ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {})
       });
+
+      if (
+        metaEnabled &&
+        metaLeadEnabled &&
+        intake.ownerId &&
+        intake.clientId &&
+        payload.sourceContext &&
+        isAttributableMetaSourceContext(payload.sourceContext)
+      ) {
+        try {
+          await getMetaConversionsStore().enqueueLead({
+            ownerId: intake.ownerId,
+            clientId: intake.clientId,
+            phoneE164: payload.telefono,
+            ownerContext: payload.ownerContext,
+            sourceContext: payload.sourceContext,
+            ...(payload.sourceContext.receivedAt ? { eventTime: payload.sourceContext.receivedAt } : {})
+          });
+        } catch (error) {
+          logger.warn(
+            {
+              error,
+              ownerId: intake.ownerId,
+              clientId: intake.clientId,
+              telefono: payload.telefono
+            },
+            'Meta attributable lead enqueue failed after intake persistence'
+          );
+        }
+      }
 
       return reply.code(200).send({
         status: 'ok',

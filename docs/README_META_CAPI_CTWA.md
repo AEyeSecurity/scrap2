@@ -1,127 +1,193 @@
 # Meta CAPI para Click-to-WhatsApp
 
-Esta guia documenta la integracion `v2` entre `n8n/Twilio`, `scrap2`, `Supabase` y el dataset de Meta para campanas `Click-to-WhatsApp`.
+Esta guia documenta la version `v3` de la integracion entre `n8n/Twilio`, `scrap2`, `Supabase` y Meta Conversions API para campañas `Click-to-WhatsApp`.
 
 ## Objetivo
 
-La integracion envia un unico evento server-side a Meta:
+La integracion envia dos señales server-side a Meta usando solo datos reales del flujo CTWA:
 
-- `Lead`: cuando un intake atribuible a un anuncio CTWA tiene un primer dia observado con `cargado_hoy >= 10000`.
+- `Lead`
+  - se encola inmediatamente cuando entra un intake atribuible a anuncio
+- `Purchase`
+  - se encola cuando el mismo dia local del intake (`America/Argentina/Buenos_Aires`) alcanza el umbral monetario configurado usando el maximo `cargado_hoy` observado de ese `report_date`
 
-Cambios relevantes de esta version:
+## Datos disponibles en este flujo
 
-- `ctwa_clid` se envia en `user_data`.
-- ya no se encola `Lead` en el intake inmediato;
-- el evento visible en Meta sigue llamandose `Lead`, pero se dispara de forma tardia;
-- la calificacion usa el primer snapshot observado despues del intake atribuible y exige `cargado_hoy >= 10000`;
-- `META_ACTION_SOURCE` queda configurable, con default conservador `system_generated`.
-- `sourceContext` soporta opcionalmente `clientIpAddress`, `clientUserAgent` y `receivedAt`.
+Se usan solo datos ya presentes en la operacion:
+
+- `ctwaClid`
+- `waId`
+- telefono del cliente
+- `owner_id`, `client_id`
+- `owner_key`, `owner_label`
+- metadata del anuncio:
+  - `ReferralSourceId`
+  - `ReferralSourceUrl`
+  - `ReferralHeadline`
+  - `ReferralBody`
+  - `ReferralSourceType`
+- `messageSid`
+- `accountSid`
+- `profileName`
+- snapshots diarios:
+  - `report_date`
+  - `cargado_hoy`
+  - `username`
+
+No se usan campos web inexistentes en este flujo:
+
+- `event_source_url`
+- `_fbp`
+- `_fbc`
+- pixel/browser events
+- cookies web
+- email
+- nombre/apellido estructurados
 
 ## Flujo
 
-1. `Twilio` recibe el mensaje inicial proveniente del anuncio.
-2. `n8n` extrae metadata de atribucion:
-   - `ReferralCtwaClid`
-   - `ReferralSourceId`
-   - `ReferralSourceUrl`
-   - `ReferralHeadline`
-   - `ReferralBody`
-   - `ReferralSourceType`
-   - `WaId`
-   - `MessageSid`
-   - `AccountSid`
-   - `ProfileName`
-   - `ClientIpAddress` opcional
-   - `ClientUserAgent` opcional
-   - `ReceivedAt` opcional
-3. `n8n` llama a `POST /users/intake-pending` con:
+1. `Twilio` recibe el mensaje inicial del anuncio.
+2. `n8n` llama a `POST /users/intake-pending` con:
    - `pagina`
    - `telefono`
    - `ownerContext`
    - `sourceContext`
-4. `scrap2` persiste el intake con `intake_pending_cliente_v4`.
-5. El backend guarda la metadata de CTWA en `owner_client_events.payload`.
-6. El intake no encola un `Lead` inmediato.
-7. En paralelo, el worker escanea candidatos usando:
-   - primer `report_daily_snapshots` observado despues del intake atribuible
-   - `cargado_hoy >= 10000` en ese primer snapshot
-   - ultimo intake atribuible anterior o igual a ese momento
-8. Si se cumple eso, se encola un evento interno `qualified_lead` pero con `meta_event_name = Lead`.
-9. El worker de Meta consume la outbox y envia ese `Lead` al Graph API.
+3. `scrap2` persiste el intake con `intake_pending_cliente_v4`.
+4. Si `sourceContext` es atribuible (`ReferralSourceType = ad` y `ctwaClid` presente), el backend encola un `Lead` inmediato en `meta_conversion_outbox`.
+5. En paralelo, el worker de Meta ejecuta `enqueue_meta_value_signals(...)`.
+6. Esa funcion SQL busca:
+   - el dia local del intake atribuible
+   - snapshots de ese mismo `report_date`
+   - el maximo `cargado_hoy` observado en ese dia
+7. Si ese valor supera el umbral configurado, se encola un `Purchase`.
+8. El worker consume la outbox y envia cada evento al dataset de Meta.
 
-## Reglas de atribucion
+## Reglas de negocio
 
-- Un intake es atribuible cuando:
-  - `ReferralSourceType = ad`
-  - `ctwaClid` existe
-- El `Lead` visible en Meta se encola solo cuando:
-  - existe un intake atribuible para ese `owner + client`
-  - el primer snapshot observado despues de ese intake tiene `cargado_hoy >= 10000`
-- El evento interno usa `event_stage = qualified_lead`, pero el nombre enviado a Meta es `Lead`.
-- Se envia una sola vez por `owner + client`.
-- El `source_payload` sale del intake atribuible mas reciente ocurrido antes o en el momento del primer snapshot observado.
+### `Lead`
 
-## Semantica de `event_time`
+Se encola cuando:
 
-- `Lead.event_time`:
-  - usa `created_at` del primer `report_daily_snapshots` observado despues del intake atribuible
-  - solo se envia si en ese snapshot `cargado_hoy >= 10000`
-  - representa el primer momento observado por reportes, no necesariamente la hora exacta de la primera carga real
+- `event_type = intake`
+- `ReferralSourceType = ad`
+- `ctwaClid` existe
 
-## Componentes
+Unicidad:
 
-- [src/meta-source-context.ts](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/src/meta-source-context.ts)
-- [src/meta-conversions.ts](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/src/meta-conversions.ts)
-- [src/meta-conversions-store.ts](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/src/meta-conversions-store.ts)
-- [src/meta-conversions-worker.ts](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/src/meta-conversions-worker.ts)
-- [db/migrations/20260317_meta_conversions.sql](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/db/migrations/20260317_meta_conversions.sql)
-- [db/migrations/20260318_meta_conversions_v2.sql](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/db/migrations/20260318_meta_conversions_v2.sql)
+- una vez por `owner_id + client_id + attribution_key(ctwa_clid)`
 
-## Contrato HTTP
+### `Purchase`
 
-`POST /users/intake-pending` acepta `sourceContext` opcional.
+Se encola cuando:
 
-Ejemplo:
+- existe al menos un intake atribuible
+- se toma el `report_date` local del intake en `America/Argentina/Buenos_Aires`
+- se calcula el maximo `cargado_hoy` observado en ese mismo dia
+- si ese valor es `>= META_VALUE_SIGNAL_THRESHOLD`, se encola
+
+Unicidad:
+
+- una vez por `owner_id + client_id`
+
+### Semantica de `event_time`
+
+- `Lead.event_time`
+  - usa `sourceContext.receivedAt` si viene
+  - si no, usa `now()`
+- `Purchase.event_time`
+  - usa `created_at` del snapshot que representa el maximo `cargado_hoy` del dia calificante
+
+## Payload enviado a Meta
+
+### `Lead`
 
 ```json
 {
-  "pagina": "ASN",
-  "telefono": "+5491199926171",
-  "ownerContext": {
-    "ownerKey": "asnlucas10:lucas10",
-    "ownerLabel": "Lucas10",
-    "actorAlias": "Lucas10",
-    "actorPhone": "+5493516549344"
-  },
-  "sourceContext": {
-    "ctwaClid": "clid-123",
-    "referralSourceId": "6904268485256",
-    "referralSourceUrl": "https://fb.me/8cuWQu6gD",
-    "referralHeadline": "ROYAL LUCK",
-    "referralBody": "Prueba Codex Meta",
-    "referralSourceType": "ad",
-    "waId": "5491199926171",
-    "messageSid": "SM123",
-    "accountSid": "AC123",
-    "profileName": "Codex Meta Test",
-    "clientIpAddress": "181.45.10.22",
-    "clientUserAgent": "Mozilla/5.0",
-    "receivedAt": "2026-03-18T12:00:00.000Z"
-  }
+  "data": [
+    {
+      "event_name": "Lead",
+      "event_time": 1774453513,
+      "event_id": "lead:<sha256hex(owner_id:client_id:ctwa_clid)>",
+      "action_source": "business_messaging",
+      "user_data": {
+        "ph": ["<sha256hex(phone_digits)>"],
+        "external_id": ["<sha256hex(owner_id:client_id)>"],
+        "ctwa_clid": "<ctwa_clid>"
+      },
+      "custom_data": {
+        "ctwa_clid": "<ctwa_clid>",
+        "referral_source_id": "<referral_source_id>",
+        "referral_source_url": "<referral_source_url>",
+        "referral_headline": "<referral_headline>",
+        "referral_body": "<referral_body>",
+        "referral_source_type": "ad",
+        "wa_id": "<wa_id>",
+        "message_sid": "<message_sid>",
+        "account_sid": "<account_sid>",
+        "profile_name": "<profile_name>",
+        "received_at": "<received_at>",
+        "owner_key": "<owner_key>",
+        "owner_label": "<owner_label>"
+      }
+    }
+  ]
+}
+```
+
+### `Purchase`
+
+```json
+{
+  "data": [
+    {
+      "event_name": "Purchase",
+      "event_time": 1774454044,
+      "event_id": "value_signal:<sha256hex(owner_id:client_id)>",
+      "action_source": "business_messaging",
+      "user_data": {
+        "ph": ["<sha256hex(phone_digits)>"],
+        "external_id": ["<sha256hex(owner_id:client_id)>"],
+        "ctwa_clid": "<ctwa_clid>"
+      },
+      "custom_data": {
+        "value": 10000,
+        "currency": "ARS",
+        "ctwa_clid": "<ctwa_clid>",
+        "referral_source_id": "<referral_source_id>",
+        "referral_source_url": "<referral_source_url>",
+        "referral_headline": "<referral_headline>",
+        "referral_body": "<referral_body>",
+        "referral_source_type": "ad",
+        "wa_id": "<wa_id>",
+        "message_sid": "<message_sid>",
+        "account_sid": "<account_sid>",
+        "profile_name": "<profile_name>",
+        "received_at": "<received_at>",
+        "owner_key": "<owner_key>",
+        "owner_label": "<owner_label>",
+        "username": "<username>",
+        "first_day_report_date": "2026-03-25",
+        "first_day_cargado_hoy": 10000
+      }
+    }
+  ]
 }
 ```
 
 ## Variables de entorno
-
-Agregar al contenedor/backend:
 
 ```dotenv
 META_ENABLED=true
 META_DATASET_ID=900004339427467
 META_ACCESS_TOKEN=tu_token_de_meta
 META_API_VERSION=v23.0
-META_TEST_EVENT_CODE=TEST87269
-META_ACTION_SOURCE=system_generated
+META_TEST_EVENT_CODE=
+META_ACTION_SOURCE=business_messaging
+META_LEAD_ENABLED=true
+META_PURCHASE_ENABLED=true
+META_VALUE_SIGNAL_THRESHOLD=10000
+META_VALUE_SIGNAL_CURRENCY=ARS
+META_VALUE_SIGNAL_WINDOW_MODE=intake_local_day
 META_BATCH_SIZE=1
 META_WORKER_CONCURRENCY=2
 META_WORKER_POLL_MS=1000
@@ -132,140 +198,100 @@ META_WORKER_SCAN_LIMIT=100
 
 Notas:
 
-- `META_ENABLED=false` desactiva completamente la integracion.
-- `META_TEST_EVENT_CODE` es opcional, pero conviene usarlo para pruebas.
-- `META_ACTION_SOURCE` permite:
-  - `system_generated`
+- `META_ACTION_SOURCE` soporta:
   - `business_messaging`
-- En esta version el default sigue siendo `system_generated`.
-- Si se quiere probar `business_messaging`, hacerlo siempre con `META_TEST_EVENT_CODE` y validacion manual en Events Manager.
-- `META_BATCH_SIZE` prepara batching futuro, pero el worker sigue despachando unitariamente en esta version.
-- El backend no manda `event_source_url` para CTWA puro.
+  - `system_generated`
+- `business_messaging` es el default de `v3`.
+- `META_VALUE_SIGNAL_WINDOW_MODE` hoy solo soporta:
+  - `intake_local_day`
 
-## Esquema en Supabase
+## Supabase
 
 Objetos principales:
 
-- tabla `public.meta_conversion_outbox`
-- funcion `public.intake_pending_cliente_v4(...)`
-- funcion `public.enqueue_meta_qualified_leads(...)`
-- funcion `public.claim_next_meta_conversion_outbox(...)`
+- `public.meta_conversion_outbox`
+- `public.intake_pending_cliente_v4(...)`
+- `public.enqueue_meta_value_signals(...)`
+- `public.claim_next_meta_conversion_outbox(...)`
 
-Estados de la outbox:
+Estados de outbox soportados:
 
 - `pending`
 - `leased`
 - `retry_wait`
 - `sent`
 - `failed`
+- `discarded`
+- `not_qualified`
+- `missing_data`
 
-Etapas:
+Stages internos:
 
 - `lead`
 - `qualified_lead`
+- `value_signal`
 
-`meta_conversion_outbox` ahora agrega:
+En `v3`, los eventos activos son:
 
-- `attribution_key`
+- `lead -> Lead`
+- `value_signal -> Purchase`
 
-Unicidad:
+## Auditoria minima
 
-- `Lead` inmediato:
-  - queda desactivado logicamente en el backend
-- `qualified_lead`:
-  - sigue siendo unico por `owner_id + client_id + event_stage`
-  - se usa para representar el `Lead` tardio visible en Meta
+`meta_conversion_outbox` registra:
 
-## Workflow de n8n
-
-El workflow operativo editado fuera del repo quedo en:
-
-- `C:\Users\Guille\Downloads\Wpp campania.json`
-
-Cambio esperado:
-
-- agregar una rama paralela despues de `Assign Agent %1`
-- `Assign Agent %1 -> Edit Fields1 -> HTTP Request15`
-- `HTTP Request15` debe llamar a `http://127.0.0.1:3000/users/intake-pending`
-- enviar `ownerContext` y `sourceContext`
-
-Este archivo no vive dentro del repo Git, asi que no se versiona automaticamente.
-
-## Validacion
-
-Para Meta:
-
-1. Abrir `CRM RL -> Probar eventos`.
-2. Mantener abierta la pantalla.
-3. Verificar que aparezca un unico `Lead` con `META_TEST_EVENT_CODE`.
-4. Confirmar que `ctwa_clid` aparezca dentro de `user_data`.
-
-Para Supabase:
-
-- revisar `owner_client_events.payload`
-- revisar `meta_conversion_outbox`
+- `request_payload`
+- `response_status`
+- `response_body`
+- `fbtrace_id`
+- `qualification_reason`
+- `discard_reason`
+- `qualified_at`
+- `qualification_report_date`
+- `qualification_value`
 
 Consultas utiles:
 
 ```sql
-select event_type, payload
-from public.owner_client_events
-where client_id = '...'
-order by created_at desc;
+select
+  id,
+  owner_id,
+  client_id,
+  event_stage,
+  meta_event_name,
+  event_id,
+  status,
+  response_status,
+  fbtrace_id,
+  qualification_reason,
+  qualification_report_date,
+  qualification_value,
+  sent_at,
+  last_error
+from public.meta_conversion_outbox
+where owner_id = '...'
+  and client_id = '...'
+order by created_at asc;
 ```
 
 ```sql
-select event_stage, meta_event_name, attribution_key, status, attempts, last_error, sent_at
-from public.meta_conversion_outbox
-where client_id = '...'
-order by created_at desc;
+select event_type, payload, created_at
+from public.owner_client_events
+where owner_id = '...'
+  and client_id = '...'
+order by created_at asc;
 ```
 
-## Estado probado
+## Validacion
 
-Validado en codigo:
-
-- `ctwa_clid` presente en `user_data`
-- `clientIpAddress` y `clientUserAgent` se envian solo cuando existen
-- backend compila y tests cubren payload de Meta + persistencia del intake atribuible sin enqueue inmediato
-
-Validado contra Meta real el `2026-03-18`:
-
-- test event code usado: `TEST87269`
-- `action_source = system_generated`
-- `event_name = Lead`
-- respuesta del Graph API:
-  - `HTTP 200`
-  - `events_received = 1`
-  - `messages = []`
-- `fbtrace_id = ARasLcKtl8KkMZ-x4-LjLdB`
-- el payload enviado incluyo:
-  - `ctwa_clid` dentro de `user_data`
-  - `client_ip_address` dentro de `user_data`
-  - `client_user_agent` dentro de `user_data`
-  - `test_event_code = TEST87269`
-
-Observacion:
-
-- esta validacion confirma recepcion correcta del `Lead` en Meta sin errores de API para la version anterior
-- la revision fina de warnings o match quality debe hacerse en `Test Events` / `Events Manager`
-
-Validado en Supabase real el `2026-03-25` para la nueva regla:
-
-- migracion aplicada:
-  - `db/migrations/20260325_meta_lead_first_day_10k.sql`
-- `enqueue_meta_qualified_leads(20)` devolvio `0`
-- conteo de control:
-  - `total_candidates = 1`
-  - `qualifying_candidates = 0`
-- conclusion:
-  - la regla nueva ya esta activa en base
-  - hoy no existe ningun caso real cuyo primer snapshot observado tenga `cargado_hoy >= 10000`
-  - por eso todavia no hay un `Lead` nuevo para revisar en Meta con este criterio
-
-## Pendientes operativos
-
-- publicar el workflow de `n8n`
-- redeploy del contenedor backend con las nuevas variables
-- validar un caso real donde el primer snapshot observado tenga `cargado_hoy >= 10000`
-- si se quiere probar `business_messaging`, hacerlo primero en modo test
+1. Configurar `META_TEST_EVENT_CODE`.
+2. Verificar en Meta Test Events:
+   - `Lead` inmediato al intake atribuible
+   - `Purchase` cuando exista valor calificante
+3. Confirmar `action_source`.
+4. Confirmar `value` y `currency` para `Purchase`.
+5. Confirmar en Supabase:
+   - outbox `sent`
+   - `response_status`
+   - `response_body`
+   - `fbtrace_id`

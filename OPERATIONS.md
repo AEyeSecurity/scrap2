@@ -57,6 +57,24 @@ Necesarias para el flujo CRM:
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `MASTERCRM_STAFF_LINK_PASSWORD`
 
+Necesarias para Meta CAPI CTWA V3:
+
+- `META_ENABLED`
+- `META_DATASET_ID`
+- `META_ACCESS_TOKEN`
+- `META_API_VERSION`
+- `META_ACTION_SOURCE`
+- `META_LEAD_ENABLED`
+- `META_PURCHASE_ENABLED`
+- `META_VALUE_SIGNAL_THRESHOLD`
+- `META_VALUE_SIGNAL_CURRENCY`
+- `META_VALUE_SIGNAL_WINDOW_MODE`
+- `META_WORKER_CONCURRENCY`
+- `META_WORKER_POLL_MS`
+- `META_WORKER_LEASE_SECONDS`
+- `META_WORKER_MAX_ATTEMPTS`
+- `META_WORKER_SCAN_LIMIT`
+
 No guardarlas en el repo.
 
 ## Levantar local
@@ -66,12 +84,74 @@ cd "C:\Guiga\CIT\Master CRM RL\scrap2"
 $env:SUPABASE_URL="..."
 $env:SUPABASE_SERVICE_ROLE_KEY="..."
 $env:MASTERCRM_STAFF_LINK_PASSWORD="..."
+$env:META_ENABLED="true"
+$env:META_DATASET_ID="900004339427467"
+$env:META_ACCESS_TOKEN="..."
+$env:META_ACTION_SOURCE="business_messaging"
+$env:META_LEAD_ENABLED="true"
+$env:META_PURCHASE_ENABLED="true"
+$env:META_VALUE_SIGNAL_THRESHOLD="10000"
+$env:META_VALUE_SIGNAL_CURRENCY="ARS"
+$env:META_VALUE_SIGNAL_WINDOW_MODE="intake_local_day"
 npm start -- server
 ```
 
 Backend esperado:
 
 - `http://127.0.0.1:3000`
+
+## Meta CAPI CTWA V3
+
+Semantica operativa:
+
+- `Lead`
+  - se encola inmediatamente desde `POST /users/intake-pending`
+  - solo si `sourceContext` es atribuible:
+    - `ReferralSourceType = ad`
+    - `ctwaClid` presente
+- `Purchase`
+  - se encola de forma asíncrona por worker
+  - usa `enqueue_meta_value_signals(...)`
+  - califica si el mismo dia local del intake (`America/Argentina/Buenos_Aires`) alcanza `META_VALUE_SIGNAL_THRESHOLD` usando el maximo `cargado_hoy` observado
+
+Payload enviado a Meta:
+
+- `ph`
+- `external_id`
+- `ctwa_clid`
+- metadata del anuncio disponible
+- `value` y `currency` solo en `Purchase`
+
+Campos descartados explícitamente en este flujo:
+
+- `_fbp`
+- `_fbc`
+- `event_source_url`
+- Pixel/browser events
+- email
+- nombre/apellido
+
+Auditoria:
+
+- tabla: `public.meta_conversion_outbox`
+- columnas relevantes:
+  - `request_payload`
+  - `response_status`
+  - `response_body`
+  - `fbtrace_id`
+  - `qualification_reason`
+  - `discard_reason`
+  - `qualification_report_date`
+  - `qualification_value`
+
+Checklist de verificación:
+
+1. `npm run build`
+2. `npm test -- tests/meta-conversions.test.ts tests/server.test.ts`
+3. aplicar migración `20260326_meta_ctwa_v3_lead_purchase.sql`
+4. levantar backend con `META_TEST_EVENT_CODE`
+5. verificar `Lead` y `Purchase` en Test Events
+6. verificar `sent`, `response_status` y `fbtrace_id` en `meta_conversion_outbox`
 
 ## Flujo CRM implementado
 
