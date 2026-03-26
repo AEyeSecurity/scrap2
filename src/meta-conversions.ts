@@ -117,7 +117,7 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   const enabled = ['1', 'true', 'yes', 'on'].includes((env.META_ENABLED ?? '').trim().toLowerCase());
   const datasetId = env.META_DATASET_ID?.trim() ?? '';
   const accessToken = env.META_ACCESS_TOKEN?.trim() ?? '';
-  const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v23.0');
+  const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v25.0');
   const actionSource = normalizeActionSource(env.META_ACTION_SOURCE || 'system_generated');
   const batchSize = normalizeBatchSize(env.META_BATCH_SIZE);
   const valueSignalCurrency = normalizeCurrency(env.META_VALUE_SIGNAL_CURRENCY);
@@ -230,6 +230,10 @@ export function buildMetaConversionsRequestBody(
 
   const customData = Object.fromEntries(
     Object.entries({
+      event_source: 'crm',
+      ...(resolvedEventName === 'Lead' || resolvedEventName === 'LeadSubmitted'
+        ? { lead_event_source: 'scrap2' }
+        : {}),
       ...(lease.metaEventName === 'Purchase'
         ? {
             value: monetaryValue,
@@ -263,6 +267,7 @@ export function buildMetaConversionsRequestBody(
     event_time: Math.floor(new Date(lease.eventTime).getTime() / 1000),
     event_id: lease.eventId,
     action_source: config.actionSource,
+    ...(sourceContext?.referralSourceUrl ? { event_source_url: sourceContext.referralSourceUrl } : {}),
     ...(config.actionSource === 'business_messaging' ? { messaging_channel: 'whatsapp' } : {}),
     user_data: {
       ...userData,

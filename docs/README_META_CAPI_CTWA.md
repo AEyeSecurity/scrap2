@@ -36,7 +36,6 @@ Se usan solo datos ya presentes en la operacion:
 
 No se usan campos web inexistentes en este flujo:
 
-- `event_source_url`
 - `_fbp`
 - `_fbc`
 - pixel/browser events
@@ -109,12 +108,15 @@ Unicidad:
       "event_time": 1774453513,
       "event_id": "lead:<sha256hex(owner_id:client_id:ctwa_clid)>",
       "action_source": "system_generated",
+      "event_source_url": "<referral_source_url>",
       "user_data": {
         "ph": ["<sha256hex(phone_digits)>"],
         "external_id": ["<sha256hex(owner_id:client_id)>"],
         "ctwa_clid": "<ctwa_clid>"
       },
       "custom_data": {
+        "event_source": "crm",
+        "lead_event_source": "scrap2",
         "ctwa_clid": "<ctwa_clid>",
         "referral_source_id": "<referral_source_id>",
         "referral_source_url": "<referral_source_url>",
@@ -144,12 +146,14 @@ Unicidad:
       "event_time": 1774454044,
       "event_id": "value_signal:<sha256hex(owner_id:client_id)>",
       "action_source": "system_generated",
+      "event_source_url": "<referral_source_url>",
       "user_data": {
         "ph": ["<sha256hex(phone_digits)>"],
         "external_id": ["<sha256hex(owner_id:client_id)>"],
         "ctwa_clid": "<ctwa_clid>"
       },
       "custom_data": {
+        "event_source": "crm",
         "value": 10000,
         "currency": "ARS",
         "ctwa_clid": "<ctwa_clid>",
@@ -178,9 +182,9 @@ Unicidad:
 
 ```dotenv
 META_ENABLED=true
-META_DATASET_ID=900004339427467
+META_DATASET_ID=2123208205169806
 META_ACCESS_TOKEN=tu_token_de_meta
-META_API_VERSION=v23.0
+META_API_VERSION=v25.0
 META_TEST_EVENT_CODE=
 META_ACTION_SOURCE=system_generated
 META_PAGE_ID=
@@ -209,6 +213,13 @@ Notas:
 - Cuando `business_messaging` se usa para eventos de intención, el payload se adapta a `LeadSubmitted` porque Meta no acepta `Lead` en ese contexto.
 - `META_VALUE_SIGNAL_WINDOW_MODE` hoy solo soporta:
   - `intake_local_day`
+
+## Dataset activo
+
+Dataset activo validado para produccion:
+
+- `META_DATASET_ID = 2123208205169806`
+- `META_API_VERSION = v25.0`
 
 ## Supabase
 
@@ -317,3 +328,12 @@ Intentos reales rechazados por Meta:
 - `business_messaging` sin `messaging_channel`
 - `business_messaging` con `Lead`
 - `business_messaging` sin `page_id` o `whatsapp_business_account_id`
+
+## Produccion
+
+Prueba real en modo produccion contra el dataset activo:
+
+- `Lead`
+- `Purchase`
+
+sin `test_event_code`, con `action_source = system_generated`.

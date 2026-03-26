@@ -140,9 +140,9 @@ describe('meta conversions dispatcher', () => {
     expect(body.data[0]).toMatchObject({
       event_name: 'Lead',
       event_id: 'lead:test',
-      action_source: 'system_generated'
+      action_source: 'system_generated',
+      event_source_url: 'https://fb.me/8cuWQu6gD'
     });
-    expect(body.data[0]).not.toHaveProperty('event_source_url');
     expect(
       (
         body.data[0].user_data as {
@@ -170,6 +170,8 @@ describe('meta conversions dispatcher', () => {
     expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).received_at).toBe(
       '2026-03-17T09:58:00.000Z'
     );
+    expect((body.data[0].custom_data as { event_source?: string }).event_source).toBe('crm');
+    expect((body.data[0].custom_data as { lead_event_source?: string }).lead_event_source).toBe('scrap2');
     expect((body.data[0].custom_data as Record<string, unknown>).client_ip_address).toBeUndefined();
     expect((body.data[0].custom_data as Record<string, unknown>).client_user_agent).toBeUndefined();
   });
@@ -197,7 +199,9 @@ describe('meta conversions dispatcher', () => {
       event_name: 'Purchase',
       event_id: 'value_signal:test',
       action_source: 'system_generated',
+      event_source_url: 'https://fb.me/8cuWQu6gD',
       custom_data: {
+        event_source: 'crm',
         value: 12500,
         currency: 'ARS',
         first_day_report_date: '2026-03-25',

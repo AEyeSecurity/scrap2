@@ -12,9 +12,9 @@ Remoto esperado:
 
 - `origin = https://github.com/AEyeSecurity/scrap2.git`
 
-Branch de trabajo usada en esta etapa:
+Branch principal usada en esta etapa:
 
-- `codex/back-local`
+- `main`
 
 Verificar antes de trabajar:
 
@@ -28,7 +28,7 @@ git status --short
 Push esperado:
 
 ```powershell
-git push -u origin codex/back-local
+git push origin main
 ```
 
 ## Rol del repo
@@ -85,8 +85,9 @@ $env:SUPABASE_URL="..."
 $env:SUPABASE_SERVICE_ROLE_KEY="..."
 $env:MASTERCRM_STAFF_LINK_PASSWORD="..."
 $env:META_ENABLED="true"
-$env:META_DATASET_ID="900004339427467"
+$env:META_DATASET_ID="2123208205169806"
 $env:META_ACCESS_TOKEN="..."
+$env:META_API_VERSION="v25.0"
 $env:META_ACTION_SOURCE="system_generated"
 $env:META_LEAD_ENABLED="true"
 $env:META_PURCHASE_ENABLED="true"
@@ -126,14 +127,22 @@ Campos descartados explícitamente en este flujo:
 
 - `_fbp`
 - `_fbc`
-- `event_source_url`
 - Pixel/browser events
 - email
 - nombre/apellido
 
+Campo adicional enviado cuando existe metadata de anuncio:
+
+- `event_source_url`
+  - se mapea desde `ReferralSourceUrl`
+
 Compatibilidad real del asset:
 
 - `system_generated` esta validado con Meta y hoy es el modo funcional por defecto
+- dataset CRM activo validado:
+  - `2123208205169806`
+- version de Graph API validada:
+  - `v25.0`
 - `business_messaging` solo debe activarse si tambien se configuran:
   - `META_PAGE_ID` o
   - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
@@ -162,6 +171,7 @@ Checklist de verificación:
 4. levantar backend con `META_TEST_EVENT_CODE`
 5. verificar `Lead` y `Purchase` en Test Events
 6. verificar `sent`, `response_status` y `fbtrace_id` en `meta_conversion_outbox`
+7. hacer una validacion final sin `META_TEST_EVENT_CODE` antes de cerrar produccion
 
 ## Flujo CRM implementado
 
