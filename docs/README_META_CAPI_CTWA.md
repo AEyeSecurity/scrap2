@@ -208,11 +208,19 @@ Notas:
   - `system_generated`
   - `business_messaging`
 - El modo funcional verificado hoy es `system_generated`.
+- En produccion para este dataset CRM, `business_messaging` queda fuera de alcance.
 - `business_messaging` requiere ademas:
   - `META_PAGE_ID` o `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
 - Cuando `business_messaging` se usa para eventos de intención, el payload se adapta a `LeadSubmitted` porque Meta no acepta `Lead` en ese contexto.
 - `META_VALUE_SIGNAL_WINDOW_MODE` hoy solo soporta:
   - `intake_local_day`
+- En el rollout productivo actual no deben existir:
+  - `META_TEST_EVENT_CODE`
+  - `META_PAGE_ID`
+  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+- En ServerCIT el deploy productivo usa como fuente de verdad:
+  - `C:\ServerCIT\services\megascrap\.env.production`
+  - `C:\ServerCIT\scripts\deploy_megascrap_from_main.ps1`
 
 ## Dataset activo
 
@@ -312,6 +320,34 @@ order by created_at asc;
    - `response_body`
    - `fbtrace_id`
 
+### Validacion productiva real
+
+Para cerrar produccion, la prueba debe salir del backend/worker real del servidor:
+
+1. Confirmar env productivo exacto:
+   - `META_ENABLED = true`
+   - `META_DATASET_ID = 2123208205169806`
+   - `META_API_VERSION = v25.0`
+   - `META_ACTION_SOURCE = system_generated`
+   - `META_LEAD_ENABLED = true`
+   - `META_PURCHASE_ENABLED = true`
+   - `META_VALUE_SIGNAL_WINDOW_MODE = intake_local_day`
+2. Confirmar que no existan:
+   - `META_TEST_EVENT_CODE`
+   - `META_PAGE_ID`
+   - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+3. Confirmar que Supabase responda:
+   - lectura de `meta_conversion_outbox`
+   - RPC `enqueue_meta_value_signals(...)`
+4. Disparar un intake atribuible real via `POST /users/intake-pending`.
+5. Confirmar `Lead` en outbox y luego `sent`.
+6. Confirmar `Purchase` via worker real y luego `sent`.
+7. Confirmar en ambos:
+   - `request_payload`
+   - `response_status`
+   - `response_body`
+   - `fbtrace_id`
+
 ## Resultado real validado
 
 Con `TEST82610` se validó exitosamente en Meta:
@@ -337,3 +373,36 @@ Prueba real en modo produccion contra el dataset activo:
 - `Purchase`
 
 sin `test_event_code`, con `action_source = system_generated`.
+
+Actualizacion validada el `2026-03-26` en ServerCIT:
+
+- deploy real de `scrap2-api` en commit `0538b9b`
+- env productivo endurecido con `.env.production` como source of truth
+- precheck real antes del redeploy:
+  - lectura de `meta_conversion_outbox`
+  - RPC `enqueue_meta_value_signals(...)`
+- `Lead` validado desde `POST /users/intake-pending` del backend real:
+  - outbox id: `03618bd3-d44f-4df1-873a-f7486eb18b37`
+  - event id:
+    - `lead:9a8e61f4048f18528bf0b1fde6a2853208fa406e19212a5091306140771815bb`
+  - `status = sent`
+  - `response_status = 200`
+  - `fbtrace_id = AsuLCso_1uA-TaMOYSejdl_`
+- payload confirmado para ese `Lead`:
+  - `action_source = system_generated`
+  - `event_source_url = https://wa.me/5491123456701?text=meta-smoke`
+  - `custom_data.event_source = crm`
+  - `custom_data.lead_event_source = scrap2`
+- `Purchase` validado con el worker real:
+  - outbox id: `1c653f7a-eb2f-4ee5-b694-e1c91582200b`
+  - event id:
+    - `value_signal:7eb57825214cb297946269a66dfd480fca64500224f9925873fef8c620717b83`
+  - `status = sent`
+  - `response_status = 200`
+  - `fbtrace_id = Aj7hwHAy1ZXW9UwLJiC-wFu`
+- payload confirmado para ese `Purchase`:
+  - `action_source = system_generated`
+  - `event_source_url = https://fb.me/6j8cikXYF`
+  - `custom_data.event_source = crm`
+  - `value = 35000`
+  - `currency = ARS`

@@ -77,6 +77,53 @@ Necesarias para Meta CAPI CTWA V3:
 
 No guardarlas en el repo.
 
+### Despliegue productivo en ServerCIT
+
+Fuente de verdad operativa para produccion:
+
+- host: `C:\ServerCIT\services\megascrap`
+- env productivo local del host:
+  - `C:\ServerCIT\services\megascrap\.env.production`
+- script de deploy del host:
+  - `C:\ServerCIT\scripts\deploy_megascrap_from_main.ps1`
+
+Regla actual:
+
+- el deploy ya no hereda variables del contenedor previo
+- el script siempre lee `.env.production`
+- `.env.production` sigue ignorado por Git
+
+Prechecks cerrados del script antes de recrear `scrap2-api`:
+
+- commit esperado en `origin/main`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `MASTERCRM_STAFF_LINK_PASSWORD`
+- `META_ACCESS_TOKEN`
+- valores exactos para el rollout:
+  - `META_ENABLED = true`
+  - `META_DATASET_ID = 2123208205169806`
+  - `META_API_VERSION = v25.0`
+  - `META_ACTION_SOURCE = system_generated`
+  - `META_LEAD_ENABLED = true`
+  - `META_PURCHASE_ENABLED = true`
+  - `META_VALUE_SIGNAL_THRESHOLD = 10000`
+  - `META_VALUE_SIGNAL_CURRENCY = ARS`
+  - `META_VALUE_SIGNAL_WINDOW_MODE = intake_local_day`
+  - `META_BATCH_SIZE = 1`
+  - `META_WORKER_CONCURRENCY = 2`
+  - `META_WORKER_POLL_MS = 1000`
+  - `META_WORKER_LEASE_SECONDS = 60`
+  - `META_WORKER_MAX_ATTEMPTS = 5`
+  - `META_WORKER_SCAN_LIMIT = 100`
+- bloqueo si aparecen:
+  - `META_TEST_EVENT_CODE`
+  - `META_PAGE_ID`
+  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+- precheck real de Supabase:
+  - lectura de `meta_conversion_outbox`
+  - RPC `enqueue_meta_value_signals(...)`
+
 ## Levantar local
 
 ```powershell
@@ -172,6 +219,85 @@ Checklist de verificación:
 5. verificar `Lead` y `Purchase` en Test Events
 6. verificar `sent`, `response_status` y `fbtrace_id` en `meta_conversion_outbox`
 7. hacer una validacion final sin `META_TEST_EVENT_CODE` antes de cerrar produccion
+
+### Activacion productiva validada el `2026-03-26`
+
+Despliegue real cerrado:
+
+- commit desplegado:
+  - `0538b9b`
+- modo activo:
+  - `system_generated`
+- dataset activo:
+  - `2123208205169806`
+- Graph API:
+  - `v25.0`
+- `business_messaging` queda fuera de alcance en esta activacion
+- no se usa:
+  - `META_TEST_EVENT_CODE`
+  - `META_PAGE_ID`
+  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
+
+Validacion tecnica real:
+
+- `scrap2-api` recreado con `.env.production`
+- `GET /` responde `404 Not Found` esperado
+- `POST /users/intake-pending` sigue respondiendo normal
+- sin `WARN/ERROR` del worker Meta despues del redeploy final
+- `meta_conversion_outbox` ya persiste:
+  - `request_payload`
+  - `response_status`
+  - `response_body`
+  - `fbtrace_id`
+
+Validacion funcional real desde el backend/worker del servidor:
+
+- smoke `Lead` originado por `POST /users/intake-pending`
+- owner usado:
+  - `asnlucas10:lucas10`
+- telefono sintetico de smoke:
+  - `+5491123456701`
+- `Lead` validado:
+  - outbox id: `03618bd3-d44f-4df1-873a-f7486eb18b37`
+  - event id:
+    - `lead:9a8e61f4048f18528bf0b1fde6a2853208fa406e19212a5091306140771815bb`
+  - `status = sent`
+  - `response_status = 200`
+  - `fbtrace_id = AsuLCso_1uA-TaMOYSejdl_`
+- payload persistido confirmado:
+  - `action_source = system_generated`
+  - `event_source_url` desde `ReferralSourceUrl`
+  - `custom_data.event_source = crm`
+  - `custom_data.lead_event_source = scrap2`
+
+Validacion `Purchase` con worker real:
+
+- se reencolo el registro que habia quedado `failed` solo por token viejo invalido
+- outbox id:
+  - `1c653f7a-eb2f-4ee5-b694-e1c91582200b`
+- event id:
+  - `value_signal:7eb57825214cb297946269a66dfd480fca64500224f9925873fef8c620717b83`
+- resultado final:
+  - `status = sent`
+  - `response_status = 200`
+  - `fbtrace_id = Aj7hwHAy1ZXW9UwLJiC-wFu`
+- payload persistido confirmado:
+  - `action_source = system_generated`
+  - `event_source_url = https://fb.me/6j8cikXYF`
+  - `custom_data.event_source = crm`
+  - `value = 35000`
+  - `currency = ARS`
+
+Regla operativa de rollback:
+
+- rollback inmediato si:
+  - el backend no levanta
+  - `POST /users/intake-pending` deja de responder
+  - el worker Meta entra en errores repetidos de configuracion o payload
+  - la outbox empieza a acumular `failed` estructurales
+- accion:
+  - restaurar contenedor previo
+  - restaurar env previo si hace falta
 
 ## Flujo CRM implementado
 
