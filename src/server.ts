@@ -51,6 +51,7 @@ import type {
   FundsOperation,
   JobExecutionOptions,
   JobRequest,
+  JobResult,
   JobStoreEntry,
   LoginJobRequest,
   ServerConfig
@@ -88,6 +89,44 @@ interface ServerDependencies {
 interface ValidationIssue {
   path: string;
   message: string;
+}
+
+function formatHttpMoneyWithoutComma(value: number): string {
+  return value
+    .toLocaleString('es-AR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    })
+    .replace(/,/g, '');
+}
+
+function formatJobResultForHttp(result: JobResult | undefined): JobResult | Record<string, unknown> | undefined {
+  if (!result) {
+    return undefined;
+  }
+
+  if (result.kind === 'balance' && result.pagina === 'RdA') {
+    return {
+      ...result,
+      saldoNumero: formatHttpMoneyWithoutComma(result.saldoNumero)
+    };
+  }
+
+  if (result.kind === 'rda-funds-operation' && result.operacion !== 'descarga_total') {
+    return {
+      ...result,
+      saldoDespuesNumero: formatHttpMoneyWithoutComma(result.saldoDespuesNumero)
+    };
+  }
+
+  return result;
+}
+
+function formatJobEntryForHttp(entry: JobStoreEntry): JobStoreEntry | (Omit<JobStoreEntry, 'result'> & { result?: JobResult | Record<string, unknown> }) {
+  return {
+    ...entry,
+    result: formatJobResultForHttp(entry.result)
+  };
 }
 
 const executionOverridesSchema = z.object({
@@ -1610,7 +1649,7 @@ export function createServer(
       return reply.code(404).send({ message: 'Job not found' });
     }
 
-    return reply.send(entry);
+    return reply.send(formatJobEntryForHttp(entry));
   });
 
   fastify.addHook('onClose', async () => {

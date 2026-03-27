@@ -3421,7 +3421,7 @@ describe('server routes', () => {
       montoAplicadoTexto: '500,00',
       saldoAntesNumero: 1000,
       saldoAntesTexto: '1.000,00',
-      saldoDespuesNumero: 1500,
+      saldoDespuesNumero: '1.50000',
       saldoDespuesTexto: '1.500,00'
     });
 
@@ -3470,7 +3470,65 @@ describe('server routes', () => {
       operacion: 'consultar_saldo',
       usuario: 'pruebita',
       saldoTexto: '30.525,35',
-      saldoNumero: 30525.35
+      saldoNumero: '30.52535'
+    });
+
+    await server.close();
+  });
+
+  it('GET /jobs/:id keeps RDA descarga_total saldoDespuesNumero unchanged', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue
+    );
+
+    const id = 'job-rda-descarga-total-result';
+    queue.entries.set(id, {
+      id,
+      jobType: 'deposit',
+      status: 'succeeded',
+      createdAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      artifactPaths: [],
+      steps: [],
+      result: {
+        kind: 'rda-funds-operation',
+        pagina: 'RdA',
+        operacion: 'descarga_total',
+        usuario: 'Monica626',
+        montoSolicitado: 1500,
+        montoAplicado: 1500,
+        montoAplicadoTexto: '1.500,00',
+        saldoAntesNumero: 1500,
+        saldoAntesTexto: '1.500,00',
+        saldoDespuesNumero: 0,
+        saldoDespuesTexto: '0,00'
+      }
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/jobs/${id}`
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toEqual({
+      kind: 'rda-funds-operation',
+      pagina: 'RdA',
+      operacion: 'descarga_total',
+      usuario: 'Monica626',
+      montoSolicitado: 1500,
+      montoAplicado: 1500,
+      montoAplicadoTexto: '1.500,00',
+      saldoAntesNumero: 1500,
+      saldoAntesTexto: '1.500,00',
+      saldoDespuesNumero: 0,
+      saldoDespuesTexto: '0,00'
     });
 
     await server.close();
