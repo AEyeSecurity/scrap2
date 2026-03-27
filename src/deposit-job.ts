@@ -12,7 +12,8 @@ import type {
   DepositJobRequest,
   FundsTransactionOperation,
   JobExecutionResult,
-  JobStepResult
+  JobStepResult,
+  RdaFundsOperationResult
 } from './types';
 
 const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
@@ -69,8 +70,13 @@ interface OperationStepNames {
 }
 
 interface FundsOutcomeSnapshot {
-  userBalanceBefore: number | null;
+  userBalanceBefore: UserBalanceSnapshot | null;
   userId: string | null;
+}
+
+interface UserBalanceSnapshot {
+  saldoTexto: string;
+  saldoNumero: number;
 }
 
 function getOperationStepNames(operation: FundsTransactionOperation): OperationStepNames {
@@ -160,13 +166,44 @@ function parseLocalizedMoney(rawValue: string): number {
   return parsed;
 }
 
-function extractUserListBalanceFromRowText(rowText: string): number {
+function extractUserListBalanceSnapshotFromRowText(rowText: string): UserBalanceSnapshot {
   const matches = rowText.match(/-?\d{1,3}(?:\.\d{3})*,\d{2}/g) ?? [];
   if (matches.length === 0) {
     throw new Error('Could not extract user balance from users row');
   }
 
-  return parseLocalizedMoney(matches[0] ?? '');
+  const saldoTexto = matches[0] ?? '';
+  return {
+    saldoTexto,
+    saldoNumero: parseLocalizedMoney(saldoTexto)
+  };
+}
+
+function extractUserListBalanceFromRowText(rowText: string): number {
+  return extractUserListBalanceSnapshotFromRowText(rowText).saldoNumero;
+}
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function formatMoney(value: number): string {
+  return roundMoney(value).toLocaleString('es-AR', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function computeAppliedAmount(
+  operation: FundsTransactionOperation,
+  saldoAntesNumero: number,
+  saldoDespuesNumero: number
+): number {
+  if (operation === 'carga') {
+    return roundMoney(saldoDespuesNumero - saldoAntesNumero);
+  }
+
+  return roundMoney(saldoAntesNumero - saldoDespuesNumero);
 }
 
 async function captureStepScreenshot(page: Page, artifactDir: string, name: string): Promise<string> {
@@ -815,7 +852,7 @@ async function checkUserBalanceInUsersList(
   userId: string | null,
   timeoutMs: number,
   pollingMs: number
-): Promise<number> {
+): Promise<UserBalanceSnapshot> {
   await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   const filterInput = await findUsersFilterInput(page, Math.min(timeoutMs, 10_000));
   await filterInput.fill('', { timeout: timeoutMs });
@@ -846,7 +883,7 @@ async function checkUserBalanceInUsersList(
   }
 
   const rowText = await row.innerText({ timeout: timeoutMs }).catch(() => '');
-  return extractUserListBalanceFromRowText(rowText);
+  return extractUserListBalanceSnapshotFromRowText(rowText);
 }
 
 async function verifyDepositResultStep(
@@ -967,7 +1004,7 @@ async function verifyWithRetryAndBalanceFallback(
       Math.max(timeoutMs, 10_000),
       pollingMs
     );
-    const delta = Math.abs(currentBalance - expectedBalance);
+    const delta = Math.abs(currentBalance.saldoNumero - expectedBalance);
     if (delta < 0.005) {
       return {
         name: stepName,
@@ -1113,7 +1150,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     const openDepositStep = await executeActionStep(page, artifactDir, stepNames.openAction, async () => {
       const selectedRow = await findUniqueUserRow(page, operation, request.payload.usuario, depositSearchTimeoutMs, pollingMs);
       const rowText = await selectedRow.innerText({ timeout: runtimeConfig.timeoutMs }).catch(() => '');
-      fundsSnapshot.userBalanceBefore = extractUserListBalanceFromRowText(rowText);
+      fundsSnapshot.userBalanceBefore = extractUserListBalanceSnapshotFromRowText(rowText);
       fundsSnapshot.userId = await tryGetUserIdFromRowAction(selectedRow, operation);
       if (!fundsSnapshot.userId) {
         fundsSnapshot.userId = await tryGetUserIdFromVisibleTableAction(page, operation);
@@ -1202,7 +1239,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       operation,
       request.payload.usuario,
       request.payload.cantidad,
-      fundsSnapshot.userBalanceBefore,
+      fundsSnapshot.userBalanceBefore?.saldoNumero ?? null,
       fundsSnapshot.userId,
       artifactDir,
       stepNames.verifyResult,
@@ -1218,6 +1255,32 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     steps.push(verifyStep);
     if (verifyStep.status === 'failed') {
       throw new Error(`Step failed: ${verifyStep.name} (${verifyStep.error ?? 'unknown error'})`);
+    }
+
+    let balanceAfterSnapshot: UserBalanceSnapshot | null = null;
+    if (fundsSnapshot.userBalanceBefore) {
+      try {
+        balanceAfterSnapshot = await checkUserBalanceInUsersList(
+          page,
+          operation,
+          request.payload.usuario,
+          fundsSnapshot.userId,
+          Math.max(runtimeConfig.timeoutMs, 10_000),
+          pollingMs
+        );
+      } catch {
+        const expectedBalance = computeExpectedUserBalance(
+          operation,
+          request.payload.operacion === 'descarga_total' ? undefined : request.payload.cantidad,
+          fundsSnapshot.userBalanceBefore.saldoNumero
+        );
+        if (expectedBalance != null) {
+          balanceAfterSnapshot = {
+            saldoNumero: roundMoney(expectedBalance),
+            saldoTexto: formatMoney(expectedBalance)
+          };
+        }
+      }
     }
 
     if (captureSuccessArtifacts) {
@@ -1248,9 +1311,37 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
     await lease.release();
 
+    let result: RdaFundsOperationResult | undefined;
+    if (fundsSnapshot.userBalanceBefore && balanceAfterSnapshot) {
+      const montoAplicado = computeAppliedAmount(
+        operation,
+        fundsSnapshot.userBalanceBefore.saldoNumero,
+        balanceAfterSnapshot.saldoNumero
+      );
+      const montoSolicitado =
+        operation === 'descarga_total'
+          ? montoAplicado
+          : roundMoney(typeof request.payload.cantidad === 'number' ? request.payload.cantidad : montoAplicado);
+
+      result = {
+        kind: 'rda-funds-operation',
+        pagina: 'RdA',
+        operacion: operation,
+        usuario: request.payload.usuario,
+        montoSolicitado,
+        montoAplicado,
+        montoAplicadoTexto: formatMoney(montoAplicado),
+        saldoAntesNumero: roundMoney(fundsSnapshot.userBalanceBefore.saldoNumero),
+        saldoAntesTexto: fundsSnapshot.userBalanceBefore.saldoTexto,
+        saldoDespuesNumero: roundMoney(balanceAfterSnapshot.saldoNumero),
+        saldoDespuesTexto: balanceAfterSnapshot.saldoTexto
+      };
+    }
+
     return {
       artifactPaths,
-      steps
+      steps,
+      result
     };
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);

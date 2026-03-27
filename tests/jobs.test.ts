@@ -126,6 +126,8 @@ describe('JobManager', () => {
         steps: [makeStep('read-balance')],
         result: {
           kind: 'balance',
+          pagina: 'RdA',
+          operacion: 'consultar_saldo',
           usuario: 'pruebita',
           saldoTexto: '1.234,56',
           saldoNumero: 1234.56
@@ -140,9 +142,57 @@ describe('JobManager', () => {
     const entry = manager.getById(id);
     expect(entry?.result).toEqual({
       kind: 'balance',
+      pagina: 'RdA',
+      operacion: 'consultar_saldo',
       usuario: 'pruebita',
       saldoTexto: '1.234,56',
       saldoNumero: 1234.56
+    });
+
+    await manager.shutdown();
+  });
+
+  it('stores and returns RDA funds operation result payload when executor succeeds', async () => {
+    const manager = new JobManager({
+      concurrency: 1,
+      ttlMinutes: 60,
+      logger: createLogger('silent', false),
+      executor: async () => ({
+        artifactPaths: [],
+        steps: [makeStep('rda-funds')],
+        result: {
+          kind: 'rda-funds-operation',
+          pagina: 'RdA',
+          operacion: 'descarga',
+          usuario: 'pepito47',
+          montoSolicitado: 500,
+          montoAplicado: 500,
+          montoAplicadoTexto: '500,00',
+          saldoAntesNumero: 1500,
+          saldoAntesTexto: '1.500,00',
+          saldoDespuesNumero: 1000,
+          saldoDespuesTexto: '1.000,00'
+        }
+      })
+    });
+
+    const id = manager.enqueue(makeLoginRequest());
+    const final = await waitForTerminalState(manager, id);
+
+    expect(final).toBe('succeeded');
+    const entry = manager.getById(id);
+    expect(entry?.result).toEqual({
+      kind: 'rda-funds-operation',
+      pagina: 'RdA',
+      operacion: 'descarga',
+      usuario: 'pepito47',
+      montoSolicitado: 500,
+      montoAplicado: 500,
+      montoAplicadoTexto: '500,00',
+      saldoAntesNumero: 1500,
+      saldoAntesTexto: '1.500,00',
+      saldoDespuesNumero: 1000,
+      saldoDespuesTexto: '1.000,00'
     });
 
     await manager.shutdown();

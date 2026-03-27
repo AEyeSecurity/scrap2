@@ -261,9 +261,25 @@ export interface AsnReportJobRequest {
 
 export interface BalanceJobResult {
   kind: 'balance';
+  pagina: 'RdA';
+  operacion: 'consultar_saldo';
   usuario: string;
   saldoTexto: string;
   saldoNumero: number;
+}
+
+export interface RdaFundsOperationResult {
+  kind: 'rda-funds-operation';
+  pagina: 'RdA';
+  operacion: FundsTransactionOperation;
+  usuario: string;
+  montoSolicitado: number;
+  montoAplicado: number;
+  montoAplicadoTexto: string;
+  saldoAntesNumero: number;
+  saldoAntesTexto: string;
+  saldoDespuesNumero: number;
+  saldoDespuesTexto: string;
 }
 
 export interface CreatePlayerJobResult {
@@ -312,6 +328,7 @@ export interface AsnBalanceJobResult {
 
 export type JobResult =
   | BalanceJobResult
+  | RdaFundsOperationResult
   | CreatePlayerJobResult
   | AsnReportJobResult
   | AsnFundsOperationResult

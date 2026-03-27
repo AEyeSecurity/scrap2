@@ -424,6 +424,8 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
         const saldoNumero = parseBalanceNumber(saldoTexto);
         balanceResult = {
           kind: 'balance',
+          pagina: 'RdA',
+          operacion: 'consultar_saldo',
           usuario: request.payload.usuario,
           saldoTexto,
           saldoNumero
