@@ -564,6 +564,81 @@ Resultado observado:
 - descarga total aplicada: `15.238,00`
 - sin reproduccion del choque de navegacion post-submit
 
+## RdA validado en Docker
+
+Estado validado el `2026-03-27` con imagen construida desde el `Dockerfile` y API expuesta en `127.0.0.1:3006`.
+
+Flujos `RdA` probados contra el contenedor:
+
+- `POST /login`
+- `POST /users/create-player`
+- `POST /users/deposit` con:
+  - `consultar_saldo`
+  - `carga`
+  - `descarga`
+  - `descarga_total`
+
+Casos reales validados:
+
+- login valido:
+  - `status = succeeded`
+- login invalido:
+  - `error = Contraseña no corregida`
+- alta de usuario:
+  - `status = succeeded`
+- alta duplicada:
+  - genera sufijo automatico y sigue en `succeeded`
+- secuencia de fondos validada:
+  - saldo inicial `0`
+  - `carga 10`
+  - saldo `10`
+  - `descarga 4`
+  - saldo `6`
+  - `descarga_total`
+  - saldo final `0`
+
+Casos de falla esperada validados:
+
+- usuario inexistente en `consultar_saldo`:
+  - `No se ha encontrado el usuario xxxx`
+- credenciales invalidas:
+  - `Contraseña no corregida`
+- payload sin `cantidad` para `carga`:
+  - `400 Invalid payload`
+- `reporte` sobre `RdA`:
+  - `501`
+- `assign-phone` sobre `RdA`:
+  - `501`
+
+Cambios operativos cerrados para `RdA`:
+
+- helper nuevo:
+  - `src/rda-user-error.ts`
+- traduccion de errores tecnicos de fondos/saldo a mensajes limpios
+- `RdA` deja de reutilizar la sesion pool de fondos
+- motivo:
+  - la reutilizacion hacia intermitentes `descarga` y `descarga_total` dentro de Docker
+- criterio actual:
+  - `RdA` usa sesion aislada por operacion
+  - el pool de fondos queda disponible para otros casos turbo donde no degrade estabilidad
+
+Verificacion recomendada para este bloque:
+
+```powershell
+npm test
+npm run build
+docker build -t scrapsinoca-rda-test .
+docker run --rm `
+  -p 3000:3000 `
+  -v ${PWD}/artifacts:/app/artifacts `
+  scrapsinoca-rda-test server --host 0.0.0.0 --port 3000
+```
+
+Smoke reutilizable para `RdA`:
+
+- `npm run smoke:rda-api`
+- ver `docs/README_TESTEO.md`
+
 ### Contrato mensual actual
 
 `POST /mastercrm-clients` acepta:

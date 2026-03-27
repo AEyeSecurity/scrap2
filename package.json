@@ -10,7 +10,8 @@
     "start": "tsx src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "benchmark:deposit": "tsx scripts/benchmark-deposit.ts"
+    "benchmark:deposit": "tsx scripts/benchmark-deposit.ts",
+    "smoke:rda-api": "node scripts/rda-api-smoke.cjs"
   },
   "engines": {
     "node": ">=20"

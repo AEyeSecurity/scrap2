@@ -6,6 +6,7 @@ import { runAsnBalanceJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
 import { selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
+import { translateRdaJobError } from './rda-user-error';
 import type { AppConfig, BalanceJobRequest, BalanceJobResult, JobExecutionResult, JobStepResult } from './types';
 
 const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
@@ -281,7 +282,9 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
   const userSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
 
   await fs.mkdir(artifactDir, { recursive: true });
-  const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger);
+  const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger, {
+    forceIsolated: request.payload.pagina === 'RdA'
+  });
   const context = lease.context;
   const page = lease.page;
   const artifactPaths: string[] = [];
@@ -462,7 +465,11 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
       result: balanceResult
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = translateRdaJobError(rawMessage, {
+      usuario: request.payload.usuario,
+      operacion: request.payload.operacion
+    });
     jobLogger.error({ error }, 'Balance job failed');
 
     try {

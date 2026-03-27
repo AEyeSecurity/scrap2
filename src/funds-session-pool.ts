@@ -144,9 +144,12 @@ async function createSession(cacheKey: string, cfg: AppConfig, logger: Logger): 
 export async function acquireFundsSessionLease(
   agent: string,
   cfg: AppConfig,
-  logger: Logger
+  logger: Logger,
+  options: {
+    forceIsolated?: boolean;
+  } = {}
 ): Promise<FundsSessionLease> {
-  const poolingAllowed = getPoolEnabled() && isTurboLike(cfg);
+  const poolingAllowed = !options.forceIsolated && getPoolEnabled() && isTurboLike(cfg);
   if (!poolingAllowed) {
     const entry = await createSession(`isolated:${Date.now()}`, cfg, logger);
     return {

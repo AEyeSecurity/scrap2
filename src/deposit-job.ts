@@ -6,6 +6,7 @@ import { runAsnDepositJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
 import { normalizeDepositText, selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
+import { translateRdaJobError } from './rda-user-error';
 import type {
   AppConfig,
   DepositJobRequest,
@@ -1005,10 +1006,16 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
   const filterOutcomeTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 4_000) : Math.min(runtimeConfig.timeoutMs, 10_000);
   const depositSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
   const depositPageTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
-  const verifyTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
+  // RDA withdrawals can redirect back to the authenticated shell a few seconds after submit in Docker.
+  // A slightly longer turbo verify window avoids false negatives while keeping the job fast.
+  const verifyTimeoutMs = isTurbo
+    ? Math.min(runtimeConfig.timeoutMs, operation === 'carga' ? 5_000 : 10_000)
+    : runtimeConfig.timeoutMs;
 
   await fs.mkdir(artifactDir, { recursive: true });
-  const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger);
+  const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger, {
+    forceIsolated: request.payload.pagina === 'RdA'
+  });
   const context = lease.context;
   const page = lease.page;
   const artifactPaths: string[] = [];
@@ -1246,7 +1253,11 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       steps
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = translateRdaJobError(rawMessage, {
+      usuario: request.payload.usuario,
+      operacion: request.payload.operacion
+    });
     jobLogger.error({ error }, 'Deposit job failed');
 
     try {

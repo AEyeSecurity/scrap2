@@ -166,6 +166,18 @@ Reglas ASN actuales:
 - para `reporte`:
   - no se hace precheck de usuario, porque el job de reporte no depende de validar un panel puntual antes de encolar
 
+Reglas `RdA` actuales:
+
+- `POST /users/create-player`, `POST /users/deposit` y `consultar_saldo` fueron validados en Docker real el `2026-03-27`
+- para `RdA`, los jobs de fondos y saldo usan sesion aislada por operacion
+- esa decision evita intermitencias de `descarga` y `descarga_total` al reutilizar una sesion vieja dentro del contenedor
+- si el usuario no existe en `RdA`, `GET /jobs/:id` ya no expone errores tecnicos de matching de filas
+- el mensaje limpio esperado pasa a ser:
+  - `No se ha encontrado el usuario xxxx`
+- si el retiro no deja una senal confiable de confirmacion, el backend devuelve un mensaje entendible:
+  - `No se pudo confirmar la operacion descarga para el usuario xxxx`
+  - `No se pudo confirmar la operacion descarga_total para el usuario xxxx`
+
 Contrato de error para usuario inexistente:
 
 ```json
@@ -215,6 +227,14 @@ Estados posibles:
 - `succeeded`
 - `failed`
 - `expired`
+
+Convencion de errores visibles:
+
+- `ASN` y `RdA` deben priorizar mensajes de negocio antes que errores de Playwright
+- para credenciales invalidas en login o fondos, el mensaje visible validado hoy es:
+  - `Contraseña no corregida`
+- para usuario inexistente en `RdA` o `ASN`, el objetivo es mantener:
+  - `No se ha encontrado el usuario xxxx`
 
 ### `POST /reports/asn/run`
 
