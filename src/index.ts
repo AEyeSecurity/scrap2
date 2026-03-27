@@ -1,4 +1,7 @@
+import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
+import dotenv from 'dotenv';
 import {
   buildAppConfig,
   buildRunConfig,
@@ -11,6 +14,11 @@ import { createLogger } from './logging';
 import { runScraper } from './run';
 import { startServer } from './server';
 import type { CliOptions } from './types';
+
+const localEnvPath = path.resolve(process.cwd(), '.env');
+if (existsSync(localEnvPath)) {
+  dotenv.config({ path: localEnvPath });
+}
 
 const program = new Command();
 program.name('scraper').description('Scraper for agents.reydeases.com');
