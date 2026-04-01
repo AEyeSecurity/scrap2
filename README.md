@@ -52,6 +52,12 @@ El sistema combina navegacion real con Playwright y logica de negocio propia:
 6. Expone el estado por `GET /jobs/:id`.
 7. Si Supabase esta configurado, habilita persistencia de telefonos y la cola de reportes ASN.
 
+Contrato CRM actual:
+
+- `POST /users/create-player` exige `ownerContext` cuando se envia `telefono`.
+- `POST /users/intake-pending` exige `ownerContext`.
+- `POST /users/assign-phone` exige `ownerContext` y usa solo la ruta owner-centric v4 en Supabase.
+
 ## Arranque rapido con Docker
 
 Los ejemplos siguientes asumen PowerShell y Docker Desktop activo. El `Dockerfile` actual genera una imagen de runtime cuyo `ENTRYPOINT` es `node dist/index.js` y cuyo `CMD` por defecto es `run`.

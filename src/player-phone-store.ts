@@ -520,45 +520,22 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
       return;
     }
 
-    const pagina = input.pagina;
-    const telefono = normalizePhone(input.telefono);
-    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
-    const ownerContext = requireOwnerContext(input.ownerContext);
-
-    const { error } = await this.client.rpc('sync_create_player_link_v3', {
-      p_owner_key: ownerContext.ownerKey,
-      p_username: jugadorUsername,
-      p_cliente_telefono: telefono,
-      p_pagina: pagina,
-      p_owner_label: ownerContext.ownerLabel,
-      p_actor_alias: ownerContext.actorAlias,
-      p_actor_phone: ownerContext.actorPhone
+    await this.intakePendingCliente({
+      pagina: input.pagina,
+      telefono: input.telefono,
+      ownerContext: input.ownerContext
     });
 
-    if (error) {
-      throw mapSyncCreatePlayerLinkRpcError(error);
-    }
+    await this.assignUsernameByPhone({
+      pagina: input.pagina,
+      jugadorUsername: input.jugadorUsername,
+      telefono: input.telefono,
+      ownerContext: input.ownerContext
+    });
   }
 
   async assignPendingUsername(input: AssignPhoneInput): Promise<void> {
-    const pagina = input.pagina;
-    const telefono = normalizePhone(input.telefono);
-    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
-    const ownerContext = requireOwnerContext(input.ownerContext);
-
-    const { error } = await this.client.rpc('assign_pending_username_v3', {
-      p_owner_key: ownerContext.ownerKey,
-      p_cliente_telefono: telefono,
-      p_username: jugadorUsername,
-      p_pagina: pagina,
-      p_owner_label: ownerContext.ownerLabel,
-      p_actor_alias: ownerContext.actorAlias,
-      p_actor_phone: ownerContext.actorPhone
-    });
-
-    if (error) {
-      throw mapAssignPendingUsernameRpcError(error);
-    }
+    await this.assignUsernameByPhone(input);
   }
 
   async assignPhone(input: AssignPhoneInput): Promise<void> {

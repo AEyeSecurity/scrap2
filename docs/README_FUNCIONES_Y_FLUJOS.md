@@ -115,7 +115,7 @@ Implementa una cola en memoria con TTL:
 - hace intake pending;
 - sincroniza `create-player` con Supabase;
 - asigna username por telefono;
-- usa RPCs versionadas `*_v3`.
+- usa RPCs versionadas `*_v4`.
 
 ### `src/report-run-store.ts`
 
