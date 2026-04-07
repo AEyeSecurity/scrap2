@@ -45,7 +45,15 @@ interface NormalizedOwnerContext {
 interface OwnerRow {
   id: string;
   owner_key: string;
+  owner_label?: string;
   pagina: PaginaCode;
+}
+
+interface OwnerAliasPhoneRow {
+  alias_phone: string | null;
+  is_active: boolean;
+  updated_at: string;
+  last_seen_at: string;
 }
 
 interface ClientPhoneRow {
@@ -121,6 +129,13 @@ export interface UnassignUsernameByPhoneResult {
   unlinked: boolean;
 }
 
+export interface ResolvedOwnerContextByPhone {
+  ownerKey: string;
+  ownerLabel: string;
+  actorAlias: string;
+  actorPhone: string | null;
+}
+
 function getBuenosAiresMonthStartDate(input?: string | Date | null): string {
   const date =
     input instanceof Date
@@ -148,6 +163,7 @@ function getBuenosAiresMonthStartDate(input?: string | Date | null): string {
 
 export interface PlayerPhoneStore {
   intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult>;
+  resolveOwnerContextByPhone(input: { pagina: PaginaCode; telefono: string }): Promise<ResolvedOwnerContextByPhone | null>;
   syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void>;
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
@@ -216,6 +232,37 @@ export function normalizePhone(value: string): string {
   }
 
   return withPlus;
+}
+
+function compareIsoDatesDesc(left: string, right: string): number {
+  const leftTime = Date.parse(left);
+  const rightTime = Date.parse(right);
+  const normalizedLeft = Number.isFinite(leftTime) ? leftTime : 0;
+  const normalizedRight = Number.isFinite(rightTime) ? rightTime : 0;
+
+  return normalizedRight - normalizedLeft;
+}
+
+function pickPreferredAliasPhone(rows: OwnerAliasPhoneRow[]): string | null {
+  const rowsWithPhone = rows.filter((row) => typeof row.alias_phone === 'string' && row.alias_phone.trim().length > 0);
+  if (rowsWithPhone.length === 0) {
+    return null;
+  }
+
+  const sorted = [...rowsWithPhone].sort((left, right) => {
+    if (left.is_active !== right.is_active) {
+      return left.is_active ? -1 : 1;
+    }
+
+    const updatedComparison = compareIsoDatesDesc(left.updated_at, right.updated_at);
+    if (updatedComparison !== 0) {
+      return updatedComparison;
+    }
+
+    return compareIsoDatesDesc(left.last_seen_at, right.last_seen_at);
+  });
+
+  return sorted[0]?.alias_phone ?? null;
 }
 
 function requireOwnerContext(ownerContext: OwnerContextInput | undefined): NormalizedOwnerContext {
@@ -560,6 +607,80 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     return result;
+  }
+
+  async resolveOwnerContextByPhone(input: {
+    pagina: PaginaCode;
+    telefono: string;
+  }): Promise<ResolvedOwnerContextByPhone | null> {
+    const telefono = normalizePhone(input.telefono);
+
+    const { data: clientData, error: clientError } = await this.client
+      .from('clients')
+      .select('id, pagina, phone_e164')
+      .eq('pagina', input.pagina)
+      .eq('phone_e164', telefono)
+      .maybeSingle();
+
+    if (clientError) {
+      throw mapPostgrestError(clientError, 'Could not resolve client phone');
+    }
+
+    const clientRow = clientData as ClientPhoneRow | null;
+    if (!clientRow) {
+      return null;
+    }
+
+    const { data: linkData, error: linkError } = await this.client
+      .from('owner_client_links')
+      .select('owner_id')
+      .eq('client_id', clientRow.id)
+      .order('last_seen_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (linkError) {
+      throw mapPostgrestError(linkError, 'Could not resolve owner-client link');
+    }
+
+    const ownerId = typeof linkData?.owner_id === 'string' ? linkData.owner_id : null;
+    if (!ownerId) {
+      return null;
+    }
+
+    const { data: ownerData, error: ownerError } = await this.client
+      .from('owners')
+      .select('id, owner_key, owner_label, pagina')
+      .eq('id', ownerId)
+      .eq('pagina', input.pagina)
+      .maybeSingle();
+
+    if (ownerError) {
+      throw mapPostgrestError(ownerError, 'Could not resolve owner');
+    }
+
+    const owner = ownerData as OwnerRow | null;
+    if (!owner || !owner.owner_label) {
+      return null;
+    }
+
+    const { data: aliasData, error: aliasError } = await this.client
+      .from('owner_aliases')
+      .select('alias_phone, is_active, updated_at, last_seen_at')
+      .eq('owner_id', owner.id);
+
+    if (aliasError) {
+      throw mapPostgrestError(aliasError, 'Could not read owner alias phones');
+    }
+
+    const actorPhone = pickPreferredAliasPhone((aliasData as OwnerAliasPhoneRow[] | null) ?? []);
+
+    return {
+      ownerKey: owner.owner_key,
+      ownerLabel: owner.owner_label,
+      actorAlias: owner.owner_label,
+      actorPhone
+    };
   }
 
   async syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void> {

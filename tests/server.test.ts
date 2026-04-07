@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { AsnUserCheckError } from '../src/asn-user-check';
 import { buildAppConfig } from '../src/config';
 import { createLogger } from '../src/logging';
+import { RdaUserCheckError } from '../src/rda-user-check';
 import {
   MastercrmUserStoreError,
   type MastercrmClientsDashboardRecord,
@@ -103,6 +104,11 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     };
   }> = [];
 
+  public readonly resolveOwnerContextByPhoneInputs: Array<{
+    pagina: 'RdA' | 'ASN';
+    telefono: string;
+  }> = [];
+
   public assignByPhoneBehavior: () => Promise<{
     previousUsername: string | null;
     currentUsername: string;
@@ -120,6 +126,13 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
     movedFromPhone: null,
     deletedOldPhone: false
   });
+
+  public resolveOwnerContextByPhoneBehavior: (input: { pagina: 'RdA' | 'ASN'; telefono: string }) => Promise<{
+    ownerKey: string;
+    ownerLabel: string;
+    actorAlias: string;
+    actorPhone: string | null;
+  } | null> = async () => null;
 
   public unassignByPhoneBehavior: () => Promise<{
     previousUsername: string | null;
@@ -172,6 +185,19 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
       ownerId: 'owner-1',
       clientId: 'client-1'
     };
+  }
+
+  async resolveOwnerContextByPhone(input: {
+    pagina: 'RdA' | 'ASN';
+    telefono: string;
+  }): Promise<{
+    ownerKey: string;
+    ownerLabel: string;
+    actorAlias: string;
+    actorPhone: string | null;
+  } | null> {
+    this.resolveOwnerContextByPhoneInputs.push(input);
+    return this.resolveOwnerContextByPhoneBehavior(input);
   }
 
   async syncCreatePlayerLink(input: {
@@ -320,6 +346,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public readonly linkInputs: Array<{
     userId: number;
     ownerKey: string;
+    pagina: 'ASN' | 'RdA';
   }> = [];
 
   public createBehavior: (input: {
@@ -387,11 +414,12 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public linkBehavior: (input: {
     userId: number;
     ownerKey: string;
+    pagina: 'ASN' | 'RdA';
   }) => Promise<MastercrmUserCashierLinkRecord> = async (input) => ({
     userId: input.userId,
     ownerKey: input.ownerKey,
     ownerLabel: 'Owner Label',
-    pagina: 'ASN',
+    pagina: input.pagina,
     linked: true,
     replaced: false,
     previousOwnerKey: null
@@ -498,6 +526,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   async linkCashierToUser(input: {
     userId: number;
     ownerKey: string;
+    pagina: 'ASN' | 'RdA';
   }): Promise<MastercrmUserCashierLinkRecord> {
     this.linkInputs.push(input);
     return this.linkBehavior(input);
@@ -1162,7 +1191,8 @@ describe('server routes', () => {
     expect(store.linkInputs).toEqual([
       {
         userId: 123,
-        ownerKey: 'owner_key_del_cajero'
+        ownerKey: 'owner_key_del_cajero',
+        pagina: 'ASN'
       }
     ]);
     expect(response.json()).toEqual({
@@ -1178,6 +1208,40 @@ describe('server routes', () => {
         previous_owner_key: null
       }
     });
+
+    await server.close();
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
+  });
+
+  it('POST /mastercrm-link-cashier can link RdA owners', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const previousPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;
+    process.env.MASTERCRM_STAFF_LINK_PASSWORD = 'staff-secret';
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-link-cashier',
+      payload: {
+        user_id: 123,
+        owner_key: 'rda_owner',
+        pagina: 'RdA',
+        staff_password: 'staff-secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(store.linkInputs).toEqual([{ userId: 123, ownerKey: 'rda_owner', pagina: 'RdA' }]);
+    expect(response.json().data.pagina).toBe('RdA');
 
     await server.close();
     process.env.MASTERCRM_STAFF_LINK_PASSWORD = previousPassword;
@@ -1340,7 +1404,7 @@ describe('server routes', () => {
       userId: input.userId,
       ownerKey: input.ownerKey,
       ownerLabel: 'Owner Replaced',
-      pagina: 'ASN',
+      pagina: input.pagina,
       linked: true,
       replaced: true,
       previousOwnerKey: 'owner_old'
@@ -1854,6 +1918,399 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /whatsapp/intake persists Twilio intake from WaId and enqueues Meta lead when attributable', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const metaStore = new FakeMetaConversionsStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore,
+        metaConversionsStore: metaStore,
+        metaEnabled: true,
+        metaWorkerEnabled: false
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'ASN',
+        body: {
+          WaId: '5493515747477',
+          From: 'whatsapp:+5493515747477',
+          ProfileName: 'Lucas Cliente',
+          ReferralCtwaClid: 'clid-123',
+          ReferralSourceId: 'source-123',
+          ReferralSourceUrl: 'https://fb.me/ad',
+          ReferralHeadline: 'Royal Luck',
+          ReferralBody: 'Quiero info',
+          ReferralSourceType: 'ad',
+          MessageSid: 'SM123',
+          AccountSid: 'AC123',
+          ReceivedAt: '2026-04-07T13:00:00.000Z'
+        },
+        ownerContext: {
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10',
+          actorAlias: 'Lucas10',
+          actorPhone: '+5493516549344'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: 'ok',
+      pagina: 'ASN',
+      telefono: '+5493515747477',
+      ownerContext: {
+        ownerKey: 'asnlucas10:lucas10',
+        ownerLabel: 'Lucas10',
+        actorAlias: 'Lucas10',
+        actorPhone: '+5493516549344'
+      },
+      cajeroId: 'cajero-1',
+      jugadorId: 'jugador-1',
+      linkId: 'link-1',
+      estado: 'pendiente',
+      ownerId: 'owner-1'
+    });
+    expect(playerPhoneStore.intakeInputs).toEqual([
+      {
+        pagina: 'ASN',
+        telefono: '+5493515747477',
+        ownerContext: {
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10',
+          actorAlias: 'Lucas10',
+          actorPhone: '+5493516549344'
+        },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceId: 'source-123',
+          referralSourceUrl: 'https://fb.me/ad',
+          referralHeadline: 'Royal Luck',
+          referralBody: 'Quiero info',
+          referralSourceType: 'ad',
+          waId: '5493515747477',
+          messageSid: 'SM123',
+          accountSid: 'AC123',
+          profileName: 'Lucas Cliente',
+          receivedAt: '2026-04-07T13:00:00.000Z'
+        }
+      }
+    ]);
+    expect(metaStore.leadInputs).toEqual([
+      {
+        ownerId: 'owner-1',
+        clientId: 'client-1',
+        phoneE164: '+5493515747477',
+        ownerContext: {
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10',
+          actorAlias: 'Lucas10',
+          actorPhone: '+5493516549344'
+        },
+        sourceContext: {
+          ctwaClid: 'clid-123',
+          referralSourceId: 'source-123',
+          referralSourceUrl: 'https://fb.me/ad',
+          referralHeadline: 'Royal Luck',
+          referralBody: 'Quiero info',
+          referralSourceType: 'ad',
+          waId: '5493515747477',
+          messageSid: 'SM123',
+          accountSid: 'AC123',
+          profileName: 'Lucas Cliente',
+          receivedAt: '2026-04-07T13:00:00.000Z'
+        },
+        eventTime: '2026-04-07T13:00:00.000Z'
+      }
+    ]);
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake falls back to body.From when WaId and telefono are missing', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'ASN',
+        body: {
+          From: 'whatsapp:+5493515747477',
+          MessageSid: 'SM456'
+        },
+        ownerContext: {
+          ownerKey: 'asnlucas10:vicky',
+          ownerLabel: 'Vicky'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().telefono).toBe('+5493515747477');
+    expect(playerPhoneStore.intakeInputs[0]).toEqual({
+      pagina: 'ASN',
+      telefono: '+5493515747477',
+      ownerContext: {
+        ownerKey: 'asnlucas10:vicky',
+        ownerLabel: 'Vicky'
+      },
+      sourceContext: {
+        messageSid: 'SM456'
+      }
+    });
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake respects explicit sourceContext over body referral fields', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'RdA',
+        telefono: '+5493515747477',
+        body: {
+          ReferralCtwaClid: 'body-clid',
+          WaId: '5493510000000'
+        },
+        ownerContext: {
+          ownerKey: 'rda:lucas10',
+          ownerLabel: 'Lucas10'
+        },
+        sourceContext: {
+          ctwaClid: 'explicit-clid',
+          referralSourceType: 'ad',
+          waId: '5493515747477',
+          receivedAt: '2026-04-07T13:00:00-03:00'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(playerPhoneStore.intakeInputs[0]).toEqual({
+      pagina: 'RdA',
+      telefono: '+5493515747477',
+      ownerContext: {
+        ownerKey: 'rda:lucas10',
+        ownerLabel: 'Lucas10'
+      },
+      sourceContext: {
+        ctwaClid: 'explicit-clid',
+        referralSourceType: 'ad',
+        waId: '5493515747477',
+        receivedAt: '2026-04-07T16:00:00.000Z'
+      }
+    });
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake returns 400 when no phone can be resolved', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'ASN',
+        body: {
+          ProfileName: 'Sin telefono'
+        },
+        ownerContext: {
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: 'Invalid payload',
+      code: 'INVALID_PAYLOAD',
+      details: {
+        issues: [{ path: 'telefono', message: 'telefono, body.WaId or body.From is required' }]
+      }
+    });
+    expect(playerPhoneStore.intakeInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake resolves ownerContext from existing persisted phone link when missing', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    playerPhoneStore.resolveOwnerContextByPhoneBehavior = async () => ({
+      ownerKey: 'asnlucas10:lucas10',
+      ownerLabel: 'Lucas10',
+      actorAlias: 'Lucas10',
+      actorPhone: '+5493516549344'
+    });
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'ASN',
+        body: {
+          WaId: '5493515747477'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(playerPhoneStore.resolveOwnerContextByPhoneInputs).toEqual([
+      {
+        pagina: 'ASN',
+        telefono: '+5493515747477'
+      }
+    ]);
+    expect(playerPhoneStore.intakeInputs[0]?.ownerContext).toEqual({
+      ownerKey: 'asnlucas10:lucas10',
+      ownerLabel: 'Lucas10',
+      actorAlias: 'Lucas10',
+      actorPhone: '+5493516549344'
+    });
+    expect(response.json().ownerContext).toEqual({
+      ownerKey: 'asnlucas10:lucas10',
+      ownerLabel: 'Lucas10',
+      actorAlias: 'Lucas10',
+      actorPhone: '+5493516549344'
+    });
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake returns 400 when ownerContext is missing and no persisted phone link exists', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'ASN',
+        body: {
+          WaId: '5493515747477'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      message: 'Invalid payload',
+      code: 'OWNER_CONTEXT_REQUIRED',
+      details: {
+        issues: [
+          {
+            path: 'ownerContext',
+            message: 'ownerContext is required unless the phone already has a persisted owner link'
+          }
+        ]
+      }
+    });
+    expect(playerPhoneStore.intakeInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake returns 400 for unsupported pagina', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { playerPhoneStore }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'MGM',
+        body: {
+          WaId: '5493515747477'
+        },
+        ownerContext: {
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe('INVALID_PAYLOAD');
+    expect(response.json().details.issues.some((issue: { path: string }) => issue.path === 'pagina')).toBe(true);
+    expect(playerPhoneStore.intakeInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
   it('POST /users/assign-phone validates payload and requires contrasena_agente', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
@@ -1932,9 +2389,10 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/assign-phone returns 501 for non-ASN pagina', async () => {
+  it('POST /users/assign-phone prechecks and assigns RdA users', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
+    const rdaChecks: Array<{ usuario: string; agente: string; contrasenaAgente: string }> = [];
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
     const server = createServer(
@@ -1944,7 +2402,14 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
-        asnUserExistsChecker: async () => undefined
+        asnUserExistsChecker: async () => undefined,
+        rdaUserExistsChecker: async (input) => {
+          rdaChecks.push({
+            usuario: input.usuario,
+            agente: input.agente,
+            contrasenaAgente: input.contrasenaAgente
+          });
+        }
       }
     );
 
@@ -1964,11 +2429,53 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(501);
+    expect(response.statusCode).toBe(200);
+    expect(rdaChecks).toEqual([{ usuario: 'player_1', agente: 'agent_1', contrasenaAgente: 'secret' }]);
+    expect(store.assignByPhoneInputs).toHaveLength(1);
+    expect(store.assignByPhoneInputs[0]?.pagina).toBe('RdA');
+
+    await server.close();
+  });
+
+  it('POST /users/assign-phone returns 404 when RdA user does not exist', async () => {
+    const queue = new FakeQueue();
+    const store = new FakePlayerPhoneStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore: store,
+        rdaUserExistsChecker: async () => {
+          throw new RdaUserCheckError('NOT_FOUND', 'No se ha encontrado el usuario missing_player');
+        }
+      }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/assign-phone',
+      payload: {
+        pagina: 'RdA',
+        usuario: 'missing_player',
+        agente: 'agent_1',
+        contrasena_agente: 'secret',
+        telefono: '+5491122334455',
+        ownerContext: {
+          ownerKey: 'wf_owner_9',
+          ownerLabel: 'Lucas 10'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(404);
     expect(response.json()).toEqual({
-      message: 'assign-phone with ASN existence check is implemented only for ASN',
-      code: 'UNSUPPORTED_PAGINA',
-      details: { pagina: 'RdA' }
+      message: 'No se ha encontrado el usuario missing_player',
+      code: 'RDA_USER_NOT_FOUND',
+      details: { usuario: 'missing_player' }
     });
     expect(store.assignByPhoneInputs).toHaveLength(0);
 
@@ -2886,7 +3393,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/deposit returns 501 for reporte on non-ASN pagina', async () => {
+  it('POST /users/deposit enqueues RdA report job for reporte', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -2909,9 +3416,19 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(501);
-    expect(response.json().message).toMatch(/only for ASN/i);
-    expect(queue.requests).toHaveLength(0);
+    expect(response.statusCode).toBe(202);
+    const body = response.json();
+    const queued = queue.requests.find((item) => item.id === body.jobId);
+    expect(queued?.jobType).toBe('report');
+    if (queued?.jobType === 'report') {
+      expect(queued.payload.pagina).toBe('RdA');
+      expect(queued.payload.operacion).toBe('reporte');
+      expect(queued.payload.usuario).toBe('Ariel728');
+      expect(queued.options.headless).toBe(true);
+      expect(queued.options.debug).toBe(false);
+      expect(queued.options.slowMo).toBe(0);
+      expect(queued.options.timeoutMs).toBe(15_000);
+    }
 
     await server.close();
   });

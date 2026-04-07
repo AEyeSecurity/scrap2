@@ -219,6 +219,17 @@ export interface AsnReportJobPayload {
   cantidad?: number;
 }
 
+export interface RdaReportJobPayload {
+  pagina: 'RdA';
+  operacion: 'reporte';
+  usuario: string;
+  agente: string;
+  contrasena_agente: string;
+  cantidad?: number;
+}
+
+export type ReportJobPayload = AsnReportJobPayload | RdaReportJobPayload;
+
 export interface LoginJobRequest {
   id: string;
   jobType: 'login';
@@ -258,6 +269,16 @@ export interface AsnReportJobRequest {
   options: JobExecutionOptions;
   createdAt: string;
 }
+
+export interface RdaReportJobRequest {
+  id: string;
+  jobType: 'report';
+  payload: RdaReportJobPayload;
+  options: JobExecutionOptions;
+  createdAt: string;
+}
+
+export type ReportJobRequest = AsnReportJobRequest | RdaReportJobRequest;
 
 export interface BalanceJobResult {
   kind: 'balance';
@@ -303,6 +324,20 @@ export interface AsnReportJobResult {
   cargadoHoyNumero: number;
 }
 
+export interface RdaReportJobResult {
+  kind: 'rda-reporte-deposito-total';
+  pagina: 'RdA';
+  usuario: string;
+  depositoTotalTexto: string;
+  depositoTotalNumero: number;
+  cargadoTexto: string;
+  cargadoNumero: number;
+  cargadoHoyTexto: string;
+  cargadoHoyNumero: number;
+}
+
+export type ReportJobResult = AsnReportJobResult | RdaReportJobResult;
+
 export interface AsnFundsOperationResult {
   kind: 'asn-funds-operation';
   pagina: 'ASN';
@@ -330,7 +365,7 @@ export type JobResult =
   | BalanceJobResult
   | RdaFundsOperationResult
   | CreatePlayerJobResult
-  | AsnReportJobResult
+  | ReportJobResult
   | AsnFundsOperationResult
   | AsnBalanceJobResult;
 
@@ -339,7 +374,7 @@ export type JobRequest =
   | CreatePlayerJobRequest
   | DepositJobRequest
   | BalanceJobRequest
-  | AsnReportJobRequest;
+  | ReportJobRequest;
 
 export interface JobExecutionResult {
   artifactPaths: string[];

@@ -25,7 +25,8 @@ http://127.0.0.1:3000
 - `POST /login`: job asincrono de autenticacion.
 - `POST /users/create-player`: job asincrono de alta de usuario.
 - `POST /users/intake-pending`: persistencia sin Playwright para telefonos pendientes.
-- `POST /users/assign-phone`: asignacion sincronica de username por telefono, solo ASN.
+- `POST /whatsapp/intake`: intake simplificado para n8n/Twilio, sin Google Sheets como memoria del Master CRM.
+- `POST /users/assign-phone`: asignacion sincronica de username por telefono.
 - `POST /users/deposit`: carga, descarga, descarga total, saldo o reporte.
 - `GET /jobs/:id`: estado del job asincrono.
 - `POST /reports/asn/run`: crea una corrida persistida de reportes ASN.
@@ -42,7 +43,7 @@ http://127.0.0.1:3000
   - `report` -> `reporte`
 - `cantidad` es obligatoria para `carga` y `descarga`.
 - `cantidad` se ignora en `descarga_total`, `consultar_saldo` y `reporte`.
-- `assign-phone` devuelve `501` fuera de ASN.
+- `assign-phone` valida existencia real en ASN o RdA antes de persistir.
 
 ## Endpoints principales
 
@@ -90,12 +91,39 @@ Alta asincrona de usuario. Si mandas `telefono`, `ownerContext` pasa a ser oblig
 
 No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono. `ownerContext` es obligatorio.
 
+### `POST /whatsapp/intake`
+
+Version simplificada para n8n. Acepta `pagina`, `ownerContext`, `telefono` opcional y `body` de Twilio/WhatsApp. Si `telefono` no viene, lo deriva de `body.WaId` o `body.From`, arma `sourceContext` desde campos `Referral*`, `WaId`, `MessageSid`, `AccountSid` y `ProfileName`, y persiste con la misma logica de `/users/intake-pending`.
+
+Si `ownerContext` no viene, intenta resolverlo desde un intake ya persistido para ese `pagina + telefono`. Esto permite que la rama `SI, quiero mas info` recupere el mismo cajero asignado en el primer contacto sin usar Google Sheets.
+
+Ejemplo:
+
+```json
+{
+  "pagina": "ASN",
+  "body": {
+    "WaId": "5493515747477",
+    "From": "whatsapp:+5493515747477",
+    "ProfileName": "Cliente",
+    "ReferralCtwaClid": "clid-123",
+    "ReferralSourceType": "ad"
+  },
+  "ownerContext": {
+    "ownerKey": "asnlucas10:lucas10",
+    "ownerLabel": "Lucas10",
+    "actorAlias": "Lucas10",
+    "actorPhone": "+5493516549344"
+  }
+}
+```
+
 ### `POST /users/assign-phone`
 
 Flujo sincronico:
 
 1. valida payload;
-2. verifica en ASN que el usuario existe;
+2. verifica en ASN o RdA que el usuario existe;
 3. crea o actualiza `telefono -> username` en Supabase para el owner indicado.
 
 Reglas:
@@ -112,8 +140,7 @@ Errores esperables:
 - `400`: payload invalido o telefono fuera de E.164.
 - `404`: usuario ASN inexistente.
 - `409`: conflicto de username entre owners.
-- `501`: pagina distinta de ASN.
-- `500`: solo si la verificacion ASN falla tecnicamente y no se puede continuar con seguridad.
+- `500`: solo si la verificacion ASN/RdA falla tecnicamente y no se puede continuar con seguridad.
 
 Contrato de error:
 

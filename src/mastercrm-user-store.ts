@@ -1,6 +1,7 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
+import type { PaginaCode } from './types';
 
 const scrypt = promisify(scryptCallback);
 const PASSWORD_HASH_PREFIX = 'scrypt';
@@ -39,6 +40,7 @@ export interface AuthenticateMastercrmUserInput {
 export interface LinkCashierToMastercrmUserInput {
   userId: number;
   ownerKey: string;
+  pagina?: PaginaCode;
 }
 
 export interface GetMastercrmClientsDashboardInput {
@@ -57,7 +59,7 @@ export interface MastercrmUserCashierLinkRecord {
   userId: number;
   ownerKey: string;
   ownerLabel: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   linked: true;
   replaced: boolean;
   previousOwnerKey: string | null;
@@ -67,7 +69,7 @@ export interface MastercrmLinkedOwnerRecord {
   ownerId: string;
   ownerKey: string;
   ownerLabel: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   telefono: string | null;
 }
 
@@ -116,7 +118,7 @@ export interface MastercrmOwnerClientRecord {
   id: string;
   username: string | null;
   telefono: string | null;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   estado: 'assigned' | 'pending';
   ownerKey: string;
   ownerLabel: string;
@@ -177,7 +179,7 @@ interface OwnerRow {
   id: string;
   owner_key: string;
   owner_label: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
 }
 
 interface UserOwnerLinkRow {
@@ -189,7 +191,7 @@ interface UserOwnerLinkRow {
 interface ClientRow {
   id: string;
   phone_e164: string | null;
-  pagina: 'ASN';
+  pagina: PaginaCode;
 }
 
 interface OwnerClientMonthlyFactRow {
@@ -665,12 +667,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
 
     const ownerKey = normalizeMastercrmOwnerKey(input.ownerKey);
+    const pagina = input.pagina ?? 'ASN';
     await this.getActiveUserById(input.userId);
 
     const { data: ownerData, error: ownerError } = await this.client
       .from('owners')
       .select('id, owner_key, owner_label, pagina')
-      .eq('pagina', 'ASN')
+      .eq('pagina', pagina)
       .eq('owner_key', ownerKey)
       .maybeSingle();
 

@@ -13,17 +13,19 @@ import {
   type ReportRunItemRecord
 } from '../src/report-run-store';
 import { createServer } from '../src/server';
-import type { AsnReportJobResult } from '../src/types';
+import type { PaginaCode, ReportJobResult } from '../src/types';
 
 type SeedOwner = {
   id: string;
   ownerKey: string;
   ownerLabel: string;
+  pagina?: PaginaCode;
 };
 
 type SeedClient = {
   id: string;
   phone: string;
+  pagina?: PaginaCode;
 };
 
 type SeedLink = {
@@ -40,6 +42,7 @@ type SeedIdentity = {
   linkId: string;
   username: string;
   isActive: true;
+  pagina?: PaginaCode;
 };
 
 type OutboxEntry = {
@@ -86,7 +89,7 @@ class FakeReportRunStore implements ReportRunStore {
 
   async createRun(input: CreateReportRunInput): Promise<ReportRunRecord> {
     for (const run of this.runs.values()) {
-      if (run.principalKey === input.principalKey && run.reportDate === input.reportDate) {
+      if (run.pagina === input.pagina && run.principalKey === input.principalKey && run.reportDate === input.reportDate) {
         throw new ReportRunStoreError('CONFLICT', 'Could not create report run');
       }
     }
@@ -95,7 +98,7 @@ class FakeReportRunStore implements ReportRunStore {
     const id = `run-${this.runSequence}`;
     const record: ReportRunRecord & { contrasenaAgente: string } = {
       id,
-      pagina: 'ASN',
+      pagina: input.pagina,
       principalKey: input.principalKey.toLowerCase(),
       reportDate: input.reportDate,
       status: 'queued',
@@ -137,6 +140,9 @@ class FakeReportRunStore implements ReportRunStore {
         (candidate) => candidate.linkId === link.id && candidate.isActive
       );
       if (!owner || !client) {
+        continue;
+      }
+      if ((owner.pagina ?? 'ASN') !== run.pagina || (client.pagina ?? 'ASN') !== run.pagina || (identity?.pagina ?? 'ASN') !== run.pagina) {
         continue;
       }
       if (!owner.ownerKey.startsWith(`${normalizedPrincipal}:`)) {
@@ -228,7 +234,7 @@ class FakeReportRunStore implements ReportRunStore {
     return {
       itemId: item.id,
       runId: item.runId,
-      pagina: 'ASN',
+      pagina: run.pagina,
       principalKey: run.principalKey,
       reportDate: run.reportDate,
       agente: run.agente,
@@ -245,7 +251,7 @@ class FakeReportRunStore implements ReportRunStore {
     };
   }
 
-  async completeRunItem(lease: ReportRunLease, result: AsnReportJobResult): Promise<void> {
+  async completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
     const item = this.requireItem(lease.itemId);
     item.status = 'done';
     item.leaseUntil = null;
@@ -269,7 +275,7 @@ class FakeReportRunStore implements ReportRunStore {
     item.updatedAt = new Date().toISOString();
   }
 
-  async upsertDailySnapshot(lease: ReportRunLease, result: AsnReportJobResult): Promise<void> {
+  async upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
     const key = `${lease.reportDate}:${lease.username}`;
     this.snapshots.set(key, {
       pagina: lease.pagina,
@@ -328,18 +334,20 @@ class FakeReportRunStore implements ReportRunStore {
     if (!['completed', 'completed_with_errors', 'failed'].includes(run.status)) {
       return;
     }
-    if (this.outbox.some((entry) => entry.runId === runId && entry.kind === 'asn_report_run_completed')) {
+    const kind = run.pagina === 'RdA' ? 'rda_report_run_completed' : 'asn_report_run_completed';
+    if (this.outbox.some((entry) => entry.runId === runId && entry.kind === kind)) {
       return;
     }
 
     const items = (await this.listRunItems(runId, 500, 0)).items;
     this.outbox.push({
       runId,
-      kind: 'asn_report_run_completed',
+      kind,
       status: 'consumed',
       consumedAt: new Date().toISOString(),
       payload: {
         runId,
+        pagina: run.pagina,
         principalKey: run.principalKey,
         reportDate: run.reportDate,
         totalItems: run.totalItems,
@@ -449,10 +457,24 @@ function createSeededStore(): FakeReportRunStore {
 }
 
 function createExecutor() {
-  return async (lease: ReportRunLease): Promise<AsnReportJobResult> => {
+  return async (lease: ReportRunLease): Promise<ReportJobResult> => {
     const index = Number(lease.clientId.split('-')[1] ?? 1);
     const cargadoMes = index * 1000;
     const cargadoHoy = index * 100;
+    if (lease.pagina === 'RdA') {
+      return {
+        kind: 'rda-reporte-deposito-total',
+        pagina: 'RdA',
+        usuario: lease.username,
+        depositoTotalTexto: formatAmount(cargadoMes),
+        depositoTotalNumero: cargadoMes,
+        cargadoTexto: formatAmount(cargadoMes),
+        cargadoNumero: cargadoMes,
+        cargadoHoyTexto: '0,00',
+        cargadoHoyNumero: 0
+      };
+    }
+
     return {
       kind: 'asn-reporte-cargado-mes',
       pagina: 'ASN',
@@ -518,6 +540,77 @@ describe('report run system', () => {
       'dai731',
       'vnaty893'
     ]);
+
+    await server.close();
+  });
+
+  it('creates a generic RdA report run separated by pagina', async () => {
+    const store = new FakeReportRunStore({
+      owners: [
+        { id: 'owner-asn', ownerKey: 'principal:asn', ownerLabel: 'ASN Owner', pagina: 'ASN' },
+        { id: 'owner-rda', ownerKey: 'principal:rda', ownerLabel: 'RdA Owner', pagina: 'RdA' }
+      ],
+      clients: [
+        { id: 'client-asn', phone: '+5491111111111', pagina: 'ASN' },
+        { id: 'client-rda', phone: '+5492222222222', pagina: 'RdA' }
+      ],
+      links: [
+        { id: 'link-asn', ownerId: 'owner-asn', clientId: 'client-asn', status: 'assigned' },
+        { id: 'link-rda', ownerId: 'owner-rda', clientId: 'client-rda', status: 'assigned' }
+      ],
+      identities: [
+        {
+          id: 'identity-asn',
+          ownerId: 'owner-asn',
+          clientId: 'client-asn',
+          linkId: 'link-asn',
+          username: 'sameuser',
+          isActive: true,
+          pagina: 'ASN'
+        },
+        {
+          id: 'identity-rda',
+          ownerId: 'owner-rda',
+          clientId: 'client-rda',
+          linkId: 'link-rda',
+          username: 'sameuser',
+          isActive: true,
+          pagina: 'RdA'
+        }
+      ]
+    });
+    const logger = createLogger('silent', false);
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/reports/run',
+      payload: {
+        pagina: 'RdA',
+        principalKey: 'principal',
+        agente: 'luqui10',
+        contrasena_agente: '123abc',
+        reportDate: '2026-04-07'
+      }
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json().statusUrl).toBe(`/reports/run/${response.json().runId}`);
+    const itemsResponse = await server.inject({
+      method: 'GET',
+      url: `/reports/run/${response.json().runId}/items`
+    });
+    expect(itemsResponse.statusCode).toBe(200);
+    const itemsBody = itemsResponse.json();
+    expect(itemsBody.total).toBe(1);
+    expect(itemsBody.items[0].ownerKey).toBe('principal:rda');
 
     await server.close();
   });

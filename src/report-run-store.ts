@@ -1,5 +1,5 @@
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
-import type { AsnReportJobResult } from './types';
+import type { PaginaCode, ReportJobResult } from './types';
 
 type ReportRunStoreErrorCode = 'CONFIGURATION' | 'VALIDATION' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL';
 
@@ -19,7 +19,7 @@ export type ReportRunStatus =
 export type ReportRunItemStatus = 'pending' | 'leased' | 'done' | 'failed' | 'retry_wait';
 
 export interface CreateReportRunInput {
-  pagina: 'ASN';
+  pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
   agente: string;
@@ -29,7 +29,7 @@ export interface CreateReportRunInput {
 
 export interface ReportRunRecord {
   id: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
   status: ReportRunStatus;
@@ -71,7 +71,7 @@ export interface ReportRunItemRecord {
 export interface ReportRunLease {
   itemId: string;
   runId: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
   agente: string;
@@ -97,9 +97,9 @@ export interface ReportRunStore {
   deleteRun(runId: string): Promise<void>;
   enqueueRunItemsFromPrincipal(runId: string, principalKey: string): Promise<number>;
   leaseNextRunItem(leaseSeconds: number, maxAttempts: number): Promise<ReportRunLease | null>;
-  completeRunItem(lease: ReportRunLease, result: AsnReportJobResult): Promise<void>;
+  completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   failRunItem(lease: ReportRunLease, error: string): Promise<void>;
-  upsertDailySnapshot(lease: ReportRunLease, result: AsnReportJobResult): Promise<void>;
+  upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   refreshRunStatus(runId: string): Promise<ReportRunRecord>;
   createOutboxEntry(runId: string): Promise<void>;
   getRunById(runId: string): Promise<ReportRunRecord>;
@@ -175,7 +175,7 @@ function mapRpcError(error: PostgrestError, fallbackMessage: string): ReportRunS
 
 type ReportRunRow = {
   id: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   principal_key: string;
   report_date: string;
   status: ReportRunStatus;
@@ -217,7 +217,7 @@ type ReportRunItemRow = {
 type ClaimRow = {
   item_id: string;
   run_id: string;
-  pagina: 'ASN';
+  pagina: PaginaCode;
   principal_key: string;
   report_date: string;
   agente: string;
@@ -381,7 +381,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
     return asLease(rows[0] as ClaimRow);
   }
 
-  async completeRunItem(lease: ReportRunLease, result: AsnReportJobResult): Promise<void> {
+  async completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
     const { error } = await this.client
       .from('report_run_items')
       .update({
@@ -422,7 +422,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
     }
   }
 
-  async upsertDailySnapshot(lease: ReportRunLease, result: AsnReportJobResult): Promise<void> {
+  async upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
     const { error } = await this.client.from('report_daily_snapshots').upsert(
       {
         pagina: lease.pagina,
@@ -492,7 +492,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
     const { error } = await this.client.from('report_outbox').upsert(
       {
         run_id: runId,
-        kind: 'asn_report_run_completed',
+        kind: run.pagina === 'RdA' ? 'rda_report_run_completed' : 'asn_report_run_completed',
         payload,
         status: 'consumed',
         consumed_at: new Date().toISOString()

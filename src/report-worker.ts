@@ -1,9 +1,10 @@
 import type { Logger } from 'pino';
 import { runAsnReportJob } from './asn-report-job';
-import type { AppConfig, AsnReportJobRequest, AsnReportJobResult, JobExecutionOptions } from './types';
+import { runRdaReportJob } from './rda-report-job';
+import type { AppConfig, AsnReportJobRequest, JobExecutionOptions, RdaReportJobRequest, ReportJobResult } from './types';
 import type { ReportRunLease, ReportRunStore } from './report-run-store';
 
-export type ReportJobExecutor = (lease: ReportRunLease) => Promise<AsnReportJobResult>;
+export type ReportJobExecutor = (lease: ReportRunLease) => Promise<ReportJobResult>;
 
 export interface ReportRunWorkerOptions {
   concurrency: number;
@@ -118,25 +119,47 @@ export function createReportJobExecutor(
   options: JobExecutionOptions
 ): ReportJobExecutor {
   return async (lease) => {
-    const request: AsnReportJobRequest = {
+    const baseRequest = {
       id: `report-run-${lease.runId}-${lease.itemId}`,
-      jobType: 'report',
+      jobType: 'report' as const,
       createdAt: new Date().toISOString(),
-      payload: {
-        pagina: 'ASN',
-        operacion: 'reporte',
-        usuario: lease.username,
-        agente: lease.agente,
-        contrasena_agente: lease.contrasenaAgente
-      },
       options
     };
 
-    const execution = await runAsnReportJob(request, appConfig, logger);
-    if (!execution.result || execution.result.kind !== 'asn-reporte-cargado-mes') {
-      throw new Error('Report job did not return an ASN report result');
+    const execution =
+      lease.pagina === 'RdA'
+        ? await runRdaReportJob(
+            {
+              ...baseRequest,
+              payload: {
+                pagina: 'RdA',
+                operacion: 'reporte',
+                usuario: lease.username,
+                agente: lease.agente,
+                contrasena_agente: lease.contrasenaAgente
+              }
+            } satisfies RdaReportJobRequest,
+            appConfig,
+            logger
+          )
+        : await runAsnReportJob(
+            {
+              ...baseRequest,
+              payload: {
+                pagina: 'ASN',
+                operacion: 'reporte',
+                usuario: lease.username,
+                agente: lease.agente,
+                contrasena_agente: lease.contrasenaAgente
+              }
+            } satisfies AsnReportJobRequest,
+            appConfig,
+            logger
+          );
+    if (!execution.result || !['asn-reporte-cargado-mes', 'rda-reporte-deposito-total'].includes(execution.result.kind)) {
+      throw new Error(`Report job did not return a supported report result for pagina=${lease.pagina}`);
     }
 
-    return execution.result;
+    return execution.result as ReportJobResult;
   };
 }

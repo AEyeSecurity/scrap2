@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import { AsnUserCheckError, assertAsnUserExists, type AssertAsnUserExistsInput } from './asn-user-check';
@@ -18,7 +18,7 @@ import {
   type MetaConversionsStore
 } from './meta-conversions-store';
 import { MetaConversionsWorker } from './meta-conversions-worker';
-import { isAttributableMetaSourceContext } from './meta-source-context';
+import { isAttributableMetaSourceContext, normalizeMetaSourceContext } from './meta-source-context';
 import {
   createMastercrmUserStoreFromEnv,
   normalizeMastercrmNombre,
@@ -31,6 +31,7 @@ import {
 } from './mastercrm-user-store';
 import {
   createPlayerPhoneStoreFromEnv,
+  normalizePhone,
   toHttpError,
   type PlayerPhoneStore
 } from './player-phone-store';
@@ -40,11 +41,12 @@ import {
   type ReportRunStore
 } from './report-run-store';
 import { createReportJobExecutor, ReportRunWorker, type ReportJobExecutor } from './report-worker';
+import { runRdaReportJob } from './rda-report-job';
+import { assertRdaUserExists, RdaUserCheckError, type AssertRdaUserExistsInput } from './rda-user-check';
 import { paginaCodeSchema } from './site-profile';
 import type {
   AppConfig,
   AsnReportJobRequest,
-  AsnReportJobResult,
   BalanceJobRequest,
   CreatePlayerJobRequest,
   DepositJobRequest,
@@ -54,6 +56,11 @@ import type {
   JobResult,
   JobStoreEntry,
   LoginJobRequest,
+  MetaSourceContext,
+  OwnerContext,
+  PaginaCode,
+  ReportJobRequest,
+  RdaReportJobRequest,
   ServerConfig
 } from './types';
 
@@ -69,6 +76,7 @@ interface ServerDependencies {
   reportRunStore?: ReportRunStore;
   metaConversionsStore?: MetaConversionsStore;
   asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
+  rdaUserExistsChecker?: (input: AssertRdaUserExistsInput) => Promise<void>;
   metaEnabled?: boolean;
   metaWorkerEnabled?: boolean;
   metaWorkerConcurrency?: number;
@@ -219,6 +227,16 @@ const intakePendingBodySchema = z.object({
   sourceContext: sourceContextSchema.optional()
 });
 
+const whatsappPayloadBodySchema = z.record(z.string(), z.unknown());
+
+const whatsappIntakeBodySchema = z.object({
+  pagina: paginaCodeSchema,
+  telefono: z.string().trim().min(1).nullable().optional(),
+  body: whatsappPayloadBodySchema.optional(),
+  ownerContext: ownerContextSchema.optional(),
+  sourceContext: sourceContextSchema.optional()
+});
+
 const depositBodySchema = z
   .object({
     pagina: paginaCodeSchema,
@@ -244,7 +262,7 @@ const jobParamsSchema = z.object({
 });
 
 const reportRunBodySchema = z.object({
-  pagina: z.literal('ASN'),
+  pagina: paginaCodeSchema,
   principalKey: z.string().trim().min(1),
   agente: z.string().trim().min(1),
   contrasena_agente: z.string().trim().min(1),
@@ -297,6 +315,7 @@ const mastercrmLinkCashierBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
     owner_key: z.string().optional(),
+    pagina: paginaCodeSchema.optional(),
     staff_password: z.string().optional()
   })
   .passthrough();
@@ -449,6 +468,78 @@ function resolveAliasPositiveIntegerField(
   }
 
   return present[0]?.value;
+}
+
+function readOptionalStringField(payload: Record<string, unknown> | undefined, key: string): string | null {
+  if (!payload) {
+    return null;
+  }
+
+  const value = payload[key];
+  if (value == null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeWhatsappPhone(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const digits = value.replace(/\D/g, '');
+  if (!digits) {
+    return null;
+  }
+
+  return normalizePhone(`+${digits}`);
+}
+
+function resolveWhatsappIntakePhone(input: {
+  telefono?: string | null;
+  body?: Record<string, unknown>;
+}): string | null {
+  return (
+    normalizeWhatsappPhone(input.telefono ?? null) ??
+    normalizeWhatsappPhone(readOptionalStringField(input.body, 'WaId')) ??
+    normalizeWhatsappPhone(readOptionalStringField(input.body, 'From'))
+  );
+}
+
+function compactMetaSourceContext(input: MetaSourceContext): MetaSourceContext | null {
+  const normalized = normalizeMetaSourceContext(input);
+  if (!normalized) {
+    return null;
+  }
+
+  return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value != null)) as MetaSourceContext;
+}
+
+function buildWhatsappSourceContext(
+  body: Record<string, unknown> | undefined,
+  explicitSourceContext: MetaSourceContext | undefined
+): MetaSourceContext | null {
+  if (explicitSourceContext) {
+    return compactMetaSourceContext(explicitSourceContext);
+  }
+
+  return compactMetaSourceContext({
+    ctwaClid: readOptionalStringField(body, 'ReferralCtwaClid'),
+    referralSourceId: readOptionalStringField(body, 'ReferralSourceId'),
+    referralSourceUrl: readOptionalStringField(body, 'ReferralSourceUrl'),
+    referralHeadline: readOptionalStringField(body, 'ReferralHeadline'),
+    referralBody: readOptionalStringField(body, 'ReferralBody'),
+    referralSourceType: readOptionalStringField(body, 'ReferralSourceType'),
+    waId: readOptionalStringField(body, 'WaId'),
+    messageSid: readOptionalStringField(body, 'MessageSid'),
+    accountSid: readOptionalStringField(body, 'AccountSid'),
+    profileName: readOptionalStringField(body, 'ProfileName'),
+    clientIpAddress: readOptionalStringField(body, 'ClientIpAddress'),
+    clientUserAgent: readOptionalStringField(body, 'ClientUserAgent'),
+    receivedAt: readOptionalStringField(body, 'ReceivedAt')
+  });
 }
 
 function mastercrmUserToResponse(user: MastercrmUserRecord): Record<string, unknown> {
@@ -658,7 +749,7 @@ function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number;
 }
 
 function parseMastercrmLinkCashierPayload(body: unknown): {
-  data?: { userId: number; ownerKey: string; staffPassword: string };
+  data?: { userId: number; ownerKey: string; pagina: 'ASN' | 'RdA'; staffPassword: string };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmLinkCashierBodySchema.safeParse(body);
@@ -682,7 +773,7 @@ function parseMastercrmLinkCashierPayload(body: unknown): {
     return { issues };
   }
 
-  return { data: { userId, ownerKey, staffPassword }, issues };
+  return { data: { userId, ownerKey, pagina: parsed.data.pagina ?? 'ASN', staffPassword }, issues };
 }
 
 function parseMastercrmOwnerFinancialsPayload(body: unknown): {
@@ -736,6 +827,7 @@ export function createServer(
   let reportWorker: ReportRunWorker | null = null;
   let metaWorker: MetaConversionsWorker | null = null;
   const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
+  const rdaUserExistsChecker = dependencies?.rdaUserExistsChecker ?? assertRdaUserExists;
   const hasSupabaseConfig = Boolean(
     process.env.SUPABASE_URL?.trim() && process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
   );
@@ -812,6 +904,52 @@ export function createServer(
     return cachedMetaConversionsStore;
   }
 
+  async function persistPendingIntake(input: {
+    pagina: PaginaCode;
+    telefono: string;
+    ownerContext: OwnerContext;
+    sourceContext?: MetaSourceContext | null;
+  }) {
+    const intake = await getPlayerPhoneStore().intakePendingCliente({
+      pagina: input.pagina,
+      telefono: input.telefono,
+      ownerContext: input.ownerContext,
+      ...(input.sourceContext ? { sourceContext: input.sourceContext } : {})
+    });
+
+    if (
+      metaEnabled &&
+      metaLeadEnabled &&
+      intake.ownerId &&
+      intake.clientId &&
+      input.sourceContext &&
+      isAttributableMetaSourceContext(input.sourceContext)
+    ) {
+      try {
+        await getMetaConversionsStore().enqueueLead({
+          ownerId: intake.ownerId,
+          clientId: intake.clientId,
+          phoneE164: input.telefono,
+          ownerContext: input.ownerContext,
+          sourceContext: input.sourceContext,
+          ...(input.sourceContext.receivedAt ? { eventTime: input.sourceContext.receivedAt } : {})
+        });
+      } catch (error) {
+        logger.warn(
+          {
+            error,
+            ownerId: intake.ownerId,
+            clientId: intake.clientId,
+            telefono: input.telefono
+          },
+          'Meta attributable lead enqueue failed after intake persistence'
+        );
+      }
+    }
+
+    return intake;
+  }
+
   const internalQueue =
     queue ??
     new JobManager({
@@ -850,7 +988,10 @@ export function createServer(
         }
 
         if (request.jobType === 'report') {
-          return runAsnReportJob(request, appConfig, logger);
+          if (request.payload.pagina === 'RdA') {
+            return runRdaReportJob(request as RdaReportJobRequest, appConfig, logger);
+          }
+          return runAsnReportJob(request as AsnReportJobRequest, appConfig, logger);
         }
 
         throw new Error('Unsupported job type');
@@ -1130,7 +1271,8 @@ export function createServer(
 
       const link = await getMastercrmUserStore().linkCashierToUser({
         userId: parsed.data.userId,
-        ownerKey: normalizeMastercrmOwnerKey(parsed.data.ownerKey)
+        ownerKey: normalizeMastercrmOwnerKey(parsed.data.ownerKey),
+        pagina: parsed.data.pagina
       });
 
       return reply.code(201).send({
@@ -1221,42 +1363,12 @@ export function createServer(
 
     try {
       const payload = parsed.data;
-      const intake = await getPlayerPhoneStore().intakePendingCliente({
+      const intake = await persistPendingIntake({
         pagina: payload.pagina,
         telefono: payload.telefono,
         ownerContext: payload.ownerContext,
         ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {})
       });
-
-      if (
-        metaEnabled &&
-        metaLeadEnabled &&
-        intake.ownerId &&
-        intake.clientId &&
-        payload.sourceContext &&
-        isAttributableMetaSourceContext(payload.sourceContext)
-      ) {
-        try {
-          await getMetaConversionsStore().enqueueLead({
-            ownerId: intake.ownerId,
-            clientId: intake.clientId,
-            phoneE164: payload.telefono,
-            ownerContext: payload.ownerContext,
-            sourceContext: payload.sourceContext,
-            ...(payload.sourceContext.receivedAt ? { eventTime: payload.sourceContext.receivedAt } : {})
-          });
-        } catch (error) {
-          logger.warn(
-            {
-              error,
-              ownerId: intake.ownerId,
-              clientId: intake.clientId,
-              telefono: payload.telefono
-            },
-            'Meta attributable lead enqueue failed after intake persistence'
-          );
-        }
-      }
 
       return reply.code(200).send({
         status: 'ok',
@@ -1281,6 +1393,91 @@ export function createServer(
     }
   });
 
+  fastify.post('/whatsapp/intake', async (request, reply) => {
+    const parsed = whatsappIntakeBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        code: 'INVALID_PAYLOAD',
+        details: {
+          issues: toValidationIssues(parsed.error)
+        }
+      });
+    }
+
+    try {
+      const payload = parsed.data;
+      const telefono = resolveWhatsappIntakePhone({
+        telefono: payload.telefono ?? null,
+        body: payload.body
+      });
+
+      if (!telefono) {
+        return reply.code(400).send({
+          message: 'Invalid payload',
+          code: 'INVALID_PAYLOAD',
+          details: {
+            issues: [{ path: 'telefono', message: 'telefono, body.WaId or body.From is required' }]
+          }
+        });
+      }
+
+      const sourceContext = buildWhatsappSourceContext(payload.body, payload.sourceContext);
+      const ownerContext =
+        payload.ownerContext ??
+        (await getPlayerPhoneStore().resolveOwnerContextByPhone({
+          pagina: payload.pagina,
+          telefono
+        }));
+
+      if (!ownerContext) {
+        return reply.code(400).send({
+          message: 'Invalid payload',
+          code: 'OWNER_CONTEXT_REQUIRED',
+          details: {
+            issues: [
+              {
+                path: 'ownerContext',
+                message: 'ownerContext is required unless the phone already has a persisted owner link'
+              }
+            ]
+          }
+        });
+      }
+
+      const intake = await persistPendingIntake({
+        pagina: payload.pagina,
+        telefono,
+        ownerContext,
+        ...(sourceContext ? { sourceContext } : {})
+      });
+
+      return reply.code(200).send({
+        status: 'ok',
+        pagina: payload.pagina,
+        telefono,
+        ownerContext,
+        cajeroId: intake.cajeroId,
+        jugadorId: intake.jugadorId,
+        linkId: intake.linkId,
+        estado: intake.estado,
+        ...(intake.ownerId ? { ownerId: intake.ownerId } : {})
+      });
+    } catch (error) {
+      const mappedError = toHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          code: mappedError.code,
+          ...(mappedError.details ? { details: mappedError.details } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /whatsapp/intake error');
+      return reply.code(500).send({ message: 'Unexpected persistence error' });
+    }
+  });
+
   fastify.post('/users/assign-phone', async (request, reply) => {
     const parsed = assignPhoneBodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1293,22 +1490,24 @@ export function createServer(
       });
     }
 
-    if (parsed.data.pagina !== 'ASN') {
-      return reply.code(501).send({
-        message: 'assign-phone with ASN existence check is implemented only for ASN',
-        code: 'UNSUPPORTED_PAGINA',
-        details: { pagina: parsed.data.pagina }
-      });
-    }
-
     try {
-      await asnUserExistsChecker({
-        usuario: parsed.data.usuario,
-        agente: parsed.data.agente,
-        contrasenaAgente: parsed.data.contrasena_agente,
-        appConfig,
-        logger
-      });
+      if (parsed.data.pagina === 'ASN') {
+        await asnUserExistsChecker({
+          usuario: parsed.data.usuario,
+          agente: parsed.data.agente,
+          contrasenaAgente: parsed.data.contrasena_agente,
+          appConfig,
+          logger
+        });
+      } else {
+        await rdaUserExistsChecker({
+          usuario: parsed.data.usuario,
+          agente: parsed.data.agente,
+          contrasenaAgente: parsed.data.contrasena_agente,
+          appConfig,
+          logger
+        });
+      }
 
       const store = getPlayerPhoneStore();
       const assignment = await store.assignUsernameByPhone({
@@ -1341,11 +1540,34 @@ export function createServer(
         });
       }
 
+      if (error instanceof RdaUserCheckError) {
+        if (error.code === 'NOT_FOUND') {
+          return reply.code(404).send({
+            message: error.message,
+            code: 'RDA_USER_NOT_FOUND',
+            details: { usuario: parsed.data.usuario }
+          });
+        }
+        if (error.code === 'AMBIGUOUS') {
+          return reply.code(409).send({
+            message: error.message,
+            code: 'RDA_USER_AMBIGUOUS',
+            details: { usuario: parsed.data.usuario }
+          });
+        }
+        logger.error({ error }, 'Unexpected RdA user existence checker error');
+        return reply.code(500).send({
+          message: 'No se pudo verificar el usuario en RdA',
+          code: 'RDA_USER_CHECK_FAILED',
+          details: { usuario: parsed.data.usuario }
+        });
+      }
+
       const mappedError = toHttpError(error);
       if (mappedError) {
         if (mappedError.code === 'USERNAME_ALREADY_EXISTS_IN_PAGINA') {
           return reply.code(409).send({
-            message: 'Ese usuario ya esta vinculado a otro numero dentro de ASN',
+            message: `Ese usuario ya esta vinculado a otro numero dentro de ${parsed.data.pagina}`,
             code: mappedError.code,
             ...(mappedError.details ? { details: mappedError.details } : {})
           });
@@ -1442,28 +1664,38 @@ export function createServer(
 
     const payload = parsed.data;
     if (payload.operacion === 'reporte') {
-      if (payload.pagina !== 'ASN') {
-        return reply.code(501).send({
-          message: 'report operation is implemented only for ASN'
-        });
-      }
-
       const createdAt = new Date().toISOString();
       const id = randomUUID();
-      const reportRequest: AsnReportJobRequest = {
-        id,
-        jobType: 'report',
-        createdAt,
-        payload: {
-          pagina: 'ASN',
-          operacion: 'reporte',
-          usuario: payload.usuario,
-          agente: payload.agente,
-          contrasena_agente: payload.contrasena_agente,
-          ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
-        },
-        options: resolveDepositExecutionOptions(appConfig, payload)
-      };
+      const reportRequest: ReportJobRequest =
+        payload.pagina === 'RdA'
+          ? {
+              id,
+              jobType: 'report',
+              createdAt,
+              payload: {
+                pagina: 'RdA',
+                operacion: 'reporte',
+                usuario: payload.usuario,
+                agente: payload.agente,
+                contrasena_agente: payload.contrasena_agente,
+                ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+              },
+              options: resolveDepositExecutionOptions(appConfig, payload)
+            }
+          : {
+              id,
+              jobType: 'report',
+              createdAt,
+              payload: {
+                pagina: 'ASN',
+                operacion: 'reporte',
+                usuario: payload.usuario,
+                agente: payload.agente,
+                contrasena_agente: payload.contrasena_agente,
+                ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
+              },
+              options: resolveDepositExecutionOptions(appConfig, payload)
+            };
 
       internalQueue.enqueue(reportRequest);
 
@@ -1547,8 +1779,54 @@ export function createServer(
     });
   });
 
-  fastify.post('/reports/asn/run', async (request, reply) => {
+  fastify.post('/reports/run', async (request, reply) => {
     const parsed = reportRunBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    let runId: string | null = null;
+    try {
+      const payload = parsed.data;
+      const store = getReportRunStore();
+      const run = await store.createRun({
+        pagina: payload.pagina,
+        principalKey: payload.principalKey,
+        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
+        agente: payload.agente,
+        contrasenaAgente: payload.contrasena_agente
+      });
+      runId = run.id;
+      await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
+
+      return reply.code(202).send({
+        runId: run.id,
+        status: 'queued',
+        statusUrl: `/reports/run/${run.id}`
+      });
+    } catch (error) {
+      if (runId) {
+        await getReportRunStore()
+          .deleteRun(runId)
+          .catch((cleanupError) => logger.warn({ error: cleanupError, runId }, 'Could not clean report run after enqueue failure'));
+      }
+
+      const mappedError = toReportHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /reports/run error');
+      return reply.code(500).send({ message: 'Unexpected report persistence error' });
+    }
+  });
+
+  fastify.post('/reports/asn/run', async (request, reply) => {
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    const parsed = reportRunBodySchema.safeParse({ ...body, pagina: 'ASN' });
     if (!parsed.success) {
       return reply.code(400).send({
         message: 'Invalid payload',
@@ -1592,14 +1870,9 @@ export function createServer(
     }
   });
 
-  fastify.get('/reports/asn/run/:runId', async (request, reply) => {
-    const parsed = reportRunParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      return reply.code(400).send({ message: 'Invalid run id' });
-    }
-
+  async function handleGetReportRun(runId: string, reply: FastifyReply, logLabel: string) {
     try {
-      const run = await getReportRunStore().getRunById(parsed.data.runId);
+      const run = await getReportRunStore().getRunById(runId);
       return reply.send(run);
     } catch (error) {
       const mappedError = toReportHttpError(error);
@@ -1607,18 +1880,36 @@ export function createServer(
         return reply.code(mappedError.statusCode).send({ message: mappedError.message });
       }
 
-      logger.error({ error }, 'Unexpected /reports/asn/run/:runId error');
+      logger.error({ error }, logLabel);
       return reply.code(500).send({ message: 'Unexpected report persistence error' });
     }
-  });
+  }
 
-  fastify.get('/reports/asn/run/:runId/items', async (request, reply) => {
-    const parsedParams = reportRunParamsSchema.safeParse(request.params);
-    if (!parsedParams.success) {
+  fastify.get('/reports/run/:runId', async (request, reply) => {
+    const parsed = reportRunParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
       return reply.code(400).send({ message: 'Invalid run id' });
     }
 
-    const parsedQuery = reportRunItemsQuerySchema.safeParse(request.query);
+    return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/run/:runId error');
+  });
+
+  fastify.get('/reports/asn/run/:runId', async (request, reply) => {
+    const parsed = reportRunParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/asn/run/:runId error');
+  });
+
+  async function handleListReportRunItems(
+    runId: string,
+    query: unknown,
+    reply: FastifyReply,
+    logLabel: string
+  ) {
+    const parsedQuery = reportRunItemsQuerySchema.safeParse(query);
     if (!parsedQuery.success) {
       return reply.code(400).send({
         message: 'Invalid query',
@@ -1628,7 +1919,7 @@ export function createServer(
 
     try {
       const page = await getReportRunStore().listRunItems(
-        parsedParams.data.runId,
+        runId,
         parsedQuery.data.limit ?? 100,
         parsedQuery.data.offset ?? 0
       );
@@ -1639,9 +1930,27 @@ export function createServer(
         return reply.code(mappedError.statusCode).send({ message: mappedError.message });
       }
 
-      logger.error({ error }, 'Unexpected /reports/asn/run/:runId/items error');
+      logger.error({ error }, logLabel);
       return reply.code(500).send({ message: 'Unexpected report persistence error' });
     }
+  }
+
+  fastify.get('/reports/run/:runId/items', async (request, reply) => {
+    const parsedParams = reportRunParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/run/:runId/items error');
+  });
+
+  fastify.get('/reports/asn/run/:runId/items', async (request, reply) => {
+    const parsedParams = reportRunParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/asn/run/:runId/items error');
   });
 
   fastify.get('/jobs/:id', async (request, reply) => {
