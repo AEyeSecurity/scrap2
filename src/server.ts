@@ -54,6 +54,7 @@ import type {
   JobResult,
   JobStoreEntry,
   LoginJobRequest,
+  PaginaCode,
   ServerConfig
 } from './types';
 
@@ -510,14 +511,24 @@ function resolveExecutionOptions(
 
 function resolveDepositExecutionOptions(
   appConfig: AppConfig,
-  overrides: Partial<Pick<JobExecutionOptions, 'headless' | 'debug' | 'slowMo' | 'timeoutMs'>>
+  overrides: Partial<Pick<JobExecutionOptions, 'headless' | 'debug' | 'slowMo' | 'timeoutMs'>>,
+  pagina?: PaginaCode
 ): JobExecutionOptions {
-  const turboTimeout = Math.min(appConfig.timeoutMs, DEPOSIT_TURBO_TIMEOUT_MS);
+  if (pagina === 'ASN') {
+    const requestedTimeout = overrides.timeoutMs ?? appConfig.timeoutMs;
+    return {
+      headless: true,
+      debug: false,
+      slowMo: 0,
+      timeoutMs: Math.min(requestedTimeout, DEPOSIT_TURBO_TIMEOUT_MS)
+    };
+  }
+
   return {
     headless: overrides.headless ?? appConfig.headless,
     debug: overrides.debug ?? false,
     slowMo: overrides.slowMo ?? 0,
-    timeoutMs: overrides.timeoutMs ?? turboTimeout
+    timeoutMs: overrides.timeoutMs ?? Math.min(appConfig.timeoutMs, DEPOSIT_TURBO_TIMEOUT_MS)
   };
 }
 
@@ -860,7 +871,7 @@ export function createServer(
   if (reportWorkerEnabled) {
     const executor =
       dependencies?.reportJobExecutor ??
-      createReportJobExecutor(appConfig, logger, resolveDepositExecutionOptions(appConfig, {}));
+      createReportJobExecutor(appConfig, logger, resolveDepositExecutionOptions(appConfig, {}, 'ASN'));
     reportWorker = new ReportRunWorker(getReportRunStore(), logger, {
       concurrency: reportWorkerConcurrency,
       pollMs: reportWorkerPollMs,
@@ -1033,7 +1044,9 @@ export function createServer(
           cargadoHoyArs: dashboard.statsKpis.cargadoHoyArs,
           cargadoMesArs: dashboard.statsKpis.cargadoMesArs,
           intakesMes: dashboard.statsKpis.intakesMes,
+          reingresosMes: dashboard.statsKpis.reingresosMes,
           asignacionesMes: dashboard.statsKpis.asignacionesMes,
+          asignacionesBacklogMes: dashboard.statsKpis.asignacionesBacklogMes,
           tasaIntakeAsignacionPct: dashboard.statsKpis.tasaIntakeAsignacionPct,
           clientesConReporte: dashboard.statsKpis.clientesConReporte,
           promedioCargaGeneralArs: dashboard.statsKpis.promedioCargaGeneralArs,
@@ -1056,7 +1069,11 @@ export function createServer(
           ownerLabel: client.ownerLabel,
           cargadoHoy: client.cargadoHoy,
           cargadoMes: client.cargadoMes,
-          reportDate: client.reportDate
+          reportDate: client.reportDate,
+          isNewIntakeMes: client.isNewIntakeMes,
+          isReingresoMes: client.isReingresoMes,
+          assignedEnMes: client.assignedEnMes,
+          assignedDesdeBacklogMes: client.assignedDesdeBacklogMes
         }))
       });
     } catch (error) {
@@ -1456,7 +1473,7 @@ export function createServer(
           contrasena_agente: payload.contrasena_agente,
           ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
         },
-        options: resolveDepositExecutionOptions(appConfig, payload)
+        options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
       };
 
       internalQueue.enqueue(reportRequest);
@@ -1505,7 +1522,7 @@ export function createServer(
               contrasena_agente: payload.contrasena_agente,
               ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
             },
-            options: resolveDepositExecutionOptions(appConfig, payload)
+            options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
           }
         : {
             id,
@@ -1529,7 +1546,7 @@ export function createServer(
                     contrasena_agente: payload.contrasena_agente,
                     cantidad: payload.cantidad as number
                   },
-            options: resolveDepositExecutionOptions(appConfig, payload)
+            options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
           };
 
     internalQueue.enqueue(jobRequest);

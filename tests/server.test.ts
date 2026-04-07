@@ -419,7 +419,9 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
       cargadoHoyArs: null,
       cargadoMesArs: null,
       intakesMes: 0,
+      reingresosMes: 0,
       asignacionesMes: 0,
+      asignacionesBacklogMes: 0,
       tasaIntakeAsignacionPct: null,
       clientesConReporte: 0,
       promedioCargaGeneralArs: null,
@@ -775,7 +777,9 @@ describe('server routes', () => {
         cargadoHoyArs: 1200,
         cargadoMesArs: 5600,
         intakesMes: 4,
+        reingresosMes: 1,
         asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
         tasaIntakeAsignacionPct: 50,
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
@@ -802,7 +806,11 @@ describe('server routes', () => {
           ownerLabel: `Owner ${userId}`,
           cargadoHoy: 600,
           cargadoMes: 2800,
-          reportDate: '2026-03-12'
+          reportDate: '2026-03-12',
+          isNewIntakeMes: true,
+          isReingresoMes: false,
+          assignedEnMes: true,
+          assignedDesdeBacklogMes: false
         }
       ]
     });
@@ -870,7 +878,9 @@ describe('server routes', () => {
         cargadoHoyArs: 1200,
         cargadoMesArs: 5600,
         intakesMes: 4,
+        reingresosMes: 1,
         asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
         tasaIntakeAsignacionPct: 50,
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
@@ -897,7 +907,11 @@ describe('server routes', () => {
           ownerLabel: 'Owner 101',
           cargadoHoy: 600,
           cargadoMes: 2800,
-          reportDate: '2026-03-12'
+          reportDate: '2026-03-12',
+          isNewIntakeMes: true,
+          isReingresoMes: false,
+          assignedEnMes: true,
+          assignedDesdeBacklogMes: false
         }
       ]
     });
@@ -936,7 +950,9 @@ describe('server routes', () => {
         cargadoHoyArs: 1200,
         cargadoMesArs: 5600,
         intakesMes: 4,
+        reingresosMes: 1,
         asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
         tasaIntakeAsignacionPct: 50,
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
@@ -963,7 +979,11 @@ describe('server routes', () => {
           ownerLabel: 'Owner 202',
           cargadoHoy: 600,
           cargadoMes: 2800,
-          reportDate: '2026-03-12'
+          reportDate: '2026-03-12',
+          isNewIntakeMes: true,
+          isReingresoMes: false,
+          assignedEnMes: true,
+          assignedDesdeBacklogMes: false
         }
       ]
     });
@@ -1002,7 +1022,9 @@ describe('server routes', () => {
         cargadoHoyArs: 1200,
         cargadoMesArs: 5600,
         intakesMes: 4,
+        reingresosMes: 1,
         asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
         tasaIntakeAsignacionPct: 50,
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
@@ -1029,7 +1051,11 @@ describe('server routes', () => {
           ownerLabel: 'Owner 303',
           cargadoHoy: 600,
           cargadoMes: 2800,
-          reportDate: '2026-03-12'
+          reportDate: '2026-03-12',
+          isNewIntakeMes: true,
+          isReingresoMes: false,
+          assignedEnMes: true,
+          assignedDesdeBacklogMes: false
         }
       ]
     });

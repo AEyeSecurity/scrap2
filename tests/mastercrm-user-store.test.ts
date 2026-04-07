@@ -394,11 +394,7 @@ describe('mastercrm clients dashboard', () => {
       ],
       error: null
     });
-    client.queue('owner_client_links', 'select', {
-      data: [],
-      error: null
-    });
-    client.queue('owner_client_identities', 'select', {
+    client.queue('owner_client_monthly_facts', 'select', {
       data: [],
       error: null
     });
@@ -418,7 +414,7 @@ describe('mastercrm clients dashboard', () => {
       data: null,
       error: null
     });
-    client.queue('owner_client_events', 'select', {
+    client.queue('report_daily_snapshots', 'select', {
       data: [],
       error: null
     });
@@ -463,7 +459,9 @@ describe('mastercrm clients dashboard', () => {
         cargadoHoyArs: null,
         cargadoMesArs: null,
         intakesMes: 0,
+        reingresosMes: 0,
         asignacionesMes: 0,
+        asignacionesBacklogMes: 0,
         tasaIntakeAsignacionPct: null,
         clientesConReporte: 0,
         promedioCargaGeneralArs: null,
@@ -514,12 +512,21 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
-    client.queue('owner_client_links', 'select', {
+    client.queue('owner_client_monthly_facts', 'select', {
       data: [
         {
-          id: 'link-pending',
-          status: 'pending',
+          owner_id: 'owner-vicky',
           client_id: 'client-1',
+          link_id: 'link-pending',
+          month_start: '2026-03-01',
+          status_at_month_end: 'pending',
+          identity_id_at_month_end: null,
+          username_at_month_end: null,
+          had_intake_in_month: false,
+          is_new_intake_in_month: false,
+          is_reentry_in_month: false,
+          had_assignment_in_month: false,
+          assigned_from_backlog_in_month: false,
           clients: {
             id: 'client-1',
             phone_e164: '+5493735506280',
@@ -527,10 +534,6 @@ describe('mastercrm clients dashboard', () => {
           }
         }
       ],
-      error: null
-    });
-    client.queue('owner_client_identities', 'select', {
-      data: [],
       error: null
     });
     client.queue('report_daily_snapshots', 'select', {
@@ -549,7 +552,7 @@ describe('mastercrm clients dashboard', () => {
       data: null,
       error: null
     });
-    client.queue('owner_client_events', 'select', {
+    client.queue('report_daily_snapshots', 'select', {
       data: [],
       error: null
     });
@@ -568,7 +571,11 @@ describe('mastercrm clients dashboard', () => {
         ownerLabel: 'Vicky',
         cargadoHoy: null,
         cargadoMes: null,
-        reportDate: null
+        reportDate: null,
+        isNewIntakeMes: false,
+        isReingresoMes: false,
+        assignedEnMes: false,
+        assignedDesdeBacklogMes: false
       }
     ]);
   });
@@ -604,34 +611,53 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
-    client.queue('owner_client_links', 'select', {
+    client.queue('owner_client_monthly_facts', 'select', {
       data: [
         {
-          id: 'link-1',
-          status: 'assigned',
+          owner_id: 'owner-lucas',
           client_id: 'client-1',
+          link_id: 'link-1',
+          month_start: '2026-03-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-1',
+          username_at_month_end: 'uno',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
           clients: { id: 'client-1', phone_e164: '+5491111111111', pagina: 'ASN' }
         },
         {
-          id: 'link-2',
-          status: 'assigned',
+          owner_id: 'owner-lucas',
           client_id: 'client-2',
+          link_id: 'link-2',
+          month_start: '2026-03-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-2',
+          username_at_month_end: 'dos',
+          had_intake_in_month: true,
+          is_new_intake_in_month: false,
+          is_reentry_in_month: true,
+          had_assignment_in_month: false,
+          assigned_from_backlog_in_month: false,
           clients: { id: 'client-2', phone_e164: '+5492222222222', pagina: 'ASN' }
         },
         {
-          id: 'link-3',
-          status: 'assigned',
+          owner_id: 'owner-lucas',
           client_id: 'client-3',
+          link_id: 'link-3',
+          month_start: '2026-03-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-3',
+          username_at_month_end: 'tres',
+          had_intake_in_month: false,
+          is_new_intake_in_month: false,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: true,
           clients: { id: 'client-3', phone_e164: '+5493333333333', pagina: 'ASN' }
         }
-      ],
-      error: null
-    });
-    client.queue('owner_client_identities', 'select', {
-      data: [
-        { id: 'identity-1', owner_client_link_id: 'link-1', username: 'uno', is_active: true },
-        { id: 'identity-2', owner_client_link_id: 'link-2', username: 'dos', is_active: true },
-        { id: 'identity-3', owner_client_link_id: 'link-3', username: 'tres', is_active: true }
       ],
       error: null
     });
@@ -651,23 +677,18 @@ describe('mastercrm clients dashboard', () => {
       data: null,
       error: null
     });
-    client.queue('owner_client_events', 'select', {
-      data: [
-        { client_id: 'client-1', event_type: 'intake' },
-        { client_id: 'client-1', event_type: 'intake' },
-        { client_id: 'client-2', event_type: 'intake' },
-        { client_id: 'client-1', event_type: 'assign_username' },
-        { client_id: 'client-2', event_type: 'assign_username' },
-        { client_id: 'client-3', event_type: 'assign_username' }
-      ],
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
       error: null
     });
 
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-03' });
 
-    expect(dashboard.statsKpis.intakesMes).toBe(2);
-    expect(dashboard.statsKpis.asignacionesMes).toBe(3);
+    expect(dashboard.statsKpis.intakesMes).toBe(1);
+    expect(dashboard.statsKpis.reingresosMes).toBe(1);
+    expect(dashboard.statsKpis.asignacionesMes).toBe(1);
+    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(1);
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
   });
 
@@ -702,11 +723,7 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
-    client.queue('owner_client_links', 'select', {
-      data: [],
-      error: null
-    });
-    client.queue('owner_client_identities', 'select', {
+    client.queue('owner_client_monthly_facts', 'select', {
       data: [],
       error: null
     });
@@ -722,7 +739,7 @@ describe('mastercrm clients dashboard', () => {
       data: null,
       error: null
     });
-    client.queue('owner_client_events', 'select', {
+    client.queue('report_daily_snapshots', 'select', {
       data: [],
       error: null
     });

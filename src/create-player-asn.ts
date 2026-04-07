@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
+import { handleAsnPostLoginContinue } from './asn-post-login';
 import { ensureAuthenticated } from './auth';
 import { configureContext, launchChromiumBrowser } from './browser';
 import {
@@ -169,38 +170,6 @@ async function findVisibleBySelectors(page: Page, selectors: string[], timeoutMs
   }
 
   throw new Error(lastError);
-}
-
-async function tryHandleAsnContinue(page: Page, timeoutMs: number): Promise<'ok' | 'skipped'> {
-  const selector = [
-    'button:has-text("Continuar")',
-    'a:has-text("Continuar")',
-    'input[type="button"][value*="Continuar" i]',
-    'input[type="submit"][value*="Continuar" i]',
-    'button:has-text("Continue")',
-    'a:has-text("Continue")'
-  ].join(', ');
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const candidates = page.locator(selector);
-    const count = await candidates.count().catch(() => 0);
-
-    for (let i = 0; i < count; i += 1) {
-      const candidate = candidates.nth(i);
-      if (!(await candidate.isVisible().catch(() => false))) {
-        continue;
-      }
-
-      await clickLocator(candidate, timeoutMs);
-      await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => undefined);
-      return 'ok';
-    }
-
-    await page.waitForTimeout(100);
-  }
-
-  return 'skipped';
 }
 
 async function openAsnNewPlayerDialog(page: Page, timeoutMs: number): Promise<void> {
@@ -737,7 +706,7 @@ export async function runCreatePlayerAsnJob(
     });
 
     const continueStartedAt = new Date().toISOString();
-    const continueState = await tryHandleAsnContinue(page, isTurbo ? 800 : Math.min(runtimeConfig.timeoutMs, 2_000));
+    const continueState = await handleAsnPostLoginContinue(page, isTurbo ? 800 : Math.min(runtimeConfig.timeoutMs, 2_000));
     allSteps.push({
       name: '01b-continue-intermediate',
       status: continueState === 'ok' ? 'ok' : 'skipped',

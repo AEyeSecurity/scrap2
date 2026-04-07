@@ -439,7 +439,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
         cargado_mes: result.cargadoNumero,
         raw_result: result
       },
-      { onConflict: 'report_date,pagina,username' }
+      { onConflict: 'report_date,identity_id' }
     );
 
     if (error) {

@@ -1,5 +1,6 @@
 import type { Page } from 'playwright';
 import type { Logger } from 'pino';
+import { handleAsnPostLoginContinue } from './asn-post-login';
 import { formatAsnUserNotFoundMessage } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { configureContext, launchChromiumBrowser } from './browser';
@@ -160,6 +161,7 @@ export async function assertAsnUserExists(input: AssertAsnUserExistsInput): Prom
       input.logger,
       { persistSession: false }
     );
+    await handleAsnPostLoginContinue(page, Math.min(runtimeConfig.timeoutMs, 3_000));
 
     const probe = await probeAsnUserExists(page, input.usuario, Math.min(runtimeConfig.timeoutMs, 8_000));
 

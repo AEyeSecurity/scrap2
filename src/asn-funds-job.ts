@@ -3,6 +3,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
+import { handleAsnPostLoginContinue } from './asn-post-login';
 import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { configureContext, launchChromiumBrowser } from './browser';
@@ -243,39 +244,6 @@ async function executeActionStep(
       error: error instanceof Error ? error.message : String(error)
     };
   }
-}
-
-async function handleAsnContinueIfPresent(page: Page, timeoutMs: number): Promise<'ok' | 'skipped'> {
-  const selector = [
-    'button:has-text("Continuar")',
-    'a:has-text("Continuar")',
-    'input[type="button"][value*="Continuar" i]',
-    'input[type="submit"][value*="Continuar" i]',
-    'button:has-text("Continue")',
-    'a:has-text("Continue")'
-  ].join(', ');
-
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const candidates = page.locator(selector);
-    const count = await candidates.count().catch(() => 0);
-
-    for (let i = 0; i < count; i += 1) {
-      const candidate = candidates.nth(i);
-      if (!(await candidate.isVisible().catch(() => false))) {
-        continue;
-      }
-
-      await clickLocator(candidate, timeoutMs);
-      await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => undefined);
-      return 'ok';
-    }
-
-    await page.waitForTimeout(100);
-  }
-
-  return 'skipped';
 }
 
 async function tryReadAsnAvailableBalance(page: Page): Promise<AsnBalanceSnapshot | null> {
@@ -886,7 +854,7 @@ async function runAsnSessionSteps<T>(params: {
 
     const continueStartedAt = new Date().toISOString();
     try {
-      const continueResult = await handleAsnContinueIfPresent(
+      const continueResult = await handleAsnPostLoginContinue(
         page,
         !appConfig.debug && appConfig.slowMo === 0 ? 900 : Math.min(appConfig.timeoutMs, 3_000)
       );

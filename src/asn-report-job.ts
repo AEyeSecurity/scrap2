@@ -2,6 +2,7 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import type { Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
+import { handleAsnPostLoginContinue } from './asn-post-login';
 import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { parseBalanceNumber } from './balance-job';
@@ -142,47 +143,6 @@ async function findFirstVisibleLocator(page: Page, selector: string, timeoutMs: 
   }
 
   throw new Error(`No visible element found for selector: ${selector}`);
-}
-
-async function clickLocator(locator: Locator, timeoutMs: number): Promise<void> {
-  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
-  try {
-    await locator.click({ timeout: timeoutMs });
-  } catch {
-    await locator.click({ timeout: timeoutMs, force: true });
-  }
-}
-
-async function tryHandleAsnContinue(page: Page, timeoutMs: number): Promise<'ok' | 'skipped'> {
-  const selector = [
-    'button:has-text("Continuar")',
-    'a:has-text("Continuar")',
-    'input[type="button"][value*="Continuar" i]',
-    'input[type="submit"][value*="Continuar" i]',
-    'button:has-text("Continue")',
-    'a:has-text("Continue")'
-  ].join(', ');
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const candidates = page.locator(selector);
-    const count = await candidates.count().catch(() => 0);
-
-    for (let i = 0; i < count; i += 1) {
-      const candidate = candidates.nth(i);
-      if (!(await candidate.isVisible().catch(() => false))) {
-        continue;
-      }
-
-      await clickLocator(candidate, timeoutMs);
-      await page.waitForLoadState('domcontentloaded', { timeout: timeoutMs }).catch(() => undefined);
-      return 'ok';
-    }
-
-    await page.waitForTimeout(100);
-  }
-
-  return 'skipped';
 }
 
 async function executeActionStep(
@@ -468,7 +428,7 @@ export async function runAsnReportJob(
     });
 
     const continueStartedAt = new Date().toISOString();
-    const continueState = await tryHandleAsnContinue(page, isTurbo ? 900 : Math.min(runtimeConfig.timeoutMs, 3_000));
+    const continueState = await handleAsnPostLoginContinue(page, isTurbo ? 900 : Math.min(runtimeConfig.timeoutMs, 3_000));
     steps.push({
       name: '01b-continue-intermediate',
       status: continueState === 'ok' ? 'ok' : 'skipped',

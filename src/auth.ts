@@ -82,21 +82,14 @@ async function waitForAuthenticatedState(page: Page, cfg: AppConfig): Promise<vo
   let lastAuthError: string | null = null;
 
   while (Date.now() - startedAt < cfg.timeoutMs) {
-    if (cfg.selectors.success) {
-      const successVisible = await page.locator(cfg.selectors.success).first().isVisible().catch(() => false);
-      if (successVisible) {
-        if (successSince == null) {
-          successSince = Date.now();
-        }
-      } else if (successSince != null) {
-        successSince = null;
-      }
-    }
-
+    const configuredSuccessVisible = cfg.selectors.success
+      ? await page.locator(cfg.selectors.success).first().isVisible().catch(() => false)
+      : false;
     const loginFormVisible = await hasLoginForm(page, cfg);
     const authenticatedShellVisible = await hasAuthenticatedShell(page);
     const authenticatedSignal = (!isLoginPath(page) || authenticatedShellVisible) && !loginFormVisible;
-    if (authenticatedSignal) {
+
+    if (configuredSuccessVisible || authenticatedSignal) {
       if (successSince == null) {
         successSince = Date.now();
       }

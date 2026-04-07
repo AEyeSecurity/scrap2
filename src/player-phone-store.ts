@@ -111,12 +111,39 @@ export interface AssignUsernameByPhoneResult {
   createdLink: boolean;
   movedFromPhone: string | null;
   deletedOldPhone: boolean;
+  ownerId?: string;
+  clientId?: string;
 }
 
 export interface UnassignUsernameByPhoneResult {
   previousUsername: string | null;
   currentStatus: 'pending';
   unlinked: boolean;
+}
+
+function getBuenosAiresMonthStartDate(input?: string | Date | null): string {
+  const date =
+    input instanceof Date
+      ? input
+      : typeof input === 'string' && input.trim().length > 0
+        ? new Date(input)
+        : new Date();
+
+  const fallback = new Date();
+  const resolved = Number.isNaN(date.getTime()) ? fallback : date;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit'
+  }).formatToParts(resolved);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+
+  if (!year || !month) {
+    return getBuenosAiresMonthStartDate(fallback);
+  }
+
+  return `${year}-${month}-01`;
 }
 
 export interface PlayerPhoneStore {
@@ -432,6 +459,8 @@ function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResu
     created_link?: unknown;
     moved_from_phone?: unknown;
     deleted_old_phone?: unknown;
+    owner_id?: unknown;
+    client_id?: unknown;
   };
 
   if (typeof payload.current_username !== 'string' || !payload.current_username) {
@@ -485,12 +514,25 @@ function asAssignUsernameByPhoneResult(data: unknown): AssignUsernameByPhoneResu
     createdClient: payload.created_client,
     createdLink: payload.created_link,
     movedFromPhone: (payload.moved_from_phone as string | null | undefined) ?? null,
-    deletedOldPhone: payload.deleted_old_phone
+    deletedOldPhone: payload.deleted_old_phone,
+    ...(typeof payload.owner_id === 'string' && payload.owner_id ? { ownerId: payload.owner_id } : {}),
+    ...(typeof payload.client_id === 'string' && payload.client_id ? { clientId: payload.client_id } : {})
   };
 }
 
 class SupabasePlayerPhoneStore implements PlayerPhoneStore {
   constructor(private readonly client: SupabaseClient) {}
+
+  private async refreshMonthlyFacts(ownerId: string, occurredAt?: string | null): Promise<void> {
+    const { error } = await this.client.rpc('refresh_owner_client_monthly_facts_v1', {
+      p_owner_id: ownerId,
+      p_month_start: getBuenosAiresMonthStartDate(occurredAt)
+    });
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not refresh owner monthly facts');
+    }
+  }
 
   async intakePendingCliente(input: IntakePendingInput): Promise<IntakePendingResult> {
     const pagina = input.pagina;
@@ -512,7 +554,12 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
       throw mapIntakePendingRpcError(error);
     }
 
-    return asIntakePendingResult(data);
+    const result = asIntakePendingResult(data);
+    if (result.ownerId) {
+      await this.refreshMonthlyFacts(result.ownerId, sourceContext?.receivedAt ?? null);
+    }
+
+    return result;
   }
 
   async syncCreatePlayerLink(input: SyncCreatePlayerLinkInput): Promise<void> {
@@ -562,7 +609,12 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
       throw mapAssignUsernameByPhoneRpcError(error);
     }
 
-    return asAssignUsernameByPhoneResult(data);
+    const result = asAssignUsernameByPhoneResult(data);
+    if (result.ownerId) {
+      await this.refreshMonthlyFacts(result.ownerId);
+    }
+
+    return result;
   }
 
   async unassignUsernameByPhone(input: UnassignPhoneInput): Promise<UnassignUsernameByPhoneResult> {
@@ -691,6 +743,8 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     if (eventError) {
       throw mapPostgrestError(eventError, 'Could not append owner-client unlink event');
     }
+
+    await this.refreshMonthlyFacts(owner.id);
 
     return {
       previousUsername: activeIdentity.username,

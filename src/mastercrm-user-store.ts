@@ -92,7 +92,9 @@ export interface MastercrmStatsKpisRecord {
   cargadoHoyArs: number | null;
   cargadoMesArs: number | null;
   intakesMes: number;
+  reingresosMes: number;
   asignacionesMes: number;
+  asignacionesBacklogMes: number;
   tasaIntakeAsignacionPct: number | null;
   clientesConReporte: number;
   promedioCargaGeneralArs: number | null;
@@ -121,6 +123,10 @@ export interface MastercrmOwnerClientRecord {
   cargadoHoy: number | null;
   cargadoMes: number | null;
   reportDate: string | null;
+  isNewIntakeMes: boolean;
+  isReingresoMes: boolean;
+  assignedEnMes: boolean;
+  assignedDesdeBacklogMes: boolean;
 }
 
 export interface MastercrmMonthlyTrendPoint {
@@ -186,18 +192,20 @@ interface ClientRow {
   pagina: 'ASN';
 }
 
-interface OwnerClientLinkRow {
-  id: string;
-  status: 'assigned' | 'pending';
+interface OwnerClientMonthlyFactRow {
+  owner_id: string;
   client_id: string;
+  link_id: string;
+  month_start: string;
+  status_at_month_end: 'assigned' | 'pending';
+  identity_id_at_month_end: string | null;
+  username_at_month_end: string | null;
+  had_intake_in_month: boolean;
+  is_new_intake_in_month: boolean;
+  is_reentry_in_month: boolean;
+  had_assignment_in_month: boolean;
+  assigned_from_backlog_in_month: boolean;
   clients: ClientRow | ClientRow[];
-}
-
-interface OwnerClientIdentityRow {
-  id: string;
-  owner_client_link_id: string;
-  username: string;
-  is_active: boolean;
 }
 
 interface ReportDailySnapshotRow {
@@ -524,7 +532,9 @@ function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
       cargadoHoyArs: null,
       cargadoMesArs: null,
       intakesMes: 0,
+      reingresosMes: 0,
       asignacionesMes: 0,
+      asignacionesBacklogMes: 0,
       tasaIntakeAsignacionPct: null,
       clientesConReporte: 0,
       promedioCargaGeneralArs: null,
@@ -735,25 +745,22 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const [
       ownerPhone,
-      ownerClientLinksResult,
-      ownerClientIdentitiesResult,
+      ownerClientFactsResult,
       latestReportDateResult,
+      monthlyClientSnapshotsResult,
       financialSettingsResult,
       adSpendResult,
-      eventsResult,
       monthlyTrendSnapshotsResult
     ] =
       await Promise.all([
         this.getOwnerPhone(owner.id),
         this.client
-          .from('owner_client_links')
-          .select('id, status, client_id, clients!inner(id, phone_e164, pagina)')
-          .eq('owner_id', owner.id),
-        this.client
-          .from('owner_client_identities')
-          .select('id, owner_client_link_id, username, is_active')
+          .from('owner_client_monthly_facts')
+          .select(
+            'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina)'
+          )
           .eq('owner_id', owner.id)
-          .eq('is_active', true),
+          .eq('month_start', monthWindow.monthStartDate),
         this.client
           .from('report_daily_snapshots')
           .select('report_date')
@@ -762,6 +769,12 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .lt('report_date', monthWindow.nextMonthStartDate)
           .order('report_date', { ascending: false })
           .limit(1),
+        this.client
+          .from('report_daily_snapshots')
+          .select('client_id')
+          .eq('owner_id', owner.id)
+          .gte('report_date', monthWindow.monthStartDate)
+          .lt('report_date', monthWindow.nextMonthStartDate),
         this.client
           .from('owner_financial_settings')
           .select('commission_pct')
@@ -774,13 +787,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .eq('month_start', monthWindow.monthStartDate)
           .maybeSingle(),
         this.client
-          .from('owner_client_events')
-          .select('client_id, event_type')
-          .eq('owner_id', owner.id)
-          .gte('created_at', monthWindow.startedAtIso)
-          .lt('created_at', monthWindow.endedAtIso)
-        ,
-        this.client
           .from('report_daily_snapshots')
           .select('report_date, cargado_mes')
           .eq('owner_id', owner.id)
@@ -788,11 +794,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .lt('report_date', monthWindow.nextMonthStartDate)
       ]);
 
-    if (ownerClientLinksResult.error) {
-      throw mapPostgrestError(ownerClientLinksResult.error, 'Could not read owner client links');
+    if (ownerClientFactsResult.error) {
+      throw mapPostgrestError(ownerClientFactsResult.error, 'Could not read owner client monthly facts');
     }
-    if (ownerClientIdentitiesResult.error) {
-      throw mapPostgrestError(ownerClientIdentitiesResult.error, 'Could not read owner client identities');
+    if (monthlyClientSnapshotsResult.error) {
+      throw mapPostgrestError(monthlyClientSnapshotsResult.error, 'Could not read owner monthly client snapshots');
     }
     if (latestReportDateResult.error) {
       throw mapPostgrestError(latestReportDateResult.error, 'Could not read owner report date');
@@ -802,9 +808,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
     if (adSpendResult.error) {
       throw mapPostgrestError(adSpendResult.error, 'Could not read owner monthly ad spend');
-    }
-    if (eventsResult.error) {
-      throw mapPostgrestError(eventsResult.error, 'Could not read owner events');
     }
     if (monthlyTrendSnapshotsResult.error) {
       throw mapPostgrestError(monthlyTrendSnapshotsResult.error, 'Could not read owner monthly trend snapshots');
@@ -818,17 +821,10 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       telefono: ownerPhone
     };
 
-    const ownerClientLinks = (ownerClientLinksResult.data as OwnerClientLinkRow[] | null) ?? [];
-    const ownerClientIdentities = (ownerClientIdentitiesResult.data as OwnerClientIdentityRow[] | null) ?? [];
-    const activeIdentityByLinkId = new Map<string, OwnerClientIdentityRow>();
-    for (const identity of ownerClientIdentities) {
-      if (identity.is_active) {
-        activeIdentityByLinkId.set(identity.owner_client_link_id, identity);
-      }
-    }
-    const totalClients = ownerClientLinks.length;
-    const assignedClients = ownerClientLinks.filter((link) => link.status === 'assigned').length;
-    const pendingClients = ownerClientLinks.filter((link) => link.status === 'pending').length;
+    const factsForSelectedMonth = (ownerClientFactsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
+    const totalClients = factsForSelectedMonth.length;
+    const assignedClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'assigned').length;
+    const pendingClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'pending').length;
     const conversionAsignadoPct =
       totalClients > 0 ? roundTo((assignedClients / totalClients) * 100) : null;
 
@@ -839,8 +835,15 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     let cargadoHoyTotal: number | null = null;
     let cargadoMesTotal: number | null = null;
-    let clientesConReporte = 0;
-    const snapshotByIdentityId = new Map<
+    const monthlyClientSnapshotRows =
+      (monthlyClientSnapshotsResult.data as Array<{ client_id: string | null }> | null) ?? [];
+    const reportClientIds = new Set(
+      monthlyClientSnapshotRows
+        .map((snapshot) => (typeof snapshot.client_id === 'string' ? snapshot.client_id : null))
+        .filter((clientId): clientId is string => Boolean(clientId))
+    );
+    let clientesConReporte = reportClientIds.size;
+    const snapshotByClientId = new Map<
       string,
       { cargadoHoy: number | null; cargadoMes: number | null; reportDate: string | null }
     >();
@@ -859,26 +862,22 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       const snapshots = (snapshotsData as ReportDailySnapshotRow[] | null) ?? [];
       cargadoHoyTotal = 0;
       cargadoMesTotal = 0;
-      const reportClientIds = new Set<string>();
 
       for (const snapshot of snapshots) {
         const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
         const cargadoMes = toFiniteNumber(snapshot.cargado_mes);
-        if (typeof snapshot.identity_id === 'string' && snapshot.identity_id.length > 0) {
-          snapshotByIdentityId.set(snapshot.identity_id, {
-            cargadoHoy,
-            cargadoMes,
+        const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
+        if (clientId) {
+          const existing = snapshotByClientId.get(clientId);
+          snapshotByClientId.set(clientId, {
+            cargadoHoy: roundTo((existing?.cargadoHoy ?? 0) + (cargadoHoy ?? 0)),
+            cargadoMes: roundTo((existing?.cargadoMes ?? 0) + (cargadoMes ?? 0)),
             reportDate: snapshot.report_date
           });
         }
         cargadoHoyTotal += cargadoHoy ?? 0;
         cargadoMesTotal += cargadoMes ?? 0;
-        if (typeof snapshot.identity_id === 'string' && snapshot.identity_id.length > 0) {
-          reportClientIds.add(snapshot.identity_id);
-        }
       }
-
-      clientesConReporte = reportClientIds.size;
 
       const { data: reportRunData, error: reportRunError } = await this.client
         .from('report_runs')
@@ -938,29 +937,20 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const commissionPct = toFiniteNumber(financialSettings?.commission_pct);
     const adSpendArs = toFiniteNumber(adSpendRow?.ad_spend_ars);
-    const events = (eventsResult.data as OwnerClientEventRow[] | null) ?? [];
-    const intakeClientIds = new Set(
-      events
-        .filter((event) => event.event_type === 'intake' && typeof event.client_id === 'string' && event.client_id.length > 0)
-        .map((event) => event.client_id as string)
-    );
-    const assignmentClientIds = new Set(
-      events
-        .filter(
-          (event) => event.event_type === 'assign_username' && typeof event.client_id === 'string' && event.client_id.length > 0
-        )
-        .map((event) => event.client_id as string)
-    );
-    const intakesMes = intakeClientIds.size;
-    const asignacionesMes = assignmentClientIds.size;
-    const assignedIntakeClientCount = ownerClientLinks.filter(
-      (link) => link.status === 'assigned' && intakeClientIds.has(link.client_id)
+    const intakesMes = factsForSelectedMonth.filter((fact) => fact.is_new_intake_in_month).length;
+    const reingresosMes = factsForSelectedMonth.filter((fact) => fact.is_reentry_in_month).length;
+    const asignacionesBacklogMes = factsForSelectedMonth.filter((fact) => fact.assigned_from_backlog_in_month).length;
+    const asignacionesMes = factsForSelectedMonth.filter(
+      (fact) => fact.had_assignment_in_month && !fact.assigned_from_backlog_in_month
+    ).length;
+    const assignedIntakeClientCount = factsForSelectedMonth.filter(
+      (fact) => fact.is_new_intake_in_month && fact.status_at_month_end === 'assigned'
     ).length;
     const tasaIntakeAsignacionPct = intakesMes > 0 ? roundTo((assignedIntakeClientCount / intakesMes) * 100) : null;
     const promedioCargaGeneralArs =
       cargadoMesTotal !== null && totalClients > 0 ? roundTo(cargadoMesTotal / totalClients) : null;
     const tasaActivacionPct =
-      assignedClients > 0 ? roundTo((clientesConReporte / assignedClients) * 100) : null;
+      totalClients > 0 ? roundTo((clientesConReporte / totalClients) * 100) : null;
     const gananciaEstimadaArs =
       commissionPct !== null && cargadoMesTotal !== null
         ? roundTo(cargadoMesTotal * (commissionPct / 100))
@@ -972,25 +962,37 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         ? roundTo(((gananciaEstimadaArs - adSpendArs) / adSpendArs) * 100)
         : null;
 
-    const clientes: MastercrmOwnerClientRecord[] = ownerClientLinks.map((link) => {
-      const client = unwrapSingleRelation(link.clients);
-      const activeIdentity = activeIdentityByLinkId.get(link.id);
-      const visibleUsername = link.status === 'assigned' ? activeIdentity?.username ?? null : null;
-      const snapshot = activeIdentity ? snapshotByIdentityId.get(activeIdentity.id) : undefined;
+    const clientes: MastercrmOwnerClientRecord[] = factsForSelectedMonth
+      .map((fact) => {
+        const client = unwrapSingleRelation(fact.clients);
+        const snapshot = snapshotByClientId.get(fact.client_id);
 
-      return {
-        id: link.id,
-        username: visibleUsername,
-        telefono: client?.phone_e164 ?? null,
-        pagina: client?.pagina ?? owner.pagina,
-        estado: link.status,
-        ownerKey: owner.owner_key,
-        ownerLabel: owner.owner_label,
-        cargadoHoy: snapshot?.cargadoHoy ?? null,
-        cargadoMes: snapshot?.cargadoMes ?? null,
-        reportDate: snapshot?.reportDate ?? reportDate
-      };
-    });
+        return {
+          id: fact.link_id,
+          username: fact.status_at_month_end === 'assigned' ? fact.username_at_month_end ?? null : null,
+          telefono: client?.phone_e164 ?? null,
+          pagina: client?.pagina ?? owner.pagina,
+          estado: fact.status_at_month_end,
+          ownerKey: owner.owner_key,
+          ownerLabel: owner.owner_label,
+          cargadoHoy: snapshot?.cargadoHoy ?? null,
+          cargadoMes: snapshot?.cargadoMes ?? null,
+          reportDate: snapshot?.reportDate ?? reportDate,
+          isNewIntakeMes: fact.is_new_intake_in_month,
+          isReingresoMes: fact.is_reentry_in_month,
+          assignedEnMes: fact.had_assignment_in_month,
+          assignedDesdeBacklogMes: fact.assigned_from_backlog_in_month
+        };
+      })
+      .sort((left, right) => {
+        if (left.estado !== right.estado) {
+          return left.estado === 'assigned' ? -1 : 1;
+        }
+
+        const leftLabel = left.username ?? left.telefono ?? '';
+        const rightLabel = right.username ?? right.telefono ?? '';
+        return leftLabel.localeCompare(rightLabel);
+      });
 
     return {
       linkedOwner,
@@ -1023,7 +1025,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         cargadoHoyArs: cargadoHoyTotal,
         cargadoMesArs: cargadoMesTotal,
         intakesMes,
+        reingresosMes,
         asignacionesMes,
+        asignacionesBacklogMes,
         tasaIntakeAsignacionPct,
         clientesConReporte,
         promedioCargaGeneralArs,
