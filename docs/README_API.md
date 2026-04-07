@@ -87,6 +87,14 @@ Respuesta:
 
 Alta asincrona de usuario. Si mandas `telefono`, `ownerContext` pasa a ser obligatorio para sincronizar Supabase sin fallbacks legacy.
 
+Nota operativa `RdA` al `2026-04-07`:
+
+- el sitio remoto puede responder `{"status":231,"error_message":"Password not verified"}` al crear usuario;
+- cuando eso pasa, el backend primero verifica si el usuario quedo creado igual en `/users/all`;
+- si el usuario aparece, el job se considera exitoso aunque la API haya devuelto ese warning;
+- si el usuario no aparece, `GET /jobs/:id` expone el error real;
+- `La ejecución de la solicitud falló.` ya no se trata como `username duplicado`, por lo que el job deja de gastar 10 intentos falsos.
+
 ### `POST /users/intake-pending`
 
 No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono. `ownerContext` es obligatorio.
@@ -197,6 +205,9 @@ Reglas `RdA` actuales:
 
 - `POST /users/create-player`, `POST /users/deposit` y `consultar_saldo` fueron validados en Docker real el `2026-03-27`
 - `POST /users/deposit` y `consultar_saldo` fueron revalidados en Docker real el `2026-04-07` por el caso responsive de RdA
+- `POST /users/create-player` fue reanalizado en Docker real el `2026-04-07` por una regresion remota del sitio
+- cuando RdA devuelve `Password not verified`, el backend verifica la lista de usuarios antes de fallar
+- si el usuario existe, el alta queda `succeeded`; si no existe, devuelve ese motivo real y no reintenta como si fuera nick duplicado
 - para `RdA`, los jobs de fondos y saldo usan sesion aislada por operacion
 - esa decision evita intermitencias de `descarga` y `descarga_total` al reutilizar una sesion vieja dentro del contenedor
 - en Docker, RdA puede ocultar o partir la columna del usuario en `/users/all`; fondos y saldo usan la tabla filtrada y una unica accion/saldo visible como fallback seguro

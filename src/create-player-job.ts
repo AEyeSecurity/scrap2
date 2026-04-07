@@ -1,14 +1,18 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { Locator, Page } from 'playwright';
+import type { Locator, Page, Response } from 'playwright';
 import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { configureContext, launchChromiumBrowser } from './browser';
 import { runCreatePlayerAsnJob } from './create-player-asn';
 import {
+  buildRemoteApiErrorMessage,
   buildExhaustedUsernameError,
   buildUsernameCandidates,
-  isDuplicateUsernameError
+  extractRemoteApiErrorMessage,
+  isGenericRequestFailure,
+  isDuplicateUsernameError,
+  isPasswordVerificationWarning
 } from './create-player-username';
 import { hasCompactUsernameMatch } from './deposit-match';
 import { resolveSiteAppConfig } from './site-profile';
@@ -438,6 +442,97 @@ type RdaAttemptOutcome =
   | { status: 'success'; steps: JobStepResult[]; artifactPaths: string[] }
   | { status: 'duplicate'; steps: JobStepResult[]; artifactPaths: string[]; error: string };
 
+interface RdaCreatePlayerApiFailure {
+  httpStatus: number;
+  apiStatus?: number;
+  errorMessage?: string | null;
+}
+
+function isRdaCreatePlayerApiResponse(response: Response): boolean {
+  if (response.request().method() !== 'POST') {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(response.url());
+    return parsed.pathname === '/api/agent_admin/user/';
+  } catch {
+    return false;
+  }
+}
+
+async function readResponseBody(response: Response): Promise<unknown> {
+  const rawBody = await response.text();
+  if (!rawBody) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    return rawBody;
+  }
+}
+
+function extractApiStatus(body: unknown): number | undefined {
+  if (!body || typeof body !== 'object') {
+    return undefined;
+  }
+
+  const value = (body as { status?: unknown }).status;
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function createRdaCreatePlayerApiCapture() {
+  let latestFailure: RdaCreatePlayerApiFailure | null = null;
+  const pending = new Set<Promise<void>>();
+
+  const listener = (response: Response) => {
+    if (!isRdaCreatePlayerApiResponse(response)) {
+      return;
+    }
+
+    const task = (async () => {
+      const body = await readResponseBody(response);
+      latestFailure = {
+        httpStatus: response.status(),
+        apiStatus: extractApiStatus(body),
+        errorMessage:
+          extractRemoteApiErrorMessage(body) ??
+          (typeof body === 'string' && body.trim().length > 0 ? body.trim() : null)
+      };
+    })();
+
+    pending.add(task);
+    void task.finally(() => {
+      pending.delete(task);
+    });
+  };
+
+  return {
+    listener,
+    async flush(): Promise<RdaCreatePlayerApiFailure | null> {
+      if (pending.size > 0) {
+        await Promise.allSettled([...pending]);
+      }
+
+      return latestFailure;
+    }
+  };
+}
+
+function resolveRdaCreatePlayerFailureMessage(
+  currentMessage: string,
+  apiFailure: RdaCreatePlayerApiFailure | null
+): string {
+  const remoteMessage = apiFailure ? buildRemoteApiErrorMessage(apiFailure) : null;
+  return remoteMessage ?? currentMessage;
+}
+
+function canFallbackToUserLookup(message: string): boolean {
+  return isPasswordVerificationWarning(message);
+}
+
 async function executeRdaCreateAttempt(
   page: Page,
   request: CreatePlayerJobRequest,
@@ -446,6 +541,9 @@ async function executeRdaCreateAttempt(
 ): Promise<RdaAttemptOutcome> {
   const steps: JobStepResult[] = [];
   const artifactPaths: string[] = [];
+  const apiCapture = createRdaCreatePlayerApiCapture();
+
+  page.on('response', apiCapture.listener);
 
   try {
     const stepsToRun = request.payload.stepsOverride?.length ? request.payload.stepsOverride : DEFAULT_CREATE_PLAYER_STEPS;
@@ -465,8 +563,26 @@ async function executeRdaCreateAttempt(
     if (verifyResult.artifactPath) {
       artifactPaths.push(verifyResult.artifactPath);
     }
+    const apiFailure = await apiCapture.flush();
+    const resolvedVerifyError = verifyResult.error
+      ? resolveRdaCreatePlayerFailureMessage(verifyResult.error, apiFailure)
+      : null;
+    if (resolvedVerifyError) {
+      verifyResult.error = resolvedVerifyError;
+    }
+    if (verifyResult.status === 'skipped' && apiFailure) {
+      verifyResult.status = 'failed';
+      verifyResult.error = resolveRdaCreatePlayerFailureMessage(
+        verifyResult.error ?? 'No clear success signal detected after submit',
+        apiFailure
+      );
+    }
     steps.push(verifyResult);
-    if (verifyResult.status === 'failed') {
+    const verifyResultError = verifyResult.error ?? '';
+    const allowUserLookupFallback =
+      verifyResult.status === 'failed' && canFallbackToUserLookup(verifyResultError);
+
+    if (verifyResult.status === 'failed' && !allowUserLookupFallback) {
       if (isDuplicateUsernameError(verifyResult.error ?? '')) {
         return {
           status: 'duplicate',
@@ -481,6 +597,13 @@ async function executeRdaCreateAttempt(
     const verifyListedResult = await verifyUserListedStep(page, artifactDir, request.payload.newUsername, timeoutMs);
     if (verifyListedResult.artifactPath) {
       artifactPaths.push(verifyListedResult.artifactPath);
+    }
+    if (allowUserLookupFallback && verifyListedResult.status === 'ok') {
+      verifyResult.status = 'skipped';
+      verifyResult.error = `${verifyResultError} (ignored because user was found in users list)`;
+    }
+    if (allowUserLookupFallback && verifyListedResult.status === 'failed') {
+      verifyListedResult.error = `${verifyResultError}; ${verifyListedResult.error ?? 'User not found after create-player fallback verification'}`;
     }
     steps.push(verifyListedResult);
     if (verifyListedResult.status === 'failed') {
@@ -499,7 +622,11 @@ async function executeRdaCreateAttempt(
 
     return { status: 'success', steps, artifactPaths };
   } catch (error) {
-    throwWithCreatePlayerContext(new Error(normalizeErrorMessage(error)), steps, artifactPaths);
+    const apiFailure = await apiCapture.flush();
+    const resolvedMessage = resolveRdaCreatePlayerFailureMessage(normalizeErrorMessage(error), apiFailure);
+    throwWithCreatePlayerContext(new Error(resolvedMessage), steps, artifactPaths);
+  } finally {
+    page.off('response', apiCapture.listener);
   }
 }
 
@@ -620,7 +747,7 @@ export async function runCreatePlayerJob(
         allSteps.push(...withAttemptPrefix(contextData.steps, attemptNumber));
         allArtifactPaths.push(...contextData.artifactPaths);
 
-        if (isDuplicateUsernameError(message)) {
+        if (isDuplicateUsernameError(message) && !isGenericRequestFailure(message)) {
           continue;
         }
 

@@ -87,6 +87,12 @@ $env:RDA_NEW_PASSWORD="Secret123!"
 npm run smoke:rda-api
 ```
 
+Nota `RdA` al `2026-04-07`:
+
+- si el sitio remoto devuelve `RdA create-player API error (status 231): Password not verified`, el backend igual va a buscar el usuario en `/users/all`;
+- si lo encuentra, el smoke queda `ok`;
+- si no lo encuentra, ese error confirma diagnostico correcto del backend, no un falso duplicado de username.
+
 Notas:
 
 - usa `RDA_API_BASE_URL` si tu backend no corre en `http://127.0.0.1:3000`

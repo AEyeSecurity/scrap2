@@ -1,6 +1,10 @@
 import type { PaginaCode } from './types';
 
 const ASN_MAX_USERNAME_LENGTH = 12;
+const DUPLICATE_USERNAME_ERROR_REGEX =
+  /ya existe|already exists|already in use|usuario.+existe|nick.+existe|login.+existe|en uso/i;
+const GENERIC_REQUEST_FAILURE_REGEX = /ejecuci[oó]n de la solicitud fall[oó]/i;
+const PASSWORD_VERIFICATION_WARNING_REGEX = /password not verified/i;
 
 function normalizeRequestedUsername(requestedUsername: string): string {
   const normalized = requestedUsername.trim();
@@ -40,9 +44,71 @@ export function buildUsernameCandidates(requestedUsername: string, pagina: Pagin
 }
 
 export function isDuplicateUsernameError(message: string): boolean {
-  return /ya existe|already exists|already in use|usuario.+existe|nick.+existe|login.+existe|en uso|ejecuci[oó]n de la solicitud fall[oó]/i.test(
-    message
-  );
+  return DUPLICATE_USERNAME_ERROR_REGEX.test(message);
+}
+
+export function isGenericRequestFailure(message: string): boolean {
+  return GENERIC_REQUEST_FAILURE_REGEX.test(message);
+}
+
+export function isPasswordVerificationWarning(message: string): boolean {
+  return PASSWORD_VERIFICATION_WARNING_REGEX.test(message);
+}
+
+export interface RemoteApiErrorDetails {
+  httpStatus?: number;
+  apiStatus?: number;
+  errorMessage?: string | null;
+}
+
+export function extractRemoteApiErrorMessage(body: unknown): string | null {
+  if (!body || typeof body !== 'object') {
+    return null;
+  }
+
+  const candidateBody = body as {
+    error_message?: unknown;
+    message?: unknown;
+    error?: unknown;
+  };
+
+  const candidates = [candidateBody.error_message, candidateBody.message, candidateBody.error];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+
+    const normalized = candidate.trim();
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return null;
+}
+
+export function buildRemoteApiErrorMessage(details: RemoteApiErrorDetails): string | null {
+  const statusLabel =
+    typeof details.apiStatus === 'number' && Number.isFinite(details.apiStatus)
+      ? `status ${details.apiStatus}`
+      : typeof details.httpStatus === 'number' && Number.isFinite(details.httpStatus)
+        ? `HTTP ${details.httpStatus}`
+        : null;
+  const errorMessage = typeof details.errorMessage === 'string' ? details.errorMessage.trim() : '';
+
+  if (errorMessage && statusLabel) {
+    return `RdA create-player API error (${statusLabel}): ${errorMessage}`;
+  }
+
+  if (errorMessage) {
+    return `RdA create-player API error: ${errorMessage}`;
+  }
+
+  if (statusLabel) {
+    return `RdA create-player API error (${statusLabel})`;
+  }
+
+  return null;
 }
 
 export function buildExhaustedUsernameError(requestedUsername: string, triedCandidates: string[]): Error {

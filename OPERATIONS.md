@@ -589,6 +589,13 @@ Casos reales validados:
   - `status = succeeded`
 - alta duplicada:
   - genera sufijo automatico y sigue en `succeeded`
+- reanalisis `2026-04-07`:
+  - RdA hoy puede devolver `status = 231`
+  - `error_message = Password not verified`
+  - el backend ya no interpreta `La ejecución de la solicitud falló.` como username duplicado
+  - ante `Password not verified`, el backend igual revisa `/users/all`
+  - si el usuario existe, el job queda `succeeded`
+  - si no existe, el job corta con el error real en vez de consumir 10 intentos falsos
 - secuencia de fondos validada:
   - saldo inicial `0`
   - `carga 10`
