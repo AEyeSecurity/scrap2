@@ -10,6 +10,7 @@ import {
   buildUsernameCandidates,
   isDuplicateUsernameError
 } from './create-player-username';
+import { hasCompactUsernameMatch } from './deposit-match';
 import { resolveSiteAppConfig } from './site-profile';
 import type {
   AppConfig,
@@ -293,6 +294,14 @@ async function waitForUsernameVisibleInList(page: Page, username: string, timeou
       if (partialVisible) {
         return true;
       }
+    }
+
+    const rowTexts = await page
+      .locator('.users-table-item')
+      .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? '').replace(/\s+/g, ' ').trim()))
+      .catch(() => []);
+    if (rowTexts.some((value) => hasCompactUsernameMatch(value, username))) {
+      return true;
     }
 
     await page.waitForTimeout(250);

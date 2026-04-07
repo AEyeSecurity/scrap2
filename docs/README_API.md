@@ -169,8 +169,10 @@ Reglas ASN actuales:
 Reglas `RdA` actuales:
 
 - `POST /users/create-player`, `POST /users/deposit` y `consultar_saldo` fueron validados en Docker real el `2026-03-27`
+- `POST /users/deposit` y `consultar_saldo` fueron revalidados en Docker real el `2026-04-07` por el caso responsive de RdA
 - para `RdA`, los jobs de fondos y saldo usan sesion aislada por operacion
 - esa decision evita intermitencias de `descarga` y `descarga_total` al reutilizar una sesion vieja dentro del contenedor
+- en Docker, RdA puede ocultar o partir la columna del usuario en `/users/all`; fondos y saldo usan la tabla filtrada y una unica accion/saldo visible como fallback seguro
 - si el usuario no existe en `RdA`, `GET /jobs/:id` ya no expone errores tecnicos de matching de filas
 - el mensaje limpio esperado pasa a ser:
   - `No se ha encontrado el usuario xxxx`
@@ -196,6 +198,7 @@ Comportamiento turbo en Docker:
 - `debug = false`
 - `slowMo = 0`
 - `timeoutMs` capped en `15000` para `POST /users/deposit`
+- estos valores se imponen para `RdA` y `ASN`, aunque el payload envie overrides visuales
 
 Correccion aplicada al flujo ASN:
 

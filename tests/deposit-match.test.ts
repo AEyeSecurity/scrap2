@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hasCompactUsernameMatch,
   hasExactUsernameMatch,
   normalizeDepositText,
   selectDepositRowIndex,
@@ -16,6 +17,10 @@ describe('deposit-match helpers', () => {
     expect(hasExactUsernameMatch('pruebita_2', 'pruebita')).toBe(false);
   });
 
+  it('matches compact username fragments', () => {
+    expect(hasCompactUsernameMatch('0 Robertino254 jugador', '0Robertino254')).toBe(true);
+  });
+
   it('selects the only exact actionable row', () => {
     const rows: DepositRowCandidate[] = [
       { index: 0, hasAction: true, usernames: ['otro_user'], normalizedText: 'otro_user jugador deposito' },
@@ -23,6 +28,15 @@ describe('deposit-match helpers', () => {
     ];
 
     expect(selectDepositRowIndex(rows, 'pruebita')).toBe(1);
+  });
+
+  it('selects a unique compact match when the UI splits username fragments', () => {
+    const rows: DepositRowCandidate[] = [
+      { index: 0, hasAction: true, usernames: ['robertino254'], normalizedText: 'robertino254 jugador deposito' },
+      { index: 1, hasAction: true, usernames: ['0', 'Robertino254'], normalizedText: '0 robertino254 jugador deposito' }
+    ];
+
+    expect(selectDepositRowIndex(rows, '0Robertino254')).toBe(1);
   });
 
   it('throws when there is no exact match', () => {

@@ -16,6 +16,7 @@ export function extractRdaUsernameFromError(message: string): string | null {
     matchQuotedUsername(message, /No actionable rows found while searching for user "([^"]+)"/i) ||
     matchQuotedUsername(message, /Could not find an exact unique match for user "([^"]+)"/i) ||
     matchQuotedUsername(message, /Multiple exact matches found for user "([^"]+)"/i) ||
+    matchQuotedUsername(message, /Multiple compact matches found for user "([^"]+)"/i) ||
     matchQuotedUsername(message, /User "([^"]+)" not found in users list after creation/i) ||
     null
   );
@@ -29,7 +30,7 @@ export function isRdaUserNotFoundError(message: string): boolean {
 }
 
 export function isRdaAmbiguousUserError(message: string): boolean {
-  return /Multiple exact matches found for user "/i.test(message);
+  return /Multiple exact matches found for user "/i.test(message) || /Multiple compact matches found for user "/i.test(message);
 }
 
 export function translateRdaJobError(

@@ -158,7 +158,7 @@ Notas:
 
 ## Overrides de ejecucion visual
 
-Puedes agregar estos campos a `login`, `create-player` o `deposit`:
+Puedes agregar estos campos a `login` o `create-player`:
 
 ```json
 {
@@ -168,6 +168,8 @@ Puedes agregar estos campos a `login`, `create-player` o `deposit`:
   "timeoutMs": 120000
 }
 ```
+
+Nota: `POST /users/deposit` fuerza modo turbo para `RdA` y `ASN`, por lo que ignora overrides visuales y ejecuta con `headless=true`, `debug=false`, `slowMo=0` y `timeoutMs<=15000`.
 
 ## Ejemplo completo con `curl`
 

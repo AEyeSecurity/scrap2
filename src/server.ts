@@ -54,7 +54,6 @@ import type {
   JobResult,
   JobStoreEntry,
   LoginJobRequest,
-  PaginaCode,
   ServerConfig
 } from './types';
 
@@ -511,24 +510,14 @@ function resolveExecutionOptions(
 
 function resolveDepositExecutionOptions(
   appConfig: AppConfig,
-  overrides: Partial<Pick<JobExecutionOptions, 'headless' | 'debug' | 'slowMo' | 'timeoutMs'>>,
-  pagina?: PaginaCode
+  overrides: Partial<Pick<JobExecutionOptions, 'headless' | 'debug' | 'slowMo' | 'timeoutMs'>>
 ): JobExecutionOptions {
-  if (pagina === 'ASN') {
-    const requestedTimeout = overrides.timeoutMs ?? appConfig.timeoutMs;
-    return {
-      headless: true,
-      debug: false,
-      slowMo: 0,
-      timeoutMs: Math.min(requestedTimeout, DEPOSIT_TURBO_TIMEOUT_MS)
-    };
-  }
-
+  const requestedTimeout = overrides.timeoutMs ?? appConfig.timeoutMs;
   return {
-    headless: overrides.headless ?? appConfig.headless,
-    debug: overrides.debug ?? false,
-    slowMo: overrides.slowMo ?? 0,
-    timeoutMs: overrides.timeoutMs ?? Math.min(appConfig.timeoutMs, DEPOSIT_TURBO_TIMEOUT_MS)
+    headless: true,
+    debug: false,
+    slowMo: 0,
+    timeoutMs: Math.min(requestedTimeout, DEPOSIT_TURBO_TIMEOUT_MS)
   };
 }
 
@@ -871,7 +860,7 @@ export function createServer(
   if (reportWorkerEnabled) {
     const executor =
       dependencies?.reportJobExecutor ??
-      createReportJobExecutor(appConfig, logger, resolveDepositExecutionOptions(appConfig, {}, 'ASN'));
+      createReportJobExecutor(appConfig, logger, resolveDepositExecutionOptions(appConfig, {}));
     reportWorker = new ReportRunWorker(getReportRunStore(), logger, {
       concurrency: reportWorkerConcurrency,
       pollMs: reportWorkerPollMs,
@@ -1473,7 +1462,7 @@ export function createServer(
           contrasena_agente: payload.contrasena_agente,
           ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
         },
-        options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
+        options: resolveDepositExecutionOptions(appConfig, payload)
       };
 
       internalQueue.enqueue(reportRequest);
@@ -1522,7 +1511,7 @@ export function createServer(
               contrasena_agente: payload.contrasena_agente,
               ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
             },
-            options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
+            options: resolveDepositExecutionOptions(appConfig, payload)
           }
         : {
             id,
@@ -1546,7 +1535,7 @@ export function createServer(
                     contrasena_agente: payload.contrasena_agente,
                     cantidad: payload.cantidad as number
                   },
-            options: resolveDepositExecutionOptions(appConfig, payload, payload.pagina)
+            options: resolveDepositExecutionOptions(appConfig, payload)
           };
 
     internalQueue.enqueue(jobRequest);

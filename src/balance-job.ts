@@ -14,6 +14,8 @@ const USERS_APPLY_FILTER_SELECTOR =
   'button:has-text("Aceptar filtro"), button:has-text("Aplicar"), button:has-text("Filtrar"), button:has-text("Buscar")';
 const USERS_ROW_SELECTOR = '.users-table-item';
 const USERS_USERNAME_SELECTOR = '.role-bar__user-block11, .ellipsis-text, .role-bar__user-block1, .users-table-item__user-info';
+const USER_FUNDS_ACTION_LINK_SELECTOR =
+  'a[href*="/users/deposit/"], a[href*="/users/withdrawal/"], a[href*="/users/withdraw/"]';
 const NON_RETRYABLE_LOGIN_ERROR_REGEX =
   /usuario no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas|password/i;
 const BALANCE_TOKEN_REGEX = /-?\d{1,3}(?:\.\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})|-?\d{1,3}(?:\.\d{3})+/g;
@@ -259,7 +261,87 @@ function extractBalanceTextFromRowText(rowText: string): string {
     throw new Error('Could not extract balance token from user row');
   }
 
-  return matches[0]?.trim() ?? '';
+  return (matches.find((value) => value.includes(',')) ?? matches[0] ?? '').trim();
+}
+
+function extractUserIdFromHref(href: string | null): string | null {
+  if (!href) {
+    return null;
+  }
+
+  const match = href.match(/\/users\/(?:deposit|withdraw(?:al)?)\/(\d+)(?:$|[/?#])/i);
+  return match?.[1] ?? null;
+}
+
+async function getUniqueVisibleFundsActionUserId(page: Page): Promise<string | null> {
+  const hrefs = await page.locator(USER_FUNDS_ACTION_LINK_SELECTOR).evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const htmlElement = element as any;
+      const style = (globalThis as any).getComputedStyle(htmlElement);
+      const box = htmlElement.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
+
+      return [htmlElement.getAttribute('href') ?? ''];
+    })
+  );
+  const ids = new Set(hrefs.flatMap((href) => extractUserIdFromHref(href) ?? []));
+
+  if (ids.size === 1) {
+    return [...ids][0] ?? null;
+  }
+
+  return null;
+}
+
+async function extractBalanceTextFromUniqueFilteredResult(page: Page): Promise<string | null> {
+  const userId = await getUniqueVisibleFundsActionUserId(page);
+  if (!userId) {
+    return null;
+  }
+
+  const rowTexts = await page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const htmlElement = element as any;
+      const style = (globalThis as any).getComputedStyle(htmlElement);
+      const box = htmlElement.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
+
+      const text = htmlElement.innerText.trim();
+      return text ? [text] : [];
+    })
+  );
+
+  if (rowTexts.length === 0) {
+    return null;
+  }
+
+  return extractBalanceTextFromRowText(rowTexts.join('\n'));
+}
+
+async function extractUniqueVisibleDecimalBalanceText(page: Page): Promise<string | null> {
+  const rowTexts = await page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const htmlElement = element as any;
+      const style = (globalThis as any).getComputedStyle(htmlElement);
+      const box = htmlElement.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
+
+      const text = htmlElement.innerText.trim();
+      return text ? [text] : [];
+    })
+  );
+  const matches = rowTexts.join('\n').match(/-?\d{1,3}(?:\.\d{3})*,\d{2}/g) ?? [];
+  if (matches.length === 1) {
+    return matches[0]?.trim() ?? null;
+  }
+
+  return null;
 }
 
 export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
@@ -294,6 +376,7 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
   const screenshotFailurePath = path.join(artifactDir, 'error.png');
   let usersFilterInput: Locator | undefined;
   let targetRow: Locator | undefined;
+  let fallbackBalanceText: string | undefined;
 
   let tracingStarted = false;
 
@@ -398,7 +481,25 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
       artifactDir,
       '04-find-user-row',
       async () => {
-        targetRow = await findUniqueUserRow(page, request.payload.usuario, userSearchTimeoutMs, pollingMs);
+        fallbackBalanceText =
+          (await extractUniqueVisibleDecimalBalanceText(page).catch(() => null)) ??
+          (await extractBalanceTextFromUniqueFilteredResult(page).catch(() => null)) ??
+          undefined;
+        if (fallbackBalanceText) {
+          return;
+        }
+
+        targetRow = await findUniqueUserRow(page, request.payload.usuario, userSearchTimeoutMs, pollingMs).catch(
+          async (error) => {
+            const balanceText = await extractBalanceTextFromUniqueFilteredResult(page).catch(() => null);
+            if (balanceText) {
+              fallbackBalanceText = balanceText;
+              return undefined;
+            }
+
+            throw error;
+          }
+        );
       },
       captureSuccessArtifacts
     );
@@ -416,11 +517,11 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
       artifactDir,
       '05-read-balance',
       async () => {
-        if (!targetRow) {
+        if (!targetRow && !fallbackBalanceText) {
           throw new Error('Target user row was not resolved');
         }
-        const rowText = await targetRow.innerText({ timeout: runtimeConfig.timeoutMs });
-        const saldoTexto = extractBalanceTextFromRowText(rowText);
+        const saldoTexto =
+          fallbackBalanceText ?? extractBalanceTextFromRowText(await targetRow!.innerText({ timeout: runtimeConfig.timeoutMs }));
         const saldoNumero = parseBalanceNumber(saldoTexto);
         balanceResult = {
           kind: 'balance',

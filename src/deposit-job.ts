@@ -4,7 +4,13 @@ import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { runAsnDepositJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
-import { normalizeDepositText, selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
+import {
+  hasCompactUsernameMatch,
+  hasExactUsernameMatch,
+  normalizeDepositText,
+  selectDepositRowIndex,
+  type DepositRowCandidate
+} from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
 import { translateRdaJobError } from './rda-user-error';
 import type {
@@ -429,6 +435,67 @@ async function collectDepositRowCandidates(
   return candidates;
 }
 
+async function collectVisibleUserRowTexts(page: Page): Promise<string[]> {
+  return page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const htmlElement = element as any;
+      const style = (globalThis as any).getComputedStyle(htmlElement);
+      const box = htmlElement.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
+
+      const text = htmlElement.innerText.trim();
+      return text ? [text] : [];
+    })
+  );
+}
+
+function visibleRowsContainUsername(rowTexts: string[], username: string): boolean {
+  return rowTexts.some((text) => hasExactUsernameMatch(text, username) || hasCompactUsernameMatch(text, username));
+}
+
+async function readVisibleUserBalanceSnapshot(page: Page): Promise<UserBalanceSnapshot | null> {
+  const rowTexts = await collectVisibleUserRowTexts(page);
+  const firstRowWithBalance = rowTexts.find((text) => /-?\d{1,3}(?:\.\d{3})*,\d{2}/.test(text));
+  const balanceText = firstRowWithBalance ?? rowTexts.join('\n');
+  return extractUserListBalanceSnapshotFromRowText(balanceText);
+}
+
+async function readFilteredUserBalanceSnapshot(page: Page, username: string): Promise<UserBalanceSnapshot | null> {
+  const rowTexts = await collectVisibleUserRowTexts(page);
+  if (!visibleRowsContainUsername(rowTexts, username)) {
+    return null;
+  }
+
+  const firstRowWithBalance = rowTexts.find((text) => /-?\d{1,3}(?:\.\d{3})*,\d{2}/.test(text));
+  const balanceText = firstRowWithBalance ?? rowTexts.join('\n');
+  return extractUserListBalanceSnapshotFromRowText(balanceText);
+}
+
+async function tryOpenFilteredUniqueAction(
+  page: Page,
+  operation: FundsTransactionOperation,
+  username: string,
+  timeoutMs: number
+): Promise<{ userId: string; balance: UserBalanceSnapshot } | null> {
+  const userId = await tryGetUserIdFromVisibleTableAction(page, operation);
+  if (!userId) {
+    return null;
+  }
+
+  const rowTexts = await collectVisibleUserRowTexts(page);
+  const balance = visibleRowsContainUsername(rowTexts, username)
+    ? await readFilteredUserBalanceSnapshot(page, username).catch(() => null)
+    : await readVisibleUserBalanceSnapshot(page).catch(() => null);
+  if (!balance) {
+    return null;
+  }
+
+  await openFundsOperationPageDirect(page, operation, userId, timeoutMs);
+  return { userId, balance };
+}
+
 async function findDepositActionInRow(
   row: Locator,
   operation: FundsTransactionOperation,
@@ -524,23 +591,19 @@ async function tryGetUserIdFromVisibleTableAction(
   page: Page,
   operation: FundsTransactionOperation
 ): Promise<string | null> {
-  const links = page.locator(ACTION_LINK_BY_OPERATION[operation]);
-  const count = await links.count().catch(() => 0);
-  const ids = new Set<string>();
+  const hrefs = await page.locator(ACTION_LINK_BY_OPERATION[operation]).evaluateAll((elements) =>
+    elements.flatMap((element) => {
+      const htmlElement = element as any;
+      const style = (globalThis as any).getComputedStyle(htmlElement);
+      const box = htmlElement.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
+        return [];
+      }
 
-  for (let i = 0; i < count; i += 1) {
-    const link = links.nth(i);
-    const visible = await link.isVisible().catch(() => false);
-    if (!visible) {
-      continue;
-    }
-
-    const href = await link.getAttribute('href').catch(() => null);
-    const id = extractUserIdFromHref(href);
-    if (id) {
-      ids.add(id);
-    }
-  }
+      return [htmlElement.getAttribute('href') ?? ''];
+    })
+  );
+  const ids = new Set(hrefs.flatMap((href) => extractUserIdFromHref(href) ?? []));
 
   if (ids.size === 1) {
     return [...ids][0] ?? null;
@@ -879,6 +942,17 @@ async function checkUserBalanceInUsersList(
   }
 
   if (!row) {
+    row = await findUniqueUserRow(page, operation, username, Math.min(timeoutMs, 8_000), pollingMs).catch(
+      () => undefined
+    );
+  }
+
+  if (!row) {
+    const fallbackBalance = await readFilteredUserBalanceSnapshot(page, username);
+    if (fallbackBalance) {
+      return fallbackBalance;
+    }
+
     row = await findUniqueUserRow(page, operation, username, Math.min(timeoutMs, 8_000), pollingMs);
   }
 
@@ -1148,7 +1222,40 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     }
 
     const openDepositStep = await executeActionStep(page, artifactDir, stepNames.openAction, async () => {
-      const selectedRow = await findUniqueUserRow(page, operation, request.payload.usuario, depositSearchTimeoutMs, pollingMs);
+      const fastPath = isTurbo
+        ? await tryOpenFilteredUniqueAction(page, operation, request.payload.usuario, runtimeConfig.timeoutMs)
+        : null;
+      if (fastPath) {
+        fundsSnapshot.userBalanceBefore = fastPath.balance;
+        fundsSnapshot.userId = fastPath.userId;
+        return;
+      }
+
+      const selectedRow = await findUniqueUserRow(
+        page,
+        operation,
+        request.payload.usuario,
+        depositSearchTimeoutMs,
+        pollingMs
+      ).catch(async (error) => {
+        const fallback = await tryOpenFilteredUniqueAction(
+          page,
+          operation,
+          request.payload.usuario,
+          runtimeConfig.timeoutMs
+        );
+        if (fallback) {
+          fundsSnapshot.userBalanceBefore = fallback.balance;
+          fundsSnapshot.userId = fallback.userId;
+          return undefined;
+        }
+
+        throw error;
+      });
+      if (!selectedRow) {
+        return;
+      }
+
       const rowText = await selectedRow.innerText({ timeout: runtimeConfig.timeoutMs }).catch(() => '');
       fundsSnapshot.userBalanceBefore = extractUserListBalanceSnapshotFromRowText(rowText);
       fundsSnapshot.userId = await tryGetUserIdFromRowAction(selectedRow, operation);

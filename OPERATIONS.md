@@ -567,6 +567,7 @@ Resultado observado:
 ## RdA validado en Docker
 
 Estado validado el `2026-03-27` con imagen construida desde el `Dockerfile` y API expuesta en `127.0.0.1:3006`.
+Revalidado el `2026-04-07` con imagen construida desde el `Dockerfile` y API expuesta en `127.0.0.1:3008` por el layout responsive de `/users/all`.
 
 Flujos `RdA` probados contra el contenedor:
 
@@ -596,6 +597,12 @@ Casos reales validados:
   - saldo `6`
   - `descarga_total`
   - saldo final `0`
+- secuencia responsive revalidada:
+  - saldo inicial `0,00`
+  - `carga 1`
+  - saldo `1,00`
+  - `descarga_total`
+  - saldo final `0,00`
 
 Casos de falla esperada validados:
 
@@ -621,6 +628,16 @@ Cambios operativos cerrados para `RdA`:
 - criterio actual:
   - `RdA` usa sesion aislada por operacion
   - el pool de fondos queda disponible para otros casos turbo donde no degrade estabilidad
+- criterio responsive:
+  - en Docker, RdA puede ocultar o partir la columna del usuario en `/users/all`
+  - fondos abre directo solo si la tabla filtrada deja una unica accion visible para la operacion
+  - saldo acepta una unica cifra visible con coma decimal como lectura segura de la tabla filtrada
+- `POST /users/deposit` fuerza modo turbo para `RdA` y `ASN`:
+  - `headless = true`
+  - `debug = false`
+  - `slowMo = 0`
+  - `timeoutMs <= 15000`
+  - los overrides visuales del payload se ignoran en esta ruta
 
 Verificacion recomendada para este bloque:
 

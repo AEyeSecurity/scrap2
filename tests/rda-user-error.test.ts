@@ -33,6 +33,14 @@ describe('rda-user-error', () => {
     ).toBe('Se encontraron multiples coincidencias para el usuario player_1');
   });
 
+  it('translates ambiguous compact-user errors to a clean message', () => {
+    expect(
+      translateRdaJobError('Multiple compact matches found for user "0Robertino254" (2)', {
+        usuario: '0Robertino254'
+      })
+    ).toBe('Se encontraron multiples coincidencias para el usuario 0Robertino254');
+  });
+
   it('translates unconfirmed operation errors to a cleaner operation message', () => {
     expect(
       translateRdaJobError('Step failed: 08-verify-withdraw-result (No clear success signal detected after descarga submit)', {
