@@ -93,6 +93,7 @@ Nota operativa `RdA` al `2026-04-07`:
 - cuando eso pasa, el backend primero verifica si el usuario quedo creado igual en `/users/all`;
 - si el usuario aparece, el job se considera exitoso aunque la API haya devuelto ese warning;
 - si el usuario no aparece, `GET /jobs/:id` expone el error real;
+- RdA rechaza contrasenas cortas: `newPassword` debe tener al menos 6 caracteres. Por ejemplo, para `0Ro347`, `ro123` falla y `ro1234` funciona.
 - `La ejecución de la solicitud falló.` ya no se trata como `username duplicado`, por lo que el job deja de gastar 10 intentos falsos.
 
 ### `POST /users/intake-pending`

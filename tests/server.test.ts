@@ -1579,6 +1579,40 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /users/create-player rejects short RdA player passwords before queueing', async () => {
+    const queue = new FakeQueue();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { asnUserExistsChecker: allowAsnUserExists }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/users/create-player',
+      payload: {
+        pagina: 'RdA',
+        loginUsername: 'agent',
+        loginPassword: 'secret',
+        newUsername: '0Ro347',
+        newPassword: 'ro123'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().issues).toContainEqual({
+      path: 'newPassword',
+      message: 'RdA newPassword must be at least 6 characters'
+    });
+    expect(queue.requests).toHaveLength(0);
+
+    await server.close();
+  });
+
   it('POST /users/create-player accepts ownerContext', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });

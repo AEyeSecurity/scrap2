@@ -196,6 +196,14 @@ const createPlayerBodySchema = z
   })
   .merge(executionOverridesSchema)
   .superRefine((value, ctx) => {
+    if (value.pagina === 'RdA' && value.newPassword.trim().length < 6) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['newPassword'],
+        message: 'RdA newPassword must be at least 6 characters'
+      });
+    }
+
     if (value.telefono && !value.ownerContext) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
