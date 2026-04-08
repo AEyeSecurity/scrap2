@@ -249,6 +249,9 @@ Correccion aplicada al flujo ASN:
 - solo refresca una vez si hace falta
 - esto evita errores como:
   - `Step failed: 06-read-saldo-after (page.goto ... is interrupted by another navigation ...)`
+- el paso `01b-continue-intermediate` ya no falla por un `Continuar` transitorio o stale
+- si ASN ya muestra el shell autenticado (`/NewAdmin/` o textos del panel), el backend sigue sin exigir ese click
+- en modo turbo, el probe del post-login mantiene polling corto y timeout de click acotado para no volver lenta la ruta `/users/deposit`
 
 ### `GET /jobs/:id`
 

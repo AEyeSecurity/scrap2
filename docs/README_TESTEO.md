@@ -100,6 +100,39 @@ Notas:
 - imprime `jobId`, `status`, `result`, `steps` y `artifactPaths`
 - si el job falla, sale con codigo `1`
 
+## Smoke manual de API para `ASN`
+
+Este smoke sirve para validar login + post-login en ASN sin redeployar el contenedor productivo.
+
+Levantar una instancia local temporal:
+
+```powershell
+$env:API_PORT="3001"
+npm start -- server --port 3001
+```
+
+Consultar saldo contra ASN:
+
+```powershell
+$body = @{
+  pagina = "ASN"
+  operacion = "consultar_saldo"
+  usuario = "usuario_existente"
+  agente = "agente_asn"
+  contrasena_agente = "password_asn"
+  headless = $true
+} | ConvertTo-Json
+
+$job = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:3001/users/deposit" -ContentType "application/json" -Body $body
+Invoke-RestMethod -Uri ("http://127.0.0.1:3001/jobs/" + $job.id)
+```
+
+Nota ASN al `2026-04-08`:
+
+- el paso `01b-continue-intermediate` debe tolerar `Continuar` intermitente despues del login;
+- si el shell `Administracion` ya esta visible, el job debe seguir como `ok` o `skipped`, no fallar con `locator.click`;
+- esta verificacion cubre la misma zona que afectaba `deposit` en el workflow `Leandro`, pero sin mover saldo real.
+
 ## Que cubre la suite
 
 - normalizacion de operaciones y pagina;

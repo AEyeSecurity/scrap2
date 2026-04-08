@@ -534,6 +534,22 @@ Correccion aplicada en `src/asn-funds-job.ts`:
 - solo hace un refresh tardio si sigue sin poder leer el saldo esperado
 - `gotoWithRetry` ahora trata tambien `interrupted by another navigation` como navegacion abortada tolerable
 
+### Cambio importante en post-login intermedio
+
+El error viejo:
+
+- `locator.click: Timeout 900ms exceeded`
+- `waiting for locator("button:has-text("Continuar"), ...").first()`
+
+aparecia en `01b-continue-intermediate` aun cuando ASN ya habia abierto el panel autenticado.
+
+Correccion aplicada en `src/asn-post-login.ts`:
+
+- `Continuar` pasa a ser un paso oportunista y no un requisito duro
+- si la UI o la URL ya muestran shell autenticado de ASN (`/NewAdmin/` fuera de login), el helper devuelve `ok` o `skipped`
+- si el click a `Continuar` falla pero el panel ya quedo adentro, el job no aborta
+- el probe mantiene polling corto y timeout de click acotado para no degradar la latencia del modo turbo
+
 ### Smoke real validado en Docker
 
 Validacion hecha el `2026-03-16` con imagen construida desde el `Dockerfile` y API expuesta en `127.0.0.1:3001`.
