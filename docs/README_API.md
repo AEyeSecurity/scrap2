@@ -29,9 +29,12 @@ http://127.0.0.1:3000
 - `POST /users/assign-phone`: asignacion sincronica de username por telefono.
 - `POST /users/deposit`: carga, descarga, descarga total, saldo o reporte.
 - `GET /jobs/:id`: estado del job asincrono.
-- `POST /reports/asn/run`: crea una corrida persistida de reportes ASN.
-- `GET /reports/asn/run/:runId`: estado agregado de la corrida.
-- `GET /reports/asn/run/:runId/items`: items individuales de la corrida.
+- `POST /reports/run`: crea una corrida persistida de reportes para `ASN` o `RdA`.
+- `GET /reports/run/:runId`: estado agregado de la corrida.
+- `GET /reports/run/:runId/items`: items individuales de la corrida.
+- `POST /reports/asn/run`: alias compatible que fuerza `pagina = ASN`.
+- `GET /reports/asn/run/:runId`: alias compatible para estado.
+- `GET /reports/asn/run/:runId/items`: alias compatible para items.
 
 ## Reglas utiles
 
@@ -278,9 +281,13 @@ Convencion de errores visibles:
 - para usuario inexistente en `RdA` o `ASN`, el objetivo es mantener:
   - `No se ha encontrado el usuario xxxx`
 
-### `POST /reports/asn/run`
+### `POST /reports/run`
 
-Crea una corrida persistida para leer el reporte de muchos usuarios ASN usando Supabase como cola y estado.
+Crea una corrida persistida para leer el reporte de muchos usuarios usando Supabase como cola y estado.
+
+Usa `pagina = ASN` para el reporte de ASN y `pagina = RdA` para el reporte de RdA. Para RdA, usa `principalKey = luqui10` si queres incluir owners como `luqui10:luqui10` y `luqui10:vicky`.
+
+`POST /reports/asn/run` sigue disponible como alias compatible para ASN y fuerza `pagina = ASN`.
 
 Requiere:
 
@@ -294,6 +301,13 @@ El worker se activa por defecto cuando hay configuracion de Supabase y puede aju
 - `REPORT_WORKER_POLL_MS`
 - `REPORT_WORKER_LEASE_SECONDS`
 - `REPORT_WORKER_MAX_ATTEMPTS`
+
+Notas RdA:
+
+- el job lee `Deposito total` desde `Reportes financieros > Depositos y retiros`;
+- ese valor queda en `cargadoMes` y en `rawResult.depositoTotalNumero`;
+- `cargadoHoy` queda en `0` por diseno actual del job RdA;
+- el scraper espera a que desaparezca el spinner/logo de carga antes de leer, para evitar capturar el placeholder `$0,00`.
 
 ## Resultado de jobs
 
@@ -323,6 +337,8 @@ El worker se activa por defecto cuando hay configuracion de Supabase y puede aju
 
 ### `report`
 
+Resultado ASN:
+
 ```json
 {
   "kind": "asn-reporte-cargado-mes",
@@ -332,6 +348,22 @@ El worker se activa por defecto cuando hay configuracion de Supabase y puede aju
   "fechaActual": "2026-03-09",
   "cargadoTexto": "40.000,00",
   "cargadoNumero": 40000,
+  "cargadoHoyTexto": "0,00",
+  "cargadoHoyNumero": 0
+}
+```
+
+Resultado RdA:
+
+```json
+{
+  "kind": "rda-reporte-deposito-total",
+  "pagina": "RdA",
+  "usuario": "0robertino254",
+  "depositoTotalTexto": "$125.005,00",
+  "depositoTotalNumero": 125005,
+  "cargadoTexto": "$125.005,00",
+  "cargadoNumero": 125005,
   "cargadoHoyTexto": "0,00",
   "cargadoHoyNumero": 0
 }

@@ -9,7 +9,7 @@ Guia operativa para retomar este repo sin contexto:
 Hoy el proyecto cubre dos frentes:
 
 - `run`: login en la web, reutilizacion opcional de sesion y extraccion de datos via endpoints autenticados.
-- `server`: API Fastify con jobs asincronos para login, creacion de usuarios, fondos, consulta de saldo y reportes ASN.
+- `server`: API Fastify con jobs asincronos para login, creacion de usuarios, fondos, consulta de saldo y reportes ASN/RdA.
 
 ## Que hace
 
@@ -50,7 +50,7 @@ El sistema combina navegacion real con Playwright y logica de negocio propia:
 4. Encola jobs en memoria.
 5. Ejecuta cada job con Playwright.
 6. Expone el estado por `GET /jobs/:id`.
-7. Si Supabase esta configurado, habilita persistencia de telefonos y la cola de reportes ASN.
+7. Si Supabase esta configurado, habilita persistencia de telefonos y la cola de reportes ASN/RdA.
 
 Contrato CRM actual:
 
@@ -131,6 +131,7 @@ docker run --rm `
 - Testeo y benchmark en Docker: [docs/README_TESTEO.md](docs/README_TESTEO.md)
 - Prompt de orquestacion n8n: [docs/n8n-agent-system-message-v2.md](docs/n8n-agent-system-message-v2.md)
 - Workflow n8n de reporte masivo diario ASN para `asnlucas10`: [docs/README_N8N_REPORTE_MASIVO_DIARIO_ASNLUCAS10.md](docs/README_N8N_REPORTE_MASIVO_DIARIO_ASNLUCAS10.md)
+- Workflow n8n de reporte masivo diario RdA para `luqui10`: [docs/README_N8N_REPORTE_MASIVO_DIARIO_RDA.md](docs/README_N8N_REPORTE_MASIVO_DIARIO_RDA.md)
 
 ## Notas operativas
 

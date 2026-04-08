@@ -165,6 +165,56 @@ async function readRdaDepositoTotal(page: Page): Promise<string> {
   throw new Error(`Could not find visible "Deposito total" value. Text sample: ${normalizeSpaces(bodyText).slice(0, 240)}`);
 }
 
+async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  let readySince: number | null = null;
+  let lastSample = '';
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const state = await page.evaluate(() => {
+      const doc = (globalThis as any).document;
+      const win = (globalThis as any).window;
+      const isVisible = (element: any): boolean => {
+        const rect = element.getBoundingClientRect();
+        const style = win.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
+      const spinnerVisible = Array.from(
+        doc.querySelectorAll('.spinner-desktop, [class*="spinner"], img[src*="spiner-reydeases"]')
+      ).some((element) => isVisible(element));
+      const totalText = normalize(
+        doc.querySelector('.cash-report-total-desktop, .cash-report-total-mobile, [class*="cash-report-total"]')
+          ?.textContent ?? ''
+      );
+      const tableShellVisible = Array.from(
+        doc.querySelectorAll('.cash-report-table-desktop, .cash-report-table-mobile, [class*="cash-report-table"]')
+      ).some((element) => isVisible(element));
+
+      return {
+        ready: !spinnerVisible && totalText.length > 0 && tableShellVisible,
+        sample: normalize(doc.body?.innerText ?? '').slice(0, 240)
+      };
+    });
+
+    lastSample = state.sample;
+    if (state.ready) {
+      if (readySince == null) {
+        readySince = Date.now();
+      }
+      if (Date.now() - readySince >= 400) {
+        return;
+      }
+    } else {
+      readySince = null;
+    }
+
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`RdA cash report did not finish loading before timeout. Text sample: ${lastSample}`);
+}
+
 export async function runRdaReportJob(
   request: RdaReportJobRequest,
   appConfig: AppConfig,
@@ -249,6 +299,7 @@ export async function runRdaReportJob(
       async () => {
         await page.goto(targetPath, { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
         await findFirstVisibleLocator(page, 'text=/Dep[o\\u00f3]sitos\\s+y\\s+retiros|Dep[o\\u00f3]sito\\s+total/i', runtimeConfig.timeoutMs);
+        await waitForRdaCashReportReady(page, runtimeConfig.timeoutMs);
       },
       captureSuccessArtifacts
     );
