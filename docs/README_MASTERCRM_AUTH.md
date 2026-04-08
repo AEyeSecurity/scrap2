@@ -133,7 +133,8 @@ Payload esperado:
 ```json
 {
   "user_id": 123,
-  "owner_key": "owner_key_del_cajero"
+  "owner_key": "owner_key_del_cajero",
+  "pagina": "ASN"
 }
 ```
 
@@ -141,8 +142,9 @@ Reglas:
 
 - `user_id` acepta string o number, pero debe resolver a entero positivo;
 - `owner_key` se normaliza a minuscula;
+- `pagina` acepta `ASN` o `RdA`; si no viene, el backend mantiene compatibilidad con `ASN`;
 - el usuario debe existir y estar activo en `mastercrm_users`;
-- el `owner_key` debe existir en `owners` con `pagina = ASN`;
+- el `owner_key` debe existir en `owners` con la `pagina` indicada;
 - si el vinculo exacto ya existe, responde `409`;
 - no crea owners nuevos ni devuelve todavia el listado de cajeros vinculados.
 
@@ -155,6 +157,7 @@ Respuesta exitosa `201`:
   "data": {
     "user_id": 123,
     "owner_key": "owner_key_del_cajero",
+    "pagina": "ASN",
     "linked": true
   }
 }
@@ -185,4 +188,4 @@ Default de desarrollo:
 - los usuarios web viven en una tabla propia, separada del modelo `owners/clients`;
 - no hay JWT ni cookie en esta primera version;
 - `mastercrm-clients` queda deliberadamente como `[]` hasta definir la sincronizacion real;
-- `mastercrm-link-cashier` usa `pagina = ASN` fija en esta etapa.
+- `mastercrm-link-cashier` ya soporta `pagina = ASN` y `pagina = RdA`.

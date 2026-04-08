@@ -64,7 +64,7 @@ Placeholder compatible. En esta version devuelve `[]` cuando el usuario existe y
 
 ### `POST /mastercrm-link-cashier`
 
-Vincula un usuario web de MasterCRM con un cajero/owner ya existente en `owners`, usando `pagina = ASN`.
+Vincula un usuario web de MasterCRM con un cajero/owner ya existente en `owners`, usando `pagina = ASN` o `pagina = RdA`.
 
 ### `POST /login`
 
