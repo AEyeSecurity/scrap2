@@ -10,6 +10,7 @@ import {
   buildExhaustedUsernameError,
   buildUsernameCandidates,
   extractRemoteApiErrorMessage,
+  isDuplicateUsernameApiFailure,
   isGenericRequestFailure,
   isDuplicateUsernameError,
   isPasswordVerificationWarning
@@ -189,6 +190,24 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+async function applyUsersFilter(page: Page, username: string, timeoutMs: number): Promise<void> {
+  const filterInput = await findUsersFilterInput(page, timeoutMs);
+  await filterInput.fill('', { timeout: timeoutMs });
+  await filterInput.fill(username, { timeout: timeoutMs });
+
+  const applyFilterButton = await findFirstVisibleLocator(page, USERS_APPLY_FILTER_SELECTOR, timeoutMs).catch(() => undefined);
+  if (applyFilterButton) {
+    await applyFilterButton.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
+    await applyFilterButton.click({ timeout: timeoutMs }).catch(async () => {
+      await applyFilterButton.click({ timeout: timeoutMs, force: true });
+    });
+  } else {
+    await filterInput.press('Enter', { timeout: timeoutMs }).catch(() => undefined);
+  }
+
+  await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10_000) }).catch(() => undefined);
+}
+
 async function waitForCreatePlayerResult(
   page: Page,
   timeoutMs: number
@@ -325,18 +344,7 @@ async function verifyUserListedStep(
 
   try {
     await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-
-    const filterInput = await findUsersFilterInput(page, timeoutMs);
-    await filterInput.fill('', { timeout: timeoutMs });
-    await filterInput.fill(username, { timeout: timeoutMs });
-
-    const applyFilterButton = await findFirstVisibleLocator(page, USERS_APPLY_FILTER_SELECTOR, timeoutMs);
-    await applyFilterButton.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
-    await applyFilterButton.click({ timeout: timeoutMs }).catch(async () => {
-      await applyFilterButton.click({ timeout: timeoutMs, force: true });
-    });
-
-    await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10_000) }).catch(() => undefined);
+    await applyUsersFilter(page, username, timeoutMs);
     const userVisible = await waitForUsernameVisibleInList(page, username, timeoutMs);
     const artifactPath = await captureStepScreenshot(page, artifactDir, stepName);
 
@@ -461,6 +469,60 @@ function isRdaCreatePlayerApiResponse(response: Response): boolean {
   }
 }
 
+async function probeRdaUsernameAvailabilityStep(
+  page: Page,
+  artifactDir: string,
+  username: string,
+  timeoutMs: number
+): Promise<{ available: boolean; step: JobStepResult }> {
+  const startedAt = new Date().toISOString();
+  const stepName = '00-precheck-username-availability';
+
+  try {
+    await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: timeoutMs });
+    await applyUsersFilter(page, username, timeoutMs);
+
+    const usernameTaken = await waitForUsernameVisibleInList(page, username, Math.min(timeoutMs, 4_000));
+    const artifactPath = await captureStepScreenshot(page, artifactDir, stepName);
+
+    if (usernameTaken) {
+      return {
+        available: false,
+        step: {
+          name: stepName,
+          status: 'skipped',
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          artifactPath,
+          error: `Username "${username}" already exists in RdA`
+        }
+      };
+    }
+
+    return {
+      available: true,
+      step: {
+        name: stepName,
+        status: 'ok',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        artifactPath
+      }
+    };
+  } catch (error) {
+    return {
+      available: false,
+      step: {
+        name: stepName,
+        status: 'failed',
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error)
+      }
+    };
+  }
+}
+
 async function readResponseBody(response: Response): Promise<unknown> {
   const rawBody = await response.text();
   if (!rawBody) {
@@ -581,9 +643,10 @@ async function executeRdaCreateAttempt(
     const verifyResultError = verifyResult.error ?? '';
     const allowUserLookupFallback =
       verifyResult.status === 'failed' && canFallbackToUserLookup(verifyResultError);
+    const isApiDuplicate = isDuplicateUsernameApiFailure(apiFailure);
 
     if (verifyResult.status === 'failed' && !allowUserLookupFallback) {
-      if (isDuplicateUsernameError(verifyResult.error ?? '')) {
+      if (isApiDuplicate || isDuplicateUsernameError(verifyResult.error ?? '')) {
         return {
           status: 'duplicate',
           steps,
@@ -707,9 +770,32 @@ export async function runCreatePlayerJob(
       const attemptNumber = i + 1;
       const candidateUsername = candidates[i] as string;
       const attemptRequest = buildRequestForCandidateUsername(request, candidateUsername);
+      const attemptArtifactDir = path.join(artifactDir, `attempt-${attemptNumber}`);
+      await fs.mkdir(attemptArtifactDir, { recursive: true });
+
+      const availabilityProbe = await probeRdaUsernameAvailabilityStep(
+        page,
+        attemptArtifactDir,
+        candidateUsername,
+        runtimeConfig.timeoutMs
+      );
+      allSteps.push(...withAttemptPrefix([availabilityProbe.step], attemptNumber));
+      if (availabilityProbe.step.artifactPath) {
+        allArtifactPaths.push(availabilityProbe.step.artifactPath);
+      }
+      if (availabilityProbe.step.status === 'failed') {
+        throwWithCreatePlayerContext(
+          new Error(availabilityProbe.step.error ?? `Username availability precheck failed for ${candidateUsername}`),
+          allSteps,
+          allArtifactPaths
+        );
+      }
+      if (!availabilityProbe.available) {
+        continue;
+      }
 
       try {
-        const outcome = await executeRdaCreateAttempt(page, attemptRequest, artifactDir, runtimeConfig.timeoutMs);
+        const outcome = await executeRdaCreateAttempt(page, attemptRequest, attemptArtifactDir, runtimeConfig.timeoutMs);
         allSteps.push(...withAttemptPrefix(outcome.steps, attemptNumber));
         allArtifactPaths.push(...outcome.artifactPaths);
 

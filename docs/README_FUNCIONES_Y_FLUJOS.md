@@ -74,7 +74,9 @@ Implementa una cola en memoria con TTL:
 ### `src/create-player-job.ts`
 
 - usa flujo UI para `RdA`;
+- hace precheck de disponibilidad en `/users/all` antes de abrir el alta en `RdA`;
 - prueba variantes de username si encuentra duplicados;
+- separa artifacts por intento para no pisar screenshots entre reintentos;
 - captura screenshots por paso;
 - verifica que el usuario aparezca en `/users/all`.
 

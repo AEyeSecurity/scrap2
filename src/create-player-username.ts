@@ -2,7 +2,7 @@ import type { PaginaCode } from './types';
 
 const ASN_MAX_USERNAME_LENGTH = 12;
 const DUPLICATE_USERNAME_ERROR_REGEX =
-  /ya existe|already exists|already in use|usuario.+existe|nick.+existe|login.+existe|en uso/i;
+  /ya existe|already exist(?:s)?|already in use|usuario.+existe|nick.+existe|login.+existe|en uso/i;
 const GENERIC_REQUEST_FAILURE_REGEX = /ejecuci[oó]n de la solicitud fall[oó]/i;
 const PASSWORD_VERIFICATION_WARNING_REGEX = /password not verified/i;
 
@@ -59,6 +59,18 @@ export interface RemoteApiErrorDetails {
   httpStatus?: number;
   apiStatus?: number;
   errorMessage?: string | null;
+}
+
+export function isDuplicateUsernameApiFailure(details: RemoteApiErrorDetails | null | undefined): boolean {
+  if (!details) {
+    return false;
+  }
+
+  if (typeof details.errorMessage === 'string' && isDuplicateUsernameError(details.errorMessage)) {
+    return true;
+  }
+
+  return typeof details.apiStatus === 'number' && details.apiStatus === -3;
 }
 
 export function extractRemoteApiErrorMessage(body: unknown): string | null {

@@ -4,6 +4,7 @@ import {
   buildExhaustedUsernameError,
   buildUsernameCandidates,
   extractRemoteApiErrorMessage,
+  isDuplicateUsernameApiFailure,
   isGenericRequestFailure,
   isDuplicateUsernameError,
   isPasswordVerificationWarning
@@ -60,6 +61,7 @@ describe('create-player username helpers', () => {
   it('detects duplicate username error messages', () => {
     expect(isDuplicateUsernameError('El Login / Nick de usuario de usuario ya existe.')).toBe(true);
     expect(isDuplicateUsernameError('Username already exists')).toBe(true);
+    expect(isDuplicateUsernameError('User with username: 0Gonza234 - already exist')).toBe(true);
     expect(isDuplicateUsernameError('La ejecución de la solicitud falló.')).toBe(false);
     expect(isDuplicateUsernameError('invalid password')).toBe(false);
   });
@@ -84,6 +86,9 @@ describe('create-player username helpers', () => {
       })
     ).toBe('Password not verified');
     expect(extractRemoteApiErrorMessage({ message: 'Username already exists' })).toBe('Username already exists');
+    expect(extractRemoteApiErrorMessage({ error_message: 'User with username: 0Gonza234 - already exist' })).toBe(
+      'User with username: 0Gonza234 - already exist'
+    );
     expect(extractRemoteApiErrorMessage('plain text body')).toBeNull();
   });
 
@@ -95,6 +100,27 @@ describe('create-player username helpers', () => {
       })
     ).toBe('RdA create-player API error (status 231): Password not verified');
     expect(buildRemoteApiErrorMessage({ httpStatus: 500 })).toBe('RdA create-player API error (HTTP 500)');
+  });
+
+  it('detects duplicate RdA API failures from message or api status', () => {
+    expect(
+      isDuplicateUsernameApiFailure({
+        apiStatus: -3,
+        errorMessage: 'User with username: 0Gonza234 - already exist'
+      })
+    ).toBe(true);
+    expect(
+      isDuplicateUsernameApiFailure({
+        apiStatus: -3,
+        errorMessage: null
+      })
+    ).toBe(true);
+    expect(
+      isDuplicateUsernameApiFailure({
+        apiStatus: 231,
+        errorMessage: 'Password not verified'
+      })
+    ).toBe(false);
   });
 
   it('builds exhausted username error with tried candidates', () => {

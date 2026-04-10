@@ -93,6 +93,14 @@ Nota `RdA` al `2026-04-07`:
 - si lo encuentra, el smoke queda `ok`;
 - si no lo encuentra, ese error confirma diagnostico correcto del backend, no un falso duplicado de username.
 
+Nota `RdA` al `2026-04-09`:
+
+- el smoke de `create-player` ahora hace primero el precheck de username en `/users/all` para evitar submits redundantes;
+- si el username base ya existe, el job debe avanzar a candidatos sufijados antes de tocar la pantalla de alta;
+- si la API remota igual responde un duplicado tardio con `status = -3` o `already exist`, el job debe seguir con el siguiente candidato;
+- en `GET /jobs/:id`, los pasos deben mostrar intentos prefijados como `A1-00-precheck-username-availability`, `A2-00-precheck-username-availability`, etc.;
+- los artifacts esperados quedan separados por intento bajo `artifacts/jobs/<jobId>/attempt-N/`.
+
 Notas:
 
 - usa `RDA_API_BASE_URL` si tu backend no corre en `http://127.0.0.1:3000`
@@ -138,6 +146,7 @@ Nota ASN al `2026-04-08`:
 - normalizacion de operaciones y pagina;
 - parseo de saldo;
 - matching de filas de usuario;
+- preclasificacion de duplicados y candidatos de username para `create-player`;
 - endpoints y validaciones del servidor;
 - stores de telefono y reportes;
 - comportamiento de la cola de jobs.

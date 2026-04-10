@@ -99,6 +99,15 @@ Nota operativa `RdA` al `2026-04-07`:
 - RdA rechaza contrasenas cortas: `newPassword` debe tener al menos 6 caracteres. Por ejemplo, para `0Ro347`, `ro123` falla y `ro1234` funciona.
 - `La ejecución de la solicitud falló.` ya no se trata como `username duplicado`, por lo que el job deja de gastar 10 intentos falsos.
 
+Nota operativa `RdA` al `2026-04-09`:
+
+- antes de abrir `/users/create-player`, el backend ahora hace un precheck en `/users/all` para cada candidato de username;
+- si un candidato ya existe, lo marca como intento descartado y prueba el siguiente sin golpear la API de alta;
+- la API remota de RdA puede devolver duplicados con mensajes como `already exist` o `status = -3`; ambos casos se clasifican como duplicado real;
+- ese chequeo post-submit queda solo como proteccion ante carrera, no como estrategia primaria;
+- cada intento guarda artifacts en `artifacts/jobs/<jobId>/attempt-N/`, por lo que ya no se pisan screenshots entre reintentos;
+- el resultado final sigue informando `createdUsername` y `attempts`, pero ahora con reintentos mas baratos y deterministas.
+
 ### `POST /users/intake-pending`
 
 No crea usuario en la web. Solo deja al cliente pendiente en Supabase para asociarlo despues por telefono. `ownerContext` es obligatorio.
@@ -210,8 +219,11 @@ Reglas `RdA` actuales:
 - `POST /users/create-player`, `POST /users/deposit` y `consultar_saldo` fueron validados en Docker real el `2026-03-27`
 - `POST /users/deposit` y `consultar_saldo` fueron revalidados en Docker real el `2026-04-07` por el caso responsive de RdA
 - `POST /users/create-player` fue reanalizado en Docker real el `2026-04-07` por una regresion remota del sitio
+- `POST /users/create-player` fue revalidado en Docker real el `2026-04-09` por colisiones de username en `Lucas 10 RdA`
 - cuando RdA devuelve `Password not verified`, el backend verifica la lista de usuarios antes de fallar
 - si el usuario existe, el alta queda `succeeded`; si no existe, devuelve ese motivo real y no reintenta como si fuera nick duplicado
+- cuando el username pedido ya existe, el backend ahora lo detecta primero en `/users/all` y evita submits redundantes al formulario
+- si aun asi la API de RdA devuelve `status = -3` o un mensaje `already exist` durante el submit, el job lo toma como colision real y rota al siguiente candidato
 - para `RdA`, los jobs de fondos y saldo usan sesion aislada por operacion
 - esa decision evita intermitencias de `descarga` y `descarga_total` al reutilizar una sesion vieja dentro del contenedor
 - en Docker, RdA puede ocultar o partir la columna del usuario en `/users/all`; fondos y saldo usan la tabla filtrada y una unica accion/saldo visible como fallback seguro
