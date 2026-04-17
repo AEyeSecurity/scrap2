@@ -20,7 +20,7 @@ http://127.0.0.1:3000
 
 - `POST /mastercrm-register`: alta de usuario web para el frontend MasterCRM.
 - `POST /mastercrm-login`: login web compatible con el frontend actual.
-- `POST /mastercrm-clients`: placeholder compatible para clientes del frontend.
+- `POST /mastercrm-clients`: dashboard consolidado del cajero para el frontend MasterCRM.
 - `POST /mastercrm-link-cashier`: vincula un usuario web con un owner/cajero existente.
 - `POST /login`: job asincrono de autenticacion.
 - `POST /users/create-player`: job asincrono de alta de usuario.
