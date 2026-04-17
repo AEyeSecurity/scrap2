@@ -60,7 +60,27 @@ Login web compatible con el payload duplicado actual del frontend.
 
 ### `POST /mastercrm-clients`
 
-Placeholder compatible. En esta version devuelve `[]` cuando el usuario existe y esta activo.
+Devuelve el dashboard consolidado del cajero vinculado para el mes pedido: owner, KPIs, resumen financiero, charts y `clientes`.
+
+Cada item de `clientes` ahora incluye:
+
+- `id`
+- `username`
+- `telefono`
+- `pagina`
+- `estado`
+- `ownerKey`
+- `ownerLabel`
+- `firstSeenAt`
+- `cargadoHoy`
+- `cargadoMes`
+- `reportDate`
+- `isNewIntakeMes`
+- `isReingresoMes`
+- `assignedEnMes`
+- `assignedDesdeBacklogMes`
+
+`firstSeenAt` sale de `owner_client_links.first_seen_at` y representa cuando ese numero entro a la cartera de ese cajero. Ese valor es el que debe usar el frontend para mostrar la columna `Fecha` y ordenar pendientes por antiguedad de ingreso.
 
 ### `POST /mastercrm-link-cashier`
 

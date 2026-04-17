@@ -122,6 +122,7 @@ export interface MastercrmOwnerClientRecord {
   estado: 'assigned' | 'pending';
   ownerKey: string;
   ownerLabel: string;
+  firstSeenAt: string | null;
   cargadoHoy: number | null;
   cargadoMes: number | null;
   reportDate: string | null;
@@ -217,6 +218,11 @@ interface ReportDailySnapshotRow {
   username: string;
   cargado_hoy: number | string | null;
   cargado_mes: number | string | null;
+}
+
+interface OwnerClientLinkFirstSeenRow {
+  id: string;
+  first_seen_at: string | null;
 }
 
 interface OwnerAliasRow {
@@ -825,6 +831,28 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
 
     const factsForSelectedMonth = (ownerClientFactsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
+    const ownerClientLinkIds = factsForSelectedMonth
+      .map((fact) => (typeof fact.link_id === 'string' && fact.link_id.length > 0 ? fact.link_id : null))
+      .filter((linkId): linkId is string => Boolean(linkId));
+    const linkFirstSeenById = new Map<string, string | null>();
+
+    if (ownerClientLinkIds.length > 0) {
+      const { data: ownerClientLinksData, error: ownerClientLinksError } = await this.client
+        .from('owner_client_links')
+        .select('id, first_seen_at')
+        .eq('owner_id', owner.id)
+        .in('id', ownerClientLinkIds);
+
+      if (ownerClientLinksError) {
+        throw mapPostgrestError(ownerClientLinksError, 'Could not read owner client links');
+      }
+
+      const ownerClientLinks = (ownerClientLinksData as OwnerClientLinkFirstSeenRow[] | null) ?? [];
+      for (const link of ownerClientLinks) {
+        linkFirstSeenById.set(link.id, link.first_seen_at ?? null);
+      }
+    }
+
     const totalClients = factsForSelectedMonth.length;
     const assignedClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'assigned').length;
     const pendingClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'pending').length;
@@ -978,6 +1006,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           estado: fact.status_at_month_end,
           ownerKey: owner.owner_key,
           ownerLabel: owner.owner_label,
+          firstSeenAt: linkFirstSeenById.get(fact.link_id) ?? null,
           cargadoHoy: snapshot?.cargadoHoy ?? null,
           cargadoMes: snapshot?.cargadoMes ?? null,
           reportDate: snapshot?.reportDate ?? reportDate,

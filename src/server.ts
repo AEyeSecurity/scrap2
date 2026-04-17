@@ -1205,6 +1205,7 @@ export function createServer(
           estado: client.estado,
           ownerKey: client.ownerKey,
           ownerLabel: client.ownerLabel,
+          firstSeenAt: client.firstSeenAt,
           cargadoHoy: client.cargadoHoy,
           cargadoMes: client.cargadoMes,
           reportDate: client.reportDate,

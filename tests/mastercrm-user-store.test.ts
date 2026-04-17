@@ -54,6 +54,12 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     return this;
   }
 
+  in(column: string, value: unknown[]): FakeQueryBuilder {
+    this.filters.push({ column: `${column} in`, value });
+    this.client.calls.push({ table: this.table, operation: 'filter-in', column, value });
+    return this;
+  }
+
   gte(column: string, value: unknown): FakeQueryBuilder {
     this.filters.push({ column: `${column}>=`, value });
     this.client.calls.push({ table: this.table, operation: 'filter-gte', column, value });
@@ -556,6 +562,15 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('owner_client_links', 'select', {
+      data: [
+        {
+          id: 'link-pending',
+          first_seen_at: '2026-02-14T09:30:00.000Z'
+        }
+      ],
+      error: null
+    });
 
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
@@ -569,6 +584,7 @@ describe('mastercrm clients dashboard', () => {
         estado: 'pending',
         ownerKey: 'asnlucas10:vicky',
         ownerLabel: 'Vicky',
+        firstSeenAt: '2026-02-14T09:30:00.000Z',
         cargadoHoy: null,
         cargadoMes: null,
         reportDate: null,
@@ -679,6 +695,14 @@ describe('mastercrm clients dashboard', () => {
     });
     client.queue('report_daily_snapshots', 'select', {
       data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [
+        { id: 'link-1', first_seen_at: '2026-03-01T10:00:00.000Z' },
+        { id: 'link-2', first_seen_at: '2026-03-02T10:00:00.000Z' },
+        { id: 'link-3', first_seen_at: '2026-03-03T10:00:00.000Z' }
+      ],
       error: null
     });
 
