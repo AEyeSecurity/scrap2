@@ -536,7 +536,8 @@ describe('mastercrm clients dashboard', () => {
           clients: {
             id: 'client-1',
             phone_e164: '+5493735506280',
-            pagina: 'ASN'
+            pagina: 'ASN',
+            created_at: '2026-02-14T09:30:00.000Z'
           }
         }
       ],
@@ -563,12 +564,7 @@ describe('mastercrm clients dashboard', () => {
       error: null
     });
     client.queue('owner_client_links', 'select', {
-      data: [
-        {
-          id: 'link-pending',
-          first_seen_at: '2026-02-14T09:30:00.000Z'
-        }
-      ],
+      data: [],
       error: null
     });
 

@@ -80,7 +80,7 @@ Cada item de `clientes` ahora incluye:
 - `assignedEnMes`
 - `assignedDesdeBacklogMes`
 
-`firstSeenAt` sale de `owner_client_links.first_seen_at` y representa cuando ese numero entro a la cartera de ese cajero. Ese valor es el que debe usar el frontend para mostrar la columna `Fecha` y ordenar pendientes por antiguedad de ingreso.
+`firstSeenAt` sale primero de `owner_client_links.first_seen_at` y, si ese vinculo historico no lo tiene poblado, cae a `clients.created_at`. El objetivo es que el frontend siempre tenga una fecha util para mostrar la columna `Fecha` y ordenar pendientes por antiguedad de ingreso.
 
 ### `POST /mastercrm-link-cashier`
 

@@ -193,6 +193,7 @@ interface ClientRow {
   id: string;
   phone_e164: string | null;
   pagina: PaginaCode;
+  created_at?: string | null;
 }
 
 interface OwnerClientMonthlyFactRow {
@@ -766,7 +767,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         this.client
           .from('owner_client_monthly_facts')
           .select(
-            'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina)'
+            'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
           )
           .eq('owner_id', owner.id)
           .eq('month_start', monthWindow.monthStartDate),
@@ -1006,7 +1007,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           estado: fact.status_at_month_end,
           ownerKey: owner.owner_key,
           ownerLabel: owner.owner_label,
-          firstSeenAt: linkFirstSeenById.get(fact.link_id) ?? null,
+          firstSeenAt: linkFirstSeenById.get(fact.link_id) ?? client?.created_at ?? null,
           cargadoHoy: snapshot?.cargadoHoy ?? null,
           cargadoMes: snapshot?.cargadoMes ?? null,
           reportDate: snapshot?.reportDate ?? reportDate,
