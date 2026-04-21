@@ -112,7 +112,7 @@ Prechecks cerrados del script antes de recrear `scrap2-api`:
   - `META_VALUE_SIGNAL_WINDOW_MODE = intake_local_day`
   - `META_BATCH_SIZE = 1`
   - `META_WORKER_CONCURRENCY = 2`
-  - `META_WORKER_POLL_MS = 1000`
+  - `META_WORKER_POLL_MS = 5000`
   - `META_WORKER_LEASE_SECONDS = 60`
   - `META_WORKER_MAX_ATTEMPTS = 5`
   - `META_WORKER_SCAN_LIMIT = 100`
@@ -1100,6 +1100,118 @@ Actualizacion `2026-03-25`:
     - la logica nueva ya esta activa en base
     - hoy no hay ningun caso real con `primer dia observado + cargado_hoy >= 10000`
     - por eso todavia no hay evento nuevo para mirar en Meta bajo esta regla
+
+## Publicacion de `apiscrap.mastercrmrl.com`
+
+Estado operativo validado el `2026-04-21` en `ServerCIT`:
+
+- backend local:
+  - contenedor Docker `scrap2-api`
+  - puerto local `http://127.0.0.1:3000`
+  - `GET /` devuelve `404 Route GET:/ not found`, que en Fastify cuenta como origen sano
+- publicacion publica:
+  - hostname `https://apiscrap.mastercrmrl.com`
+  - tunnel ID `65257c16-c73c-440a-aa5d-00b18b07d589`
+  - conector actual: contenedor Docker `cloudflared-apiscrap`
+  - imagen: `cloudflare/cloudflared:latest`
+  - restart policy: `unless-stopped`
+  - metricas: `127.0.0.1:20242`
+
+Incidente real cerrado el `2026-04-21`:
+
+- el backend no estaba caido
+- el error publico `530 / 1033` venia de Cloudflare
+- la causa raiz fue que el hostname `apiscrap.mastercrmrl.com` dependia de un segundo tunnel distinto del servicio Windows `Cloudflared`
+- ese segundo tunnel habia quedado sin un mecanismo persistente valido
+- el servicio Windows `Cloudflared` que seguia `Running` correspondia al tunnel principal de `aeye.com.ar`, no al de `apiscrap`
+
+Regla operativa actual:
+
+- no asumir que el servicio Windows `Cloudflared` publica `apiscrap`
+- verificar siempre el conector Docker `cloudflared-apiscrap`
+- verificar tambien que el backend local responda antes de culpar a Cloudflare
+
+Comandos minimos de chequeo:
+
+```powershell
+docker inspect cloudflared-apiscrap --format "Image={{.Config.Image}} Status={{.State.Status}} RestartPolicy={{.HostConfig.RestartPolicy.Name}}"
+```
+
+```powershell
+docker logs --tail 50 cloudflared-apiscrap
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing http://127.0.0.1:3000/
+```
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://apiscrap.mastercrmrl.com/
+```
+
+Verificacion minima del login web:
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://apiscrap.mastercrmrl.com/mastercrm-login -Method Post -ContentType "application/json" -Body "{}"
+```
+
+La respuesta esperada con payload vacio es `400 INVALID_PAYLOAD`; eso confirma que el dominio publico esta llegando al backend real.
+
+## Workers de reportes y Meta
+
+Relacion con CRM y n8n:
+
+- `POST /mastercrm-login` y `POST /mastercrm-clients` usan Supabase, pero no dependen del `ReportRunWorker` ni del `MetaConversionsWorker` para responder
+- `ReportRunWorker` si afecta los flujos asincronos de reportes:
+  - `POST /reports/run`
+  - `POST /reports/asn/run`
+  - workflows de n8n que esperan que la corrida avance y cierre
+- `MetaConversionsWorker` si afecta la entrega de la outbox de Meta CAPI, pero no rompe el login web del CRM
+
+Diagnostico real del ruido visto en logs:
+
+- se observaron errores repetidos:
+  - `Report run worker pump failed`
+  - `Meta conversions worker pump failed`
+- esos errores aparecieron juntos, inmediatamente despues de un arranque del servidor, y en polling de `5s`
+- al reprobar las mismas RPCs desde el contenedor productivo:
+  - `claim_next_report_run_item(...)` responde sin error
+  - `claim_next_meta_conversion_outbox(...)` responde sin error
+  - `enqueue_meta_value_signals(...)` responde sin error
+- estado actual de datos:
+  - `report_runs` recientes completos
+  - `report_run_items` recientes sin backlog nuevo
+  - `meta_conversion_outbox` reciente en `sent`, salvo un `Purchase` historico fallido del `2026-03-25`
+
+Conclusion operativa:
+
+- no hay evidencia de una rotura activa del CRM web por estos workers
+- no hay evidencia de una rotura activa del workflow de reportes de n8n hoy
+- la explicacion mas consistente es un fallo transitorio de conectividad o readiness contra Supabase durante el arranque del backend
+- el problema real de operacion fue la baja observabilidad: el logger emitia `name/code` pero no la causa completa
+
+Historial relevante a no confundir con el incidente actual:
+
+- `2026-04-07`:
+  - hubo `report_run_items` fallidos por `42P10` al hacer `upsert` de snapshots
+  - ese error es historico y no coincide con el estado actual de las RPCs ni con las corridas recientes
+- `2026-03-25`:
+  - hubo un `Purchase` rechazado por Meta por faltar `currency`
+  - tambien es historico y no explica el ruido de arranque del `2026-04-21`
+
+Solucion aplicada en el codigo del repo:
+
+- `src/logging.ts` ahora serializa el campo `error` con `pino.stdSerializers.err`
+- eso hace que futuros `logger.error({ error }, ...)` y `logger.warn({ error }, ...)` emitan `message`, `stack` y causa util, en lugar de dejar solo `name/code`
+- `src/meta-conversions-worker.ts` y `src/report-worker.ts` ya tienen backoff adaptativo para evitar polling agresivo cuando no hay trabajo
+- `src/server.ts` ya usa `5000 ms` como default de polling para ambos workers en vez de `1000 ms`
+
+Solucion recomendada de despliegue:
+
+1. mantener el cambio de serializacion de errores para mejorar diagnostico real de futuras caidas
+2. mantener `REPORT_WORKER_POLL_MS` y `META_WORKER_POLL_MS` en `5000`
+3. si reaparecen fallos al arranque, correlacionar primero contra conectividad de Supabase antes de tocar workflows de n8n o endpoints de CRM
+4. si se necesita endurecer aun mas, agregar un readiness probe de Supabase antes de arrancar ambos workers
 
 ## Si otro chat retoma este repo
 

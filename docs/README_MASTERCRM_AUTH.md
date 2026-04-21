@@ -108,7 +108,7 @@ Reglas:
 
 ### `POST /mastercrm-clients`
 
-Por ahora es un placeholder compatible.
+Devuelve el dashboard del cajero/owner vinculado al usuario web.
 
 Acepta:
 
@@ -116,13 +116,21 @@ Acepta:
 - `user_id`
 - `usuario_id`
 
-Si el usuario existe y esta activo, responde:
+Si el usuario existe y esta activo, responde un JSON con:
 
 ```json
-[]
+{
+  "linkedOwner": {},
+  "summary": {},
+  "financialInputs": {},
+  "primaryKpis": {},
+  "statsKpis": {},
+  "charts": {},
+  "clientes": []
+}
 ```
 
-Esta ruta no sincroniza ni devuelve todavia datos reales del CRM. Queda lista para enchufar esa logica despues.
+Esta ruta ya lee datos reales persistidos en Supabase a partir de snapshots diarios y tablas owner-centric.
 
 ### `POST /mastercrm-link-cashier`
 
@@ -187,5 +195,5 @@ Default de desarrollo:
 - no se reutiliza `/login` porque ya existe para jobs de agentes;
 - los usuarios web viven en una tabla propia, separada del modelo `owners/clients`;
 - no hay JWT ni cookie en esta primera version;
-- `mastercrm-clients` queda deliberadamente como `[]` hasta definir la sincronizacion real;
+- `mastercrm-clients` usa snapshots persistidos y no depende de Supabase Storage;
 - `mastercrm-link-cashier` ya soporta `pagina = ASN` y `pagina = RdA`.

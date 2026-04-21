@@ -852,7 +852,7 @@ export function createServer(
   const metaWorkerEnabled = dependencies?.metaWorkerEnabled ?? metaEnabled;
   const metaWorkerConcurrency =
     dependencies?.metaWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.META_WORKER_CONCURRENCY, 2);
-  const metaWorkerPollMs = dependencies?.metaWorkerPollMs ?? parsePositiveIntegerEnv(process.env.META_WORKER_POLL_MS, 1000);
+  const metaWorkerPollMs = dependencies?.metaWorkerPollMs ?? parsePositiveIntegerEnv(process.env.META_WORKER_POLL_MS, 5000);
   const metaWorkerLeaseSeconds =
     dependencies?.metaWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.META_WORKER_LEASE_SECONDS, 60);
   const metaWorkerMaxAttempts =
@@ -866,7 +866,7 @@ export function createServer(
     ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
   const reportWorkerConcurrency =
     dependencies?.reportWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_CONCURRENCY, 3);
-  const reportWorkerPollMs = dependencies?.reportWorkerPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_POLL_MS, 1000);
+  const reportWorkerPollMs = dependencies?.reportWorkerPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_POLL_MS, 5000);
   const reportWorkerLeaseSeconds =
     dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
   const reportWorkerMaxAttempts =

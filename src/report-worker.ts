@@ -9,6 +9,7 @@ export type ReportJobExecutor = (lease: ReportRunLease) => Promise<ReportJobResu
 export interface ReportRunWorkerOptions {
   concurrency: number;
   pollMs: number;
+  maxPollMs?: number;
   leaseSeconds: number;
   maxAttempts: number;
 }
@@ -16,6 +17,7 @@ export interface ReportRunWorkerOptions {
 export class ReportRunWorker {
   private readonly concurrency: number;
   private readonly pollMs: number;
+  private readonly maxPollMs: number;
   private readonly leaseSeconds: number;
   private readonly maxAttempts: number;
   private readonly executor: ReportJobExecutor;
@@ -23,6 +25,8 @@ export class ReportRunWorker {
   private active = 0;
   private pumping = false;
   private stopping = false;
+  private currentPollMs: number;
+  private idleLoggedPollMs: number | null = null;
 
   constructor(
     private readonly store: ReportRunStore,
@@ -32,9 +36,11 @@ export class ReportRunWorker {
   ) {
     this.concurrency = Math.max(1, Math.trunc(options.concurrency));
     this.pollMs = Math.max(100, Math.trunc(options.pollMs));
+    this.maxPollMs = Math.max(this.pollMs, Math.trunc(options.maxPollMs ?? Math.max(this.pollMs * 6, 30_000)));
     this.leaseSeconds = Math.max(1, Math.trunc(options.leaseSeconds));
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.executor = executor;
+    this.currentPollMs = this.pollMs;
   }
 
   start(): void {
@@ -43,9 +49,8 @@ export class ReportRunWorker {
     }
 
     this.stopping = false;
-    this.timer = setInterval(() => {
-      void this.pump();
-    }, this.pollMs);
+    this.currentPollMs = this.pollMs;
+    this.idleLoggedPollMs = null;
     void this.pump();
   }
 
@@ -61,12 +66,29 @@ export class ReportRunWorker {
     }
   }
 
+  private scheduleNextPump(delayMs: number): void {
+    if (this.stopping) {
+      return;
+    }
+
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.pump();
+    }, Math.max(25, delayMs));
+    this.timer.unref?.();
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping || this.stopping) {
       return;
     }
 
     this.pumping = true;
+    let claimedInThisPump = 0;
     try {
       while (!this.stopping && this.active < this.concurrency) {
         const lease = await this.store.leaseNextRunItem(this.leaseSeconds, this.maxAttempts);
@@ -75,6 +97,7 @@ export class ReportRunWorker {
         }
 
         this.active += 1;
+        claimedInThisPump += 1;
         void this.processLease(lease).finally(() => {
           this.active -= 1;
           if (!this.stopping) {
@@ -88,6 +111,23 @@ export class ReportRunWorker {
       this.logger.error({ error }, 'Report run worker pump failed');
     } finally {
       this.pumping = false;
+      const hadActivity = claimedInThisPump > 0 || this.active > 0;
+      if (hadActivity) {
+        if (this.idleLoggedPollMs !== null) {
+          this.logger.info({ pollMs: this.pollMs }, 'Report run worker resumed active polling');
+        }
+        this.currentPollMs = this.pollMs;
+        this.idleLoggedPollMs = null;
+      } else {
+        this.currentPollMs =
+          this.currentPollMs >= this.maxPollMs ? this.maxPollMs : Math.min(this.maxPollMs, this.currentPollMs * 2);
+        if (this.idleLoggedPollMs !== this.currentPollMs) {
+          this.logger.info({ nextPollMs: this.currentPollMs }, 'Report run worker idle; backing off polling');
+          this.idleLoggedPollMs = this.currentPollMs;
+        }
+      }
+
+      this.scheduleNextPump(this.active > 0 ? this.pollMs : this.currentPollMs);
     }
   }
 

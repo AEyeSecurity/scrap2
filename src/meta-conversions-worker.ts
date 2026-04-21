@@ -5,6 +5,7 @@ import type { MetaConversionLease, MetaConversionsStore, MetaValueSignalScanOpti
 export interface MetaConversionsWorkerOptions {
   concurrency: number;
   pollMs: number;
+  maxPollMs?: number;
   leaseSeconds: number;
   maxAttempts: number;
   scanLimit: number;
@@ -25,6 +26,7 @@ function isRetryableError(error: unknown): error is MetaConversionsDispatchError
 export class MetaConversionsWorker {
   private readonly concurrency: number;
   private readonly pollMs: number;
+  private readonly maxPollMs: number;
   private readonly leaseSeconds: number;
   private readonly maxAttempts: number;
   private readonly scanLimit: number;
@@ -35,6 +37,8 @@ export class MetaConversionsWorker {
   private active = 0;
   private pumping = false;
   private stopping = false;
+  private currentPollMs: number;
+  private idleLoggedPollMs: number | null = null;
 
   constructor(
     private readonly store: MetaConversionsStore,
@@ -44,12 +48,14 @@ export class MetaConversionsWorker {
   ) {
     this.concurrency = Math.max(1, Math.trunc(options.concurrency));
     this.pollMs = Math.max(100, Math.trunc(options.pollMs));
+    this.maxPollMs = Math.max(this.pollMs, Math.trunc(options.maxPollMs ?? Math.max(this.pollMs * 6, 30_000)));
     this.leaseSeconds = Math.max(1, Math.trunc(options.leaseSeconds));
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.scanLimit = Math.max(1, Math.trunc(options.scanLimit));
     this.scanEnabled = options.scanEnabled ?? true;
     this.scanOptions = options.scanOptions ?? {};
     this.batchSize = Math.max(1, Math.trunc(options.batchSize ?? 1));
+    this.currentPollMs = this.pollMs;
   }
 
   start(): void {
@@ -58,9 +64,8 @@ export class MetaConversionsWorker {
     }
 
     this.stopping = false;
-    this.timer = setInterval(() => {
-      void this.pump();
-    }, this.pollMs);
+    this.currentPollMs = this.pollMs;
+    this.idleLoggedPollMs = null;
     void this.pump();
   }
 
@@ -76,18 +81,35 @@ export class MetaConversionsWorker {
     }
   }
 
+  private scheduleNextPump(delayMs: number): void {
+    if (this.stopping) {
+      return;
+    }
+
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.pump();
+    }, Math.max(25, delayMs));
+    this.timer.unref?.();
+  }
+
   private async pump(): Promise<void> {
     if (this.pumping || this.stopping) {
       return;
     }
 
     this.pumping = true;
+    let claimedInThisPump = 0;
+    let scannedSignals = 0;
     try {
       if (this.scanEnabled) {
-        await this.store.scanForValueSignals(this.scanLimit, this.scanOptions);
+        scannedSignals = await this.store.scanForValueSignals(this.scanLimit, this.scanOptions);
       }
 
-      let claimedInThisPump = 0;
       while (
         !this.stopping &&
         this.active < this.concurrency &&
@@ -113,6 +135,23 @@ export class MetaConversionsWorker {
       this.logger.error({ error }, 'Meta conversions worker pump failed');
     } finally {
       this.pumping = false;
+      const hadActivity = claimedInThisPump > 0 || scannedSignals > 0 || this.active > 0;
+      if (hadActivity) {
+        if (this.idleLoggedPollMs !== null) {
+          this.logger.info({ pollMs: this.pollMs }, 'Meta conversions worker resumed active polling');
+        }
+        this.currentPollMs = this.pollMs;
+        this.idleLoggedPollMs = null;
+      } else {
+        this.currentPollMs =
+          this.currentPollMs >= this.maxPollMs ? this.maxPollMs : Math.min(this.maxPollMs, this.currentPollMs * 2);
+        if (this.idleLoggedPollMs !== this.currentPollMs) {
+          this.logger.info({ nextPollMs: this.currentPollMs }, 'Meta conversions worker idle; backing off polling');
+          this.idleLoggedPollMs = this.currentPollMs;
+        }
+      }
+
+      this.scheduleNextPump(this.active > 0 ? this.pollMs : this.currentPollMs);
     }
   }
 

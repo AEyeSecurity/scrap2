@@ -10,7 +10,10 @@ Supabase no es obligatorio para levantar la API, pero si es obligatorio para est
 - endpoints `POST /users/intake-pending` y `POST /users/assign-phone`;
 - sincronizacion posterior a `POST /users/create-player` cuando el payload incluye `telefono`;
 - usuarios web de MasterCRM (`/mastercrm-register`, `/mastercrm-login`, `/mastercrm-clients`);
-- cola persistente de reportes ASN (`POST /reports/asn/run` y endpoints de consulta asociados).
+- cola persistente de reportes ASN/RdA (`POST /reports/asn/run`, `POST /reports/run` y endpoints de consulta asociados);
+- snapshots diarios y KPIs del dashboard de MasterCRM en Postgres.
+
+No se usa Supabase Storage para el dashboard del CRM. Los snapshots viven en tablas de Postgres como `report_daily_snapshots`, `report_run_items` y `report_outbox`.
 
 Si no configuras Supabase, la API puede seguir corriendo, pero esas funciones no van a estar disponibles correctamente.
 
@@ -96,7 +99,7 @@ SUPABASE_URL=https://tu-proyecto.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=tu_service_role_o_secret_key
 REPORT_WORKER_ENABLED=true
 REPORT_WORKER_CONCURRENCY=3
-REPORT_WORKER_POLL_MS=1000
+REPORT_WORKER_POLL_MS=5000
 REPORT_WORKER_LEASE_SECONDS=60
 REPORT_WORKER_MAX_ATTEMPTS=3
 ```
@@ -140,6 +143,15 @@ Senales practicas de que la conexion quedo bien:
 - `POST /users/intake-pending` responde `200` y devuelve ids de la relacion creada;
 - `POST /reports/asn/run` responde `202` y crea una corrida persistida;
 - el worker de reportes avanza items en Supabase cuando esta habilitado.
+
+## Nota operativa sobre crecimiento
+
+Si crece el uso de Supabase en este proyecto, lo esperable es que crezca en Postgres por historial tecnico de snapshots, corridas e outbox. La fase siguiente de endurecimiento debe definir retencion para:
+
+- `report_daily_snapshots`
+- `report_run_items`
+- `report_outbox`
+- `meta_conversion_outbox`
 
 Si la conexion esta mal, lo esperable es ver errores de configuracion o errores de PostgREST/RPC al invocar endpoints que dependen de Supabase.
 
