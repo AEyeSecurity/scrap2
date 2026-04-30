@@ -6,6 +6,7 @@ import {
   isExpectedAsnDelta,
   parseAsnMoney,
   resolveAsnDepositEntryPath,
+  resolveAsnExecutableAmount,
   resolveAsnRequestedAmount
 } from '../src/asn-funds-job';
 
@@ -23,6 +24,8 @@ describe('asn-funds helpers', () => {
   it('computes expected balances and applied amounts for each operation', () => {
     expect(computeExpectedAsnBalance('carga', 100, 50)).toBe(150);
     expect(computeExpectedAsnBalance('descarga', 100, 40)).toBe(60);
+    expect(computeExpectedAsnBalance('descarga', 22.34, 22.34)).toBe(0);
+    expect(computeExpectedAsnBalance('descarga', 22.34, 45000)).toBe(0);
     expect(computeExpectedAsnBalance('descarga_total', 100, 100)).toBe(0);
 
     expect(computeAsnAppliedAmount('carga', 100, 150)).toBe(50);
@@ -30,9 +33,26 @@ describe('asn-funds helpers', () => {
     expect(computeAsnAppliedAmount('descarga_total', 100, 0)).toBe(100);
   });
 
+  it('caps ASN descarga execution to the available balance because ASN never goes negative', () => {
+    const saldoAntes = 22.34;
+    const montoSolicitado = 45000;
+    const montoEjecutable = resolveAsnExecutableAmount('descarga', saldoAntes, montoSolicitado);
+
+    expect(montoEjecutable).toBe(22.34);
+    expect(computeExpectedAsnBalance('descarga', saldoAntes, montoEjecutable)).toBe(0);
+    expect(computeAsnAppliedAmount('descarga', saldoAntes, 0)).toBe(22.34);
+    expect(isExpectedAsnDelta('descarga', saldoAntes, 0, montoEjecutable)).toBe(true);
+  });
+
+  it('does not cap carga execution amounts', () => {
+    expect(resolveAsnExecutableAmount('carga', 22.34, 45000)).toBe(45000);
+  });
+
   it('validates expected delta with tolerance', () => {
     expect(isExpectedAsnDelta('carga', 100, 150, 50)).toBe(true);
     expect(isExpectedAsnDelta('descarga', 100, 60, 40)).toBe(true);
+    expect(isExpectedAsnDelta('descarga', 22.34, 0, 22.34)).toBe(true);
+    expect(isExpectedAsnDelta('descarga', 22.34, 0, 45000)).toBe(true);
     expect(isExpectedAsnDelta('descarga_total', 100, 0, 100)).toBe(true);
     expect(isExpectedAsnDelta('descarga', 100, 70, 40)).toBe(false);
   });

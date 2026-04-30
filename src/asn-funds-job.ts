@@ -599,10 +599,22 @@ export function computeExpectedAsnBalance(
   }
 
   if (operation === 'descarga') {
-    return roundToTwoDecimals(saldoAntesNumero - montoAplicado);
+    return roundToTwoDecimals(Math.max(saldoAntesNumero - montoAplicado, 0));
   }
 
   return 0;
+}
+
+export function resolveAsnExecutableAmount(
+  operation: FundsTransactionOperation,
+  saldoAntesNumero: number,
+  montoSolicitado: number
+): number {
+  if (operation === 'carga') {
+    return roundToTwoDecimals(montoSolicitado);
+  }
+
+  return roundToTwoDecimals(Math.min(Math.max(saldoAntesNumero, 0), montoSolicitado));
 }
 
 function computeExpectedAsnTransferBalance(saldoAntesNumero: number, montoAplicado: number): number {
@@ -1028,6 +1040,7 @@ export async function runAsnDepositJob(
         }
 
         let montoSolicitado = 0;
+        let montoEjecutable = 0;
         const resolveAmountStep = await executeActionStep(
           page,
           artifactDir,
@@ -1037,6 +1050,11 @@ export async function runAsnDepositJob(
               request.payload.operacion,
               saldoAntes?.saldoNumero ?? 0,
               request.payload.cantidad
+            );
+            montoEjecutable = resolveAsnExecutableAmount(
+              request.payload.operacion,
+              saldoAntes?.saldoNumero ?? 0,
+              montoSolicitado
             );
           },
           captureSuccessArtifacts
@@ -1049,13 +1067,13 @@ export async function runAsnDepositJob(
           throw new Error(`Step failed: ${resolveAmountStep.name} (${resolveAmountStep.error ?? 'unknown error'})`);
         }
 
-        if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
+        if (request.payload.operacion !== 'carga' && montoEjecutable <= 0.01) {
           steps.push({
             name: '05-apply-operation',
             status: 'skipped',
             startedAt: new Date().toISOString(),
             finishedAt: new Date().toISOString(),
-            error: 'descarga_total skipped because available balance is zero'
+            error: `${request.payload.operacion} skipped because available balance is zero`
           });
         } else {
           const applyStep = await executeActionStep(
@@ -1067,7 +1085,7 @@ export async function runAsnDepositJob(
                 page,
                 request.payload.operacion,
                 request.payload.usuario,
-                montoSolicitado,
+                montoEjecutable,
                 cfg.timeoutMs
               );
             },
@@ -1084,15 +1102,15 @@ export async function runAsnDepositJob(
 
         let saldoDespues: AsnBalanceSnapshot | undefined;
         const expectedBalance = useTransferBalanceValidation
-          ? computeExpectedAsnTransferBalance(saldoAntes.saldoNumero, montoSolicitado)
-          : computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoSolicitado);
+          ? computeExpectedAsnTransferBalance(saldoAntes.saldoNumero, montoEjecutable)
+          : computeExpectedAsnBalance(request.payload.operacion, saldoAntes.saldoNumero, montoEjecutable);
         const refreshPath = isWithdrawOperation ? withdrawPath : userPath;
         const readAfterStep = await executeActionStep(
           page,
           artifactDir,
           '06-read-saldo-after',
           async () => {
-            if (request.payload.operacion === 'descarga_total' && montoSolicitado <= 0.01) {
+            if (request.payload.operacion !== 'carga' && montoEjecutable <= 0.01) {
               saldoDespues = saldoAntes;
               return;
             }
@@ -1139,24 +1157,24 @@ export async function runAsnDepositJob(
                 );
             const appliedDeltaMatches = useTransferBalanceValidation
               ? appliedAmount >= -0.01
-              : Math.abs(appliedAmount - montoSolicitado) <= 0.01;
+              : Math.abs(appliedAmount - montoEjecutable) <= 0.01;
             const expectedDeltaMatches = useTransferBalanceValidation
               ? isExpectedAsnTransferDelta(
                   saldoAntes?.saldoNumero ?? 0,
                   saldoDespues?.saldoNumero ?? 0,
-                  montoSolicitado,
+                  montoEjecutable,
                   0.01
                 )
               : isExpectedAsnDelta(
                   request.payload.operacion,
                   saldoAntes?.saldoNumero ?? 0,
                   saldoDespues?.saldoNumero ?? 0,
-                  montoSolicitado,
+                  montoEjecutable,
                   0.01
                 );
             if (!appliedDeltaMatches || !expectedDeltaMatches) {
               throw new Error(
-                `Unexpected ASN balance delta: operacion=${request.payload.operacion}, saldoAntes=${saldoAntes?.saldoTexto}, saldoDespues=${saldoDespues?.saldoTexto}, montoSolicitado=${montoSolicitado}`
+                `Unexpected ASN balance delta: operacion=${request.payload.operacion}, saldoAntes=${saldoAntes?.saldoTexto}, saldoDespues=${saldoDespues?.saldoTexto}, montoSolicitado=${montoSolicitado}, montoEjecutable=${montoEjecutable}`
               );
             }
           },
@@ -1178,12 +1196,13 @@ export async function runAsnDepositJob(
         let montoAplicadoFinal = montoAplicado;
         if (useTransferBalanceValidation) {
           const transferAppliedAmount = computeAsnTransferAppliedAmount(saldoAntes.saldoNumero, saldoDespues.saldoNumero);
-          if (transferAppliedAmount - montoSolicitado > 0.01) {
+          if (transferAppliedAmount - montoEjecutable > 0.01) {
             jobLogger.warn(
               {
                 operacion: request.payload.operacion,
                 usuario: request.payload.usuario,
                 montoSolicitado,
+                montoEjecutable,
                 transferAppliedAmount,
                 saldoAntes: saldoAntes.saldoNumero,
                 saldoDespues: saldoDespues.saldoNumero
@@ -1192,7 +1211,7 @@ export async function runAsnDepositJob(
             );
           }
 
-          montoAplicadoFinal = roundToTwoDecimals(Math.min(transferAppliedAmount, montoSolicitado));
+          montoAplicadoFinal = roundToTwoDecimals(Math.min(transferAppliedAmount, montoEjecutable));
         }
 
         const resultPayload: AsnFundsOperationResult = {
