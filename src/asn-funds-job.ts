@@ -1219,7 +1219,7 @@ export async function runAsnDepositJob(
           pagina: 'ASN',
           operacion: request.payload.operacion,
           usuario: request.payload.usuario,
-          montoSolicitado: roundToTwoDecimals(montoSolicitado),
+          montoSolicitado: roundToTwoDecimals(montoEjecutable),
           montoAplicado: roundToTwoDecimals(montoAplicadoFinal),
           montoAplicadoTexto: formatAsnMoney(montoAplicadoFinal),
           saldoAntesNumero: roundToTwoDecimals(saldoAntes.saldoNumero),
