@@ -1715,27 +1715,6 @@ export function createServer(
       });
     }
 
-    if (payload.pagina === 'ASN') {
-      try {
-        await asnUserExistsChecker({
-          usuario: payload.usuario,
-          agente: payload.agente,
-          contrasenaAgente: payload.contrasena_agente,
-          appConfig,
-          logger
-        });
-      } catch (error) {
-        if (error instanceof AsnUserCheckError && error.code === 'NOT_FOUND') {
-          return reply.code(404).send(buildAsnUserNotFoundResponse(payload.usuario));
-        }
-
-        logger.warn(
-          { error, usuario: payload.usuario, operacion: payload.operacion },
-          'ASN user precheck was inconclusive; continuing with turbo job enqueue'
-        );
-      }
-    }
-
     const createdAt = new Date().toISOString();
     const id = randomUUID();
     const jobRequest: DepositJobRequest | BalanceJobRequest =
