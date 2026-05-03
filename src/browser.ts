@@ -1,10 +1,52 @@
 import { chromium, type Browser, type BrowserContext, type LaunchOptions } from 'playwright';
 import type { Logger } from 'pino';
+import { createAsyncSemaphore } from './async-semaphore';
 import type { AppConfig } from './types';
 
 const CHROMIUM_HEADLESS_CHANNEL = 'chromium';
+const DEFAULT_BROWSER_CONCURRENCY = 1;
+const BROWSER_CONCURRENCY_ENV = 'SCRAP2_BROWSER_CONCURRENCY';
 const CHANNEL_INSTALL_ERROR_REGEX =
   /Executable doesn't exist|Please run the following command|browser(?:\s+distribution)? .* not found|Failed to launch .* because executable doesn't exist/i;
+const browserSlots = createAsyncSemaphore(resolveBrowserConcurrency());
+
+export function resolveBrowserConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[BROWSER_CONCURRENCY_ENV];
+  if (raw == null || raw.trim() === '') {
+    return DEFAULT_BROWSER_CONCURRENCY;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${BROWSER_CONCURRENCY_ENV} must be a positive integer`);
+  }
+
+  return parsed;
+}
+
+function attachBrowserSlotRelease(browser: Browser, releaseSlot: () => void): Browser {
+  let released = false;
+  const releaseOnce = (): void => {
+    if (released) {
+      return;
+    }
+    released = true;
+    releaseSlot();
+  };
+
+  browser.once('disconnected', releaseOnce);
+
+  const originalClose = browser.close.bind(browser);
+  browser.close = (async (...args: Parameters<Browser['close']>) => {
+    try {
+      return await originalClose(...args);
+    } finally {
+      releaseOnce();
+    }
+  }) as Browser['close'];
+
+  return browser;
+}
 
 function buildBaseLaunchOptions(cfg: Pick<AppConfig, 'headless' | 'slowMo'>): LaunchOptions {
   return {
@@ -32,6 +74,18 @@ export async function launchChromiumBrowser(
   cfg: Pick<AppConfig, 'headless' | 'slowMo'>,
   logger: Logger
 ): Promise<Browser> {
+  const queuedBrowserLaunches = browserSlots.pendingCount;
+  const releaseSlot = await browserSlots.acquire();
+  if (queuedBrowserLaunches > 0) {
+    logger.info(
+      {
+        queuedBrowserLaunches,
+        activeBrowsers: browserSlots.activeCount
+      },
+      'Waiting for Playwright browser capacity'
+    );
+  }
+
   const attempts = buildChromiumLaunchOptions(cfg);
   let lastError: unknown;
 
@@ -47,7 +101,7 @@ export async function launchChromiumBrowser(
           'Chromium browser launched using compatibility fallback'
         );
       }
-      return browser;
+      return attachBrowserSlotRelease(browser, releaseSlot);
     } catch (error) {
       lastError = error;
       const canRetry = index < attempts.length - 1;
@@ -71,6 +125,7 @@ export async function launchChromiumBrowser(
   }
 
   const finalError = lastError instanceof Error ? lastError : new Error(String(lastError));
+  releaseSlot();
   throw new Error(`Could not launch Playwright Chromium browser: ${finalError.message}`, {
     cause: finalError
   });

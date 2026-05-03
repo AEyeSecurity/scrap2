@@ -109,6 +109,7 @@ Artefactos del modo API:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`: habilitan persistencia y reportes.
 - `REPORT_WORKER_ENABLED`: activa o desactiva el worker de reportes ASN.
 - `FUNDS_SESSION_CACHE_ENABLED`: reutiliza sesiones de fondos entre jobs.
+- `SCRAP2_BROWSER_CONCURRENCY`: limite global de navegadores Playwright vivos; por defecto es `1` para proteger la tabla de procesos del contenedor.
 
 Para arrancar el contenedor del modo API con las variables en archivo, usa:
 
