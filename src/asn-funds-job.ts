@@ -19,7 +19,7 @@ import type {
   JobStepResult
 } from './types';
 
-interface AsnBalanceSnapshot {
+export interface AsnBalanceSnapshot {
   saldoTexto: string;
   saldoNumero: number;
 }
@@ -29,7 +29,8 @@ interface AsnActionOutcome {
   usedDomAmountFallback: boolean;
 }
 
-const ASN_MONEY_TOKEN_REGEX = /-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?/;
+const ASN_MONEY_TOKEN_PATTERN = String.raw`-?\d{1,3}(?:\.\d{3})*,\d{2}|-?\d+,\d{2}|-?\d+(?:\.\d+)?`;
+const ASN_MONEY_TOKEN_REGEX = new RegExp(ASN_MONEY_TOKEN_PATTERN);
 const ASN_UI_ERROR_REGEX = /saldo insuficiente|error|fall[oó]|invalido|inv[aá]lido|no se pudo|rechazad|denegad/i;
 
 function sanitizeFileName(input: string): string {
@@ -58,6 +59,10 @@ function normalizeSpaces(value: string): string {
 
 function roundToTwoDecimals(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function parseAsnMoney(rawValue: string): number {
@@ -104,6 +109,33 @@ function extractFirstMoneyToken(text: string): string | null {
   const normalized = normalizeSpaces(text);
   const match = normalized.match(ASN_MONEY_TOKEN_REGEX);
   return match?.[0] ?? null;
+}
+
+export function extractAsnCurrentAvailableBalance(text: string, username: string): AsnBalanceSnapshot | null {
+  const normalized = normalizeSpaces(text);
+  const normalizedUsername = username.trim();
+  if (!normalized || !normalizedUsername) {
+    return null;
+  }
+
+  const userRegex = new RegExp(`\\bjugador\\s*:\\s*${escapeRegExp(normalizedUsername)}(?:\\b|$)`, 'i');
+  if (!userRegex.test(normalized)) {
+    return null;
+  }
+
+  const balanceRegex = new RegExp(
+    `\\bsaldo\\s+disponible\\s+actual\\s*(${ASN_MONEY_TOKEN_PATTERN})\\s+saldo\\s+actualizado\\s+el\\b`,
+    'i'
+  );
+  const token = normalized.match(balanceRegex)?.[1]?.trim();
+  if (!token) {
+    return null;
+  }
+
+  return {
+    saldoTexto: token,
+    saldoNumero: parseAsnMoney(token)
+  };
 }
 
 function extractBalanceTokenNearLabel(text: string): string | null {
@@ -291,6 +323,25 @@ async function readAsnAvailableBalance(page: Page, timeoutMs: number): Promise<A
   }
 
   throw new Error('Could not read ASN "Saldo disponible actual"');
+}
+
+async function tryReadAsnCurrentAvailableBalance(page: Page, username: string): Promise<AsnBalanceSnapshot | null> {
+  const text = await page.locator('body').innerText().catch(() => '');
+  return extractAsnCurrentAvailableBalance(text, username);
+}
+
+async function readAsnCurrentAvailableBalance(page: Page, username: string, timeoutMs: number): Promise<AsnBalanceSnapshot> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const balance = await tryReadAsnCurrentAvailableBalance(page, username);
+    if (balance) {
+      return balance;
+    }
+
+    await page.waitForTimeout(120);
+  }
+
+  throw new Error(`Could not read ASN current balance block for user "${username}"`);
 }
 
 async function tryReadAsnTransferBalance(page: Page): Promise<AsnBalanceSnapshot | null> {
@@ -1314,7 +1365,11 @@ export async function runAsnBalanceJob(
           artifactDir,
           '03-read-saldo',
           async () => {
-            balance = await readAsnAvailableBalance(page, Math.min(cfg.timeoutMs, 6_000));
+            balance = await readAsnCurrentAvailableBalance(
+              page,
+              request.payload.usuario,
+              Math.min(cfg.timeoutMs, 6_000)
+            );
           },
           captureSuccessArtifacts
         );

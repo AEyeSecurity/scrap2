@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeAsnAppliedAmount,
   computeExpectedAsnBalance,
+  extractAsnCurrentAvailableBalance,
   isExpectedAsnTransferDelta,
   isExpectedAsnDelta,
   parseAsnMoney,
@@ -15,6 +16,48 @@ describe('asn-funds helpers', () => {
     expect(parseAsnMoney('30.525,35')).toBe(30525.35);
     expect(parseAsnMoney('40.000,00')).toBe(40000);
     expect(parseAsnMoney('0,00')).toBe(0);
+  });
+
+  it('extracts ASN current balance from the strict player balance block', () => {
+    const pageText = `
+      Moneda: Fichas (ARS)
+      Jugador: Dai731
+      2026-05-03 12.000,00 0,00 12.000,00
+      TOTAL del mes 2026-05 57.000,00 65.039,00 -8.039,00
+      Saldo disponible actual
+
+        18,00
+
+      Saldo actualizado el
+      2026-05-03 17:51:46
+    `;
+
+    expect(extractAsnCurrentAvailableBalance(pageText, 'Dai731')).toEqual({
+      saldoTexto: '18,00',
+      saldoNumero: 18
+    });
+  });
+
+  it('does not extract ASN current balance from historical movements', () => {
+    const pageText = `
+      Jugador: Dai731
+      2026-05-03 12.000,00 0,00 12.000,00
+      TOTAL del mes 2026-05 57.000,00 65.039,00 -8.039,00
+    `;
+
+    expect(extractAsnCurrentAvailableBalance(pageText, 'Dai731')).toBeNull();
+  });
+
+  it('does not extract ASN current balance when the player block belongs to another user', () => {
+    const pageText = `
+      Jugador: Ariel728
+      Saldo disponible actual
+      18,00
+      Saldo actualizado el
+      2026-05-03 17:51:46
+    `;
+
+    expect(extractAsnCurrentAvailableBalance(pageText, 'Dai731')).toBeNull();
   });
 
   it('resolves requested amount for descarga_total from current balance', () => {
