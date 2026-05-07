@@ -62,6 +62,10 @@ Login web compatible con el payload duplicado actual del frontend.
 
 Devuelve el dashboard consolidado del cajero vinculado para el mes pedido: owner, KPIs, resumen financiero, charts y `clientes`.
 
+La lista `clientes` es mensual e independiente: incluye solamente clientes con intake o reingreso dentro del `month` solicitado. Un cliente que entro en Abril no aparece en Mayo solo por seguir en cartera al cierre de Mayo.
+
+Los KPIs de cantidades y carga del mes se calculan sobre esa misma lista mensual visible.
+
 Cada item de `clientes` ahora incluye:
 
 - `id`

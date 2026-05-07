@@ -516,6 +516,14 @@ function buildMonthTrail(month: string, count = 6): Array<{
   return trail;
 }
 
+function isDashboardMonthFact(fact: OwnerClientMonthlyFactRow): boolean {
+  return Boolean(
+    fact.had_intake_in_month ||
+      fact.is_new_intake_in_month ||
+      fact.is_reentry_in_month
+  );
+}
+
 function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
   const monthTrail = buildMonthTrail(month);
 
@@ -832,7 +840,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
 
     const factsForSelectedMonth = (ownerClientFactsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
-    const ownerClientLinkIds = factsForSelectedMonth
+    const dashboardMonthFacts = factsForSelectedMonth.filter(isDashboardMonthFact);
+    const dashboardClientIds = new Set(dashboardMonthFacts.map((fact) => fact.client_id));
+    const ownerClientLinkIds = dashboardMonthFacts
       .map((fact) => (typeof fact.link_id === 'string' && fact.link_id.length > 0 ? fact.link_id : null))
       .filter((linkId): linkId is string => Boolean(linkId));
     const linkFirstSeenById = new Map<string, string | null>();
@@ -854,9 +864,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       }
     }
 
-    const totalClients = factsForSelectedMonth.length;
-    const assignedClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'assigned').length;
-    const pendingClients = factsForSelectedMonth.filter((fact) => fact.status_at_month_end === 'pending').length;
+    const totalClients = dashboardMonthFacts.length;
+    const assignedClients = dashboardMonthFacts.filter((fact) => fact.status_at_month_end === 'assigned').length;
+    const pendingClients = dashboardMonthFacts.filter((fact) => fact.status_at_month_end === 'pending').length;
     const conversionAsignadoPct =
       totalClients > 0 ? roundTo((assignedClients / totalClients) * 100) : null;
 
@@ -873,6 +883,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       monthlyClientSnapshotRows
         .map((snapshot) => (typeof snapshot.client_id === 'string' ? snapshot.client_id : null))
         .filter((clientId): clientId is string => Boolean(clientId))
+        .filter((clientId) => dashboardClientIds.has(clientId))
     );
     let clientesConReporte = reportClientIds.size;
     const snapshotByClientId = new Map<
@@ -896,17 +907,19 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       cargadoMesTotal = 0;
 
       for (const snapshot of snapshots) {
+        const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
+        if (!clientId || !dashboardClientIds.has(clientId)) {
+          continue;
+        }
+
         const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
         const cargadoMes = toFiniteNumber(snapshot.cargado_mes);
-        const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
-        if (clientId) {
-          const existing = snapshotByClientId.get(clientId);
-          snapshotByClientId.set(clientId, {
-            cargadoHoy: roundTo((existing?.cargadoHoy ?? 0) + (cargadoHoy ?? 0)),
-            cargadoMes: roundTo((existing?.cargadoMes ?? 0) + (cargadoMes ?? 0)),
-            reportDate: snapshot.report_date
-          });
-        }
+        const existing = snapshotByClientId.get(clientId);
+        snapshotByClientId.set(clientId, {
+          cargadoHoy: roundTo((existing?.cargadoHoy ?? 0) + (cargadoHoy ?? 0)),
+          cargadoMes: roundTo((existing?.cargadoMes ?? 0) + (cargadoMes ?? 0)),
+          reportDate: snapshot.report_date
+        });
         cargadoHoyTotal += cargadoHoy ?? 0;
         cargadoMesTotal += cargadoMes ?? 0;
       }
@@ -969,13 +982,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const commissionPct = toFiniteNumber(financialSettings?.commission_pct);
     const adSpendArs = toFiniteNumber(adSpendRow?.ad_spend_ars);
-    const intakesMes = factsForSelectedMonth.filter((fact) => fact.is_new_intake_in_month).length;
-    const reingresosMes = factsForSelectedMonth.filter((fact) => fact.is_reentry_in_month).length;
-    const asignacionesBacklogMes = factsForSelectedMonth.filter((fact) => fact.assigned_from_backlog_in_month).length;
-    const asignacionesMes = factsForSelectedMonth.filter(
+    const intakesMes = dashboardMonthFacts.filter((fact) => fact.is_new_intake_in_month).length;
+    const reingresosMes = dashboardMonthFacts.filter((fact) => fact.is_reentry_in_month).length;
+    const asignacionesBacklogMes = dashboardMonthFacts.filter((fact) => fact.assigned_from_backlog_in_month).length;
+    const asignacionesMes = dashboardMonthFacts.filter(
       (fact) => fact.had_assignment_in_month && !fact.assigned_from_backlog_in_month
     ).length;
-    const assignedIntakeClientCount = factsForSelectedMonth.filter(
+    const assignedIntakeClientCount = dashboardMonthFacts.filter(
       (fact) => fact.is_new_intake_in_month && fact.status_at_month_end === 'assigned'
     ).length;
     const tasaIntakeAsignacionPct = intakesMes > 0 ? roundTo((assignedIntakeClientCount / intakesMes) * 100) : null;
@@ -994,7 +1007,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         ? roundTo(((gananciaEstimadaArs - adSpendArs) / adSpendArs) * 100)
         : null;
 
-    const clientes: MastercrmOwnerClientRecord[] = factsForSelectedMonth
+    const clientes: MastercrmOwnerClientRecord[] = dashboardMonthFacts
       .map((fact) => {
         const client = unwrapSingleRelation(fact.clients);
         const snapshot = snapshotByClientId.get(fact.client_id);

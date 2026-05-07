@@ -522,14 +522,34 @@ describe('mastercrm clients dashboard', () => {
       data: [
         {
           owner_id: 'owner-vicky',
-          client_id: 'client-1',
-          link_id: 'link-pending',
+          client_id: 'client-old',
+          link_id: 'link-old-pending',
           month_start: '2026-03-01',
           status_at_month_end: 'pending',
           identity_id_at_month_end: null,
           username_at_month_end: null,
           had_intake_in_month: false,
           is_new_intake_in_month: false,
+          is_reentry_in_month: false,
+          had_assignment_in_month: false,
+          assigned_from_backlog_in_month: false,
+          clients: {
+            id: 'client-old',
+            phone_e164: '+5493735506281',
+            pagina: 'ASN',
+            created_at: '2026-02-13T09:30:00.000Z'
+          }
+        },
+        {
+          owner_id: 'owner-vicky',
+          client_id: 'client-1',
+          link_id: 'link-pending',
+          month_start: '2026-03-01',
+          status_at_month_end: 'pending',
+          identity_id_at_month_end: null,
+          username_at_month_end: null,
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
           is_reentry_in_month: false,
           had_assignment_in_month: false,
           assigned_from_backlog_in_month: false,
@@ -584,7 +604,7 @@ describe('mastercrm clients dashboard', () => {
         cargadoHoy: null,
         cargadoMes: null,
         reportDate: null,
-        isNewIntakeMes: false,
+        isNewIntakeMes: true,
         isReingresoMes: false,
         assignedEnMes: false,
         assignedDesdeBacklogMes: false
@@ -708,8 +728,10 @@ describe('mastercrm clients dashboard', () => {
     expect(dashboard.statsKpis.intakesMes).toBe(1);
     expect(dashboard.statsKpis.reingresosMes).toBe(1);
     expect(dashboard.statsKpis.asignacionesMes).toBe(1);
-    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(1);
+    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(0);
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
+    expect(dashboard.statsKpis.clientesTotales).toBe(2);
+    expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-2', 'link-1']);
   });
 
   it('builds monthly trend from the latest snapshot date of each month', async () => {

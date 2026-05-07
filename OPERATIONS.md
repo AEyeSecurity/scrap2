@@ -719,6 +719,13 @@ KPIs de estadisticas:
 
 Definiciones operativas vigentes:
 
+- El dashboard mensual es independiente por mes: la lista `clientes` se limita a filas de
+  `owner_client_monthly_facts` que tuvieron intake o reingreso dentro del `month`
+  pedido. No se arrastra la cartera activa de meses anteriores solo por seguir
+  `assigned` o `pending` al cierre del mes.
+- `clientesTotales`, `asignados`, `pendientes`, `clientesConReporte`,
+  `cargadoHoyArs`, `cargadoMesArs`, `promedioCargaGeneralArs` y
+  `tasaActivacionPct` se calculan sobre ese subconjunto mensual visible.
 - `intakesMes` cuenta leads unicos del mes, no eventos repetidos de intake
 - `asignacionesMes` sigue contando clientes unicos que tuvieron `assign_username` dentro del mes
 - `tasaIntakeAsignacionPct` ya no usa `asignacionesMes / intakesMes`
@@ -958,7 +965,7 @@ Con `asnlucas10:vicky`:
 
 Con `month = 2026-02` para `Lucas10`:
 
-- cartera visible igual
+- cartera visible independiente del mes seleccionado
 - KPIs de carga en `null`
 - intakes y asignaciones del mes en `0`
 

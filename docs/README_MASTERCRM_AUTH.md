@@ -115,6 +115,8 @@ Acepta:
 - `id`
 - `user_id`
 - `usuario_id`
+- `month` en formato `YYYY-MM`
+- `mes` como alias de `month`
 
 Si el usuario existe y esta activo, responde un JSON con:
 
@@ -131,6 +133,10 @@ Si el usuario existe y esta activo, responde un JSON con:
 ```
 
 Esta ruta ya lee datos reales persistidos en Supabase a partir de snapshots diarios y tablas owner-centric.
+
+La lista `clientes` es independiente entre meses. Para el `month` pedido solo
+devuelve clientes que tuvieron intake o reingreso en ese mes; no hereda clientes
+de meses anteriores por seguir `assigned` o `pending` en la cartera.
 
 ### `POST /mastercrm-link-cashier`
 
