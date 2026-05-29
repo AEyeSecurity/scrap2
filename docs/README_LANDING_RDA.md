@@ -142,8 +142,9 @@ https://github.com/AEyeSecurity/scrap2.git
 
 Estado validado el `2026-05-29`:
 
-- URL productiva principal: `https://reydeasesluck.aeye.com.ar/landing`.
-- URL productiva alternativa: `https://apiscrap.mastercrmrl.com/landing`.
+- URL productiva principal: `https://reydeases.imperial-support.com/landing`.
+- URL productiva alternativa: `https://reydeasesluck.aeye.com.ar/landing`.
+- URL tecnica alternativa: `https://apiscrap.mastercrmrl.com/landing`.
 - Contenedor: `scrap2-api`.
 - Imagen: `scrap2:main-auto-f3bb163`.
 - Commit: `f3bb163 Document Rey de Ases production landing deploy`.
@@ -154,7 +155,7 @@ Variables productivas locales agregadas en `.env.production`:
 
 ```env
 LANDING_ENABLED=true
-LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.aeye.com.ar,https://reydeasesluck.com.ar,https://www.reydeasesluck.com.ar,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
+LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.aeye.com.ar,https://reydeases.imperial-support.com,https://reydeasesluck.com.ar,https://www.reydeasesluck.com.ar,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
 META_PIXEL_ID=2123208205169806
 META_LANDING_ACTION_SOURCE=website
 ```
@@ -164,6 +165,17 @@ DNS/Cloudflare aplicado:
 ```text
 Zone: aeye.com.ar
 Record: reydeasesluck.aeye.com.ar
+Type: CNAME
+Target: f1d4679b-5d4a-4528-b897-bc5f4868dd1b.cfargotunnel.com
+Proxy: ON
+Tunnel origin: http://localhost:3000
+```
+
+DNS/Cloudflare principal aplicado:
+
+```text
+Zone: imperial-support.com
+Record: reydeases.imperial-support.com
 Type: CNAME
 Target: f1d4679b-5d4a-4528-b897-bc5f4868dd1b.cfargotunnel.com
 Proxy: ON
@@ -204,6 +216,9 @@ Resultado:
 - QA visual mobile chico `360x640`: OK.
 - CTA final verificado contra `wa.me/5493516549344`.
 - Deploy Docker productivo: OK.
+- `GET https://reydeases.imperial-support.com/landing`: OK.
+- Assets/legales productivos en `reydeases.imperial-support.com`: OK.
+- `POST https://reydeases.imperial-support.com/landing/contact`: OK, `tracked=true`.
 - `GET https://reydeasesluck.aeye.com.ar/landing`: OK.
 - Assets/legales productivos en `reydeasesluck.aeye.com.ar`: OK.
 - `POST https://reydeasesluck.aeye.com.ar/landing/contact`: OK, `tracked=true`.
