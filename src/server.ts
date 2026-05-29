@@ -1268,6 +1268,11 @@ export function createServer(
     { route: '/landing/styles.css', fileName: 'styles.css', cacheControl: 'public, max-age=300' },
     { route: '/landing/landing.js', fileName: 'landing.js', cacheControl: 'public, max-age=300' },
     {
+      route: '/landing/assets/logo-rey-de-ases.webp',
+      fileName: 'assets/logo-rey-de-ases.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
       route: '/landing/assets/logo-rey-de-ases.svg',
       fileName: 'assets/logo-rey-de-ases.svg',
       cacheControl: 'public, max-age=31536000, immutable'
