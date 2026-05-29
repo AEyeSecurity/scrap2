@@ -9,12 +9,36 @@ import {
   type MastercrmUserCashierLinkRecord,
   type MastercrmUserStore
 } from '../src/mastercrm-user-store';
-import type { MetaConversionsStore } from '../src/meta-conversions-store';
+import type { MetaConversionsDispatcher, MetaDispatchResult } from '../src/meta-conversions';
+import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conversions-store';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
 
 const allowAsnUserExists = async (): Promise<void> => undefined;
+
+async function withEnv<T>(values: Record<string, string | undefined>, callback: () => Promise<T>): Promise<T> {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(values)) {
+    if (value == null) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value == null) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
 
 class FakeQueue {
   public readonly entries = new Map<string, JobStoreEntry>();
@@ -323,6 +347,20 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
 
   async markFailed(_input: { id: string; error: string }): Promise<void> {
     // no-op
+  }
+}
+
+class FakeLandingMetaConversionsDispatcher implements MetaConversionsDispatcher {
+  public readonly leases: MetaConversionLease[] = [];
+
+  async dispatch(lease: MetaConversionLease): Promise<MetaDispatchResult> {
+    this.leases.push(lease);
+    return {
+      requestBody: { data: [{ event_name: lease.metaEventName }] },
+      responseStatus: 200,
+      responseBody: { events_received: 1 },
+      fbtraceId: 'TRACE123'
+    };
   }
 }
 
@@ -1724,6 +1762,252 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().issues.some((issue: { path: string }) => issue.path === 'pagina')).toBe(true);
     await server.close();
+  });
+
+  it('GET /landing renders the Rey de Ases landing with CTA, legal badges and Pixel config', async () => {
+    await withEnv(
+      {
+        LANDING_ENABLED: 'true',
+        META_PIXEL_ID: '1234567890'
+      },
+      async () => {
+        const queue = new FakeQueue();
+        const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+        const logger = createLogger('silent', false);
+        const server = createServer(
+          appConfig,
+          { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+          logger,
+          queue,
+          {
+            reportWorkerEnabled: false,
+            metaWorkerEnabled: false
+          }
+        );
+
+        const response = await server.inject({
+          method: 'GET',
+          url: '/landing'
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.headers['content-type']).toContain('text/html');
+        expect(response.body).toContain('Rey de Ases');
+        expect(response.body).toContain('Quiero mi bono');
+        expect(response.body).toContain('18+');
+        expect(response.body).toContain('Juego responsable');
+        expect(response.body).toContain('/landing/privacidad');
+        expect(response.body).toContain('/landing/terminos');
+        expect(response.body).toContain('"pixelId":"1234567890"');
+        expect(response.body).toContain(
+          'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases'
+        );
+
+        await server.close();
+      }
+    );
+  });
+
+  it('GET /landing legal pages and static assets respond with cache headers', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const privacidad = await server.inject({ method: 'GET', url: '/landing/privacidad' });
+      const terminos = await server.inject({ method: 'GET', url: '/landing/terminos' });
+      const css = await server.inject({ method: 'GET', url: '/landing/styles.css' });
+      const hero = await server.inject({ method: 'GET', url: '/landing/assets/hero-monkey-king.webp' });
+
+      expect(privacidad.statusCode).toBe(200);
+      expect(terminos.statusCode).toBe(200);
+      expect(css.statusCode).toBe(200);
+      expect(css.headers['cache-control']).toContain('max-age=300');
+      expect(hero.statusCode).toBe(200);
+      expect(hero.headers['content-type']).toContain('image/webp');
+      expect(hero.headers['cache-control']).toContain('immutable');
+      expect(Number(hero.headers['content-length'] ?? 0)).toBeGreaterThan(0);
+
+      await server.close();
+    });
+  });
+
+  it('POST /landing/contact dispatches website Contact CAPI without creating a CRM intake', async () => {
+    await withEnv(
+      {
+        LANDING_ENABLED: 'true',
+        LANDING_ALLOWED_ORIGINS: 'https://landing.reydeases.com'
+      },
+      async () => {
+        const queue = new FakeQueue();
+        const dispatcher = new FakeLandingMetaConversionsDispatcher();
+        const playerPhoneStore = new FakePlayerPhoneStore();
+        const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+        const logger = createLogger('silent', false);
+        const server = createServer(
+          appConfig,
+          { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+          logger,
+          queue,
+          {
+            playerPhoneStore,
+            metaEnabled: true,
+            reportWorkerEnabled: false,
+            metaWorkerEnabled: false,
+            landingMetaConversionsDispatcher: dispatcher
+          }
+        );
+
+        const response = await server.inject({
+          method: 'POST',
+          url: '/landing/contact',
+          headers: {
+            origin: 'https://landing.reydeases.com',
+            'user-agent': 'Mozilla/5.0 MetaInAppBrowser',
+            'x-forwarded-for': '181.45.10.22, 10.0.0.1'
+          },
+          payload: {
+            eventId: 'contact:test',
+            landingSessionId: 'session_123',
+            fbp: 'fb.1.1710000000000.111',
+            fbc: 'fb.1.1710000000000.fbclid-123',
+            fbclid: 'fbclid-123',
+            eventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
+            referrer: 'https://facebook.com/',
+            utmSource: 'meta',
+            utmMedium: 'paid_social',
+            utmCampaign: 'mayo_rda'
+          }
+        });
+
+        expect(response.statusCode).toBe(200);
+        expect(response.json()).toMatchObject({
+          status: 'ok',
+          tracked: true,
+          trackingStatus: 'sent',
+          eventId: 'contact:test',
+          whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases',
+          ownerContext: {
+            ownerKey: 'luqui10:luqui10',
+            ownerLabel: 'Lucas10'
+          }
+        });
+        expect(playerPhoneStore.intakeInputs).toEqual([]);
+        expect(dispatcher.leases).toHaveLength(1);
+        expect(dispatcher.leases[0]).toMatchObject({
+          ownerId: 'luqui10:luqui10',
+          clientId: 'session_123',
+          eventStage: 'landing_contact',
+          metaEventName: 'Contact',
+          eventId: 'contact:test',
+          phoneE164: null,
+          username: null,
+          sourcePayload: {
+            owner_key: 'luqui10:luqui10',
+            owner_label: 'Lucas10',
+            Fbp: 'fb.1.1710000000000.111',
+            Fbc: 'fb.1.1710000000000.fbclid-123',
+            Fbclid: 'fbclid-123',
+            EventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
+            Referrer: 'https://facebook.com/',
+            LandingSessionId: 'session_123',
+            LandingVariant: 'rda-luqui10-v1',
+            CtaType: 'whatsapp_click',
+            UtmSource: 'meta',
+            UtmMedium: 'paid_social',
+            UtmCampaign: 'mayo_rda',
+            ClientIpAddress: '181.45.10.22',
+            ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
+          }
+        });
+
+        await server.close();
+      }
+    );
+  });
+
+  it('POST /landing/contact returns the WhatsApp URL when Meta tracking is disabled', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          metaEnabled: false,
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        headers: {
+          'user-agent': 'Mozilla/5.0'
+        },
+        payload: {
+          eventId: 'contact:fallback',
+          landingSessionId: 'session_fallback'
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        status: 'ok',
+        tracked: false,
+        trackingStatus: 'disabled',
+        whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases'
+      });
+
+      await server.close();
+    });
+  });
+
+  it('disables landing routes when LANDING_ENABLED=false', async () => {
+    await withEnv({ LANDING_ENABLED: 'false' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const page = await server.inject({ method: 'GET', url: '/landing' });
+      const contact = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:disabled',
+          landingSessionId: 'session_disabled'
+        }
+      });
+
+      expect(page.statusCode).toBe(404);
+      expect(contact.statusCode).toBe(404);
+
+      await server.close();
+    });
   });
 
   it('POST /users/intake-pending persists pending intake via store', async () => {

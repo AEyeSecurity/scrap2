@@ -1,0 +1,365 @@
+{
+  "name": "RdA Reporte Masivo Diario - luqui10",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "10 3 * * *"
+            }
+          ]
+        }
+      },
+      "id": "77592cb4-1fc5-45f3-ad64-a1ab9652a3a8",
+      "name": "Schedule Trigger - Diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        220
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "9eaac245-57fe-4c0e-8a56-d913cfcb8b79",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "efa4e1dd-fc78-4c31-a077-6c732b9f86e8",
+              "name": "baseUrl",
+              "value": "http://127.0.0.1:3000",
+              "type": "string"
+            },
+            {
+              "id": "b2855d3e-dff0-493a-8093-911eb3643bc6",
+              "name": "pagina",
+              "value": "RdA",
+              "type": "string"
+            },
+            {
+              "id": "32c1fd63-9127-4c16-8942-c4a99eef188a",
+              "name": "principalKey",
+              "value": "luqui10",
+              "type": "string"
+            },
+            {
+              "id": "259da328-f653-4d74-99d6-55d7a80684fd",
+              "name": "agente",
+              "value": "elpity24",
+              "type": "string"
+            },
+            {
+              "id": "65c311fd-7f39-4caf-8e71-3cdcc3950be8",
+              "name": "contrasena_agente",
+              "value": "<clave RdA guardada en n8n>",
+              "type": "string"
+            },
+            {
+              "id": "388988d8-27d8-4cec-a5c2-07af8ddb6868",
+              "name": "reportDate",
+              "value": "={{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}",
+              "type": "string"
+            },
+            {
+              "id": "460b09dd-bb68-4f72-a9ab-55b88891f170",
+              "name": "pollSeconds",
+              "value": 20,
+              "type": "number"
+            },
+            {
+              "id": "d087424a-d2bb-4a55-b272-4b1461f2feb6",
+              "name": "itemsLimit",
+              "value": 500,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "de2925fe-c487-42a8-b0cf-52890154912e",
+      "name": "Edit Fields - Prefijos RdA Luqui10",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        560,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.baseUrl + '/reports/rda/run' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, agente: $json.agente, contrasena_agente: $json.contrasena_agente, reportDate: $json.reportDate }) }}",
+        "options": {}
+      },
+      "id": "e1693647-c2f2-4cff-bdc1-644ec0658e89",
+      "name": "HTTP - Crear corrida RdA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        860,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.pollSeconds }}",
+        "unit": "seconds"
+      },
+      "id": "de35666c-31d0-4e91-92ed-9de31f194d3a",
+      "name": "Wait - Espera worker",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1140,
+        320
+      ],
+      "webhookId": "6ca512f8-4111-474f-a46c-e65d7374baca"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId }}",
+        "options": {}
+      },
+      "id": "60b44fcf-a9d8-4709-a9b6-f6d22a4f8051",
+      "name": "HTTP - Estado corrida RdA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1420,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes($json.status) }}",
+              "operation": "equal",
+              "value2": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "92d3d93b-759c-413b-9c11-55d8bc9f4600",
+      "name": "IF - Corrida finalizada",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos RdA Luqui10').item.json.itemsLimit + '&offset=0' }}",
+        "options": {}
+      },
+      "id": "f5c36cad-0f99-487f-b3c8-fd956a4ee2e3",
+      "name": "HTTP - Listar items corrida RdA",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4197542e-c12f-4f6c-a010-233ea03e57a2",
+              "name": "runId",
+              "value": "={{ $('HTTP - Crear corrida RdA').item.json.runId }}",
+              "type": "string"
+            },
+            {
+              "id": "5641fc65-8631-439d-bb17-b40426c7c32b",
+              "name": "principalKey",
+              "value": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.principalKey }}",
+              "type": "string"
+            },
+            {
+              "id": "2f24f31d-8718-46b7-8f0f-5adddfc144b1",
+              "name": "reportDate",
+              "value": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.reportDate }}",
+              "type": "string"
+            },
+            {
+              "id": "f80120a6-8f0a-4ec5-a185-32d7d9be5789",
+              "name": "status",
+              "value": "={{ $('HTTP - Estado corrida RdA').item.json.status }}",
+              "type": "string"
+            },
+            {
+              "id": "6b05e0c4-ebba-4da3-b36c-14866909836c",
+              "name": "totalItems",
+              "value": "={{ $('HTTP - Estado corrida RdA').item.json.totalItems }}",
+              "type": "number"
+            },
+            {
+              "id": "5f54ca59-7da6-4ff0-96c7-aec51097a593",
+              "name": "doneItems",
+              "value": "={{ $('HTTP - Estado corrida RdA').item.json.doneItems }}",
+              "type": "number"
+            },
+            {
+              "id": "dbe70939-a3c4-4b84-a749-01d365a64b3b",
+              "name": "failedItems",
+              "value": "={{ $('HTTP - Estado corrida RdA').item.json.failedItems }}",
+              "type": "number"
+            },
+            {
+              "id": "fed9aaf2-a954-4cc7-a5b5-8ae5b4b3813b",
+              "name": "itemsTotal",
+              "value": "={{ $json.total }}",
+              "type": "number"
+            },
+            {
+              "id": "8eb0a3d4-e4ba-4fb0-aa3e-aa5994b8276f",
+              "name": "items",
+              "value": "={{ $json.items }}",
+              "type": "array"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0efa870c-6987-49f0-a0dd-8f67b28ed535",
+      "name": "Edit Fields - Resumen final",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2260,
+        220
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger - Diario": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Prefijos RdA Luqui10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Prefijos RdA Luqui10",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields - Prefijos RdA Luqui10": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Crear corrida RdA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Crear corrida RdA": {
+      "main": [
+        [
+          {
+            "node": "Wait - Espera worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait - Espera worker": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Estado corrida RdA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Estado corrida RdA": {
+      "main": [
+        [
+          {
+            "node": "IF - Corrida finalizada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF - Corrida finalizada": {
+      "main": [
+        [
+          {
+            "node": "HTTP - Listar items corrida RdA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait - Espera worker",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP - Listar items corrida RdA": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields - Resumen final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "cc0f7972-f2e8-422c-bf0c-e470251da7b7",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

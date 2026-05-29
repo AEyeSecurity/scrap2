@@ -2,7 +2,17 @@
 
 Este flujo dispara la corrida persistida de reportes RdA para todos los usuarios asignados bajo `principalKey = luqui10`, espera a que el worker termine y luego trae el detalle final de items.
 
-Para RdA hay que usar los endpoints genericos de reportes:
+Archivo para importar directo en n8n:
+
+- `docs/n8n-reporte-masivo-diario-rda-luqui10.workflow.json`
+
+Endpoints recomendados para RdA:
+
+- `POST /reports/rda/run`
+- `GET /reports/rda/run/:runId`
+- `GET /reports/rda/run/:runId/items`
+
+Tambien puedes seguir usando los endpoints genericos:
 
 - `POST /reports/run`
 - `GET /reports/run/:runId`
@@ -27,6 +37,14 @@ itemsLimit             -> 500
 
 `principalKey = luqui10` incluye los owners del arbol `luqui10:*`, por ejemplo `luqui10:luqui10` y `luqui10:vicky`.
 
+## Corrida manual ahora sin tocar la de manana
+
+El workflow propuesto trae `Manual Trigger` y `Schedule Trigger` separados.
+
+Si lo corres ahora con `Manual Trigger` y dejas `reportDate = {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}`, la corrida queda asociada a la fecha de hoy.
+
+La corrida programada de manana usa otra fecha, asi que no choca ni pisa el estado de manana. Solo habria conflicto si intentas crear dos corridas de `RdA` con el mismo `principalKey` y el mismo `reportDate`.
+
 ## Payload de creacion
 
 El nodo `HTTP - Crear corrida RdA` debe mandar:
@@ -47,7 +65,7 @@ Respuesta esperada:
 {
   "runId": "uuid",
   "status": "queued",
-  "statusUrl": "/reports/run/uuid"
+  "statusUrl": "/reports/rda/run/uuid"
 }
 ```
 

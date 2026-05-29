@@ -10,7 +10,7 @@ interface DatabaseErrorLike {
   message: string;
 }
 
-export type MetaConversionStage = 'lead' | 'qualified_lead' | 'value_signal';
+export type MetaConversionStage = 'lead' | 'qualified_lead' | 'value_signal' | 'landing_contact';
 export type MetaConversionStatus =
   | 'pending'
   | 'leased'
@@ -35,7 +35,7 @@ export interface MetaConversionLease {
   ownerId: string;
   clientId: string;
   eventStage: MetaConversionStage;
-  metaEventName: 'Lead' | 'CompleteRegistration' | 'Purchase';
+  metaEventName: 'Lead' | 'CompleteRegistration' | 'Purchase' | 'Contact';
   eventId: string;
   eventTime: string;
   phoneE164: string | null;
@@ -93,7 +93,7 @@ type MetaOutboxLeaseRow = {
   owner_id: string;
   client_id: string;
   event_stage: MetaConversionStage;
-  meta_event_name: 'Lead' | 'CompleteRegistration' | 'Purchase';
+  meta_event_name: 'Lead' | 'CompleteRegistration' | 'Purchase' | 'Contact';
   event_id: string;
   event_time: string;
   phone_e164: string | null;

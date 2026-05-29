@@ -35,6 +35,9 @@ http://127.0.0.1:3000
 - `POST /reports/asn/run`: alias compatible que fuerza `pagina = ASN`.
 - `GET /reports/asn/run/:runId`: alias compatible para estado.
 - `GET /reports/asn/run/:runId/items`: alias compatible para items.
+- `POST /reports/rda/run`: alias compatible que fuerza `pagina = RdA`.
+- `GET /reports/rda/run/:runId`: alias compatible para estado.
+- `GET /reports/rda/run/:runId/items`: alias compatible para items.
 
 ## Reglas utiles
 
@@ -327,6 +330,8 @@ Crea una corrida persistida para leer el reporte de muchos usuarios usando Supab
 Usa `pagina = ASN` para el reporte de ASN y `pagina = RdA` para el reporte de RdA. Para RdA, usa `principalKey = luqui10` si queres incluir owners como `luqui10:luqui10` y `luqui10:vicky`.
 
 `POST /reports/asn/run` sigue disponible como alias compatible para ASN y fuerza `pagina = ASN`.
+
+`POST /reports/rda/run` hace lo mismo para `RdA` y simplifica los flujos de n8n cuando quieres dejar separado el circuito operativo de cada pagina.
 
 Requiere:
 

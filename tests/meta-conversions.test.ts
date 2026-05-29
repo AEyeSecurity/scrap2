@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildLandingMetaConversionsConfigFromEnv,
   buildMetaConversionsConfigFromEnv,
   buildMetaConversionsRequestBody,
   MetaConversionsDispatchError,
@@ -109,7 +110,7 @@ describe('meta source context helpers', () => {
       ReferralSourceType: 'ad',
       ReferralHeadline: 'Royal Luck'
     });
-    expect(extractMetaSourceContext(payload)).toEqual({
+    expect(extractMetaSourceContext(payload)).toMatchObject({
       ctwaClid: 'clid-123',
       referralSourceId: null,
       referralSourceUrl: null,
@@ -174,6 +175,72 @@ describe('meta conversions dispatcher', () => {
     expect((body.data[0].custom_data as { lead_event_source?: string }).lead_event_source).toBe('scrap2');
     expect((body.data[0].custom_data as Record<string, unknown>).client_ip_address).toBeUndefined();
     expect((body.data[0].custom_data as Record<string, unknown>).client_user_agent).toBeUndefined();
+  });
+
+  it('builds website Contact payloads with browser and server match fields', () => {
+    const body = buildMetaConversionsRequestBody(
+      buildLease({
+        clientId: 'session_123',
+        eventStage: 'landing_contact',
+        metaEventName: 'Contact',
+        eventId: 'contact:test',
+        phoneE164: null,
+        sourcePayload: buildStoredMetaSourcePayload({
+          ownerContext: { ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas10' },
+          sourceContext: {
+            fbp: 'fb.1.1710000000000.111',
+            fbc: 'fb.1.1710000000000.fbclid-123',
+            fbclid: 'fbclid-123',
+            eventSourceUrl: 'https://landing.reydeases.com/landing?utm_source=meta',
+            referrer: 'https://facebook.com/',
+            landingSessionId: 'session_123',
+            landingVariant: 'rda-luqui10-v1',
+            ctaType: 'whatsapp_click',
+            utmSource: 'meta',
+            utmMedium: 'paid_social',
+            utmCampaign: 'abril_rda',
+            whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases',
+            clientIpAddress: '181.45.10.22',
+            clientUserAgent: 'Mozilla/5.0',
+            receivedAt: '2026-04-21T15:25:00.000Z'
+          }
+        })
+      }),
+      {
+        actionSource: 'website',
+        valueSignalCurrency: 'ARS',
+        testEventCode: 'TEST123'
+      }
+    );
+
+    expect(body.test_event_code).toBe('TEST123');
+    expect(body.data[0]).toMatchObject({
+      event_name: 'Contact',
+      event_id: 'contact:test',
+      action_source: 'website',
+      event_source_url: 'https://landing.reydeases.com/landing?utm_source=meta',
+      user_data: {
+        fbp: 'fb.1.1710000000000.111',
+        fbc: 'fb.1.1710000000000.fbclid-123',
+        client_ip_address: '181.45.10.22',
+        client_user_agent: 'Mozilla/5.0'
+      },
+      custom_data: {
+        event_source: 'landing',
+        contact_event_source: 'landing',
+        landing_session_id: 'session_123',
+        landing_variant: 'rda-luqui10-v1',
+        cta_type: 'whatsapp_click',
+        fbclid: 'fbclid-123',
+        referrer: 'https://facebook.com/',
+        utm_source: 'meta',
+        utm_medium: 'paid_social',
+        utm_campaign: 'abril_rda',
+        owner_key: 'luqui10:luqui10',
+        owner_label: 'Lucas10'
+      }
+    });
+    expect((body.data[0].user_data as Record<string, unknown>).ph).toBeUndefined();
   });
 
   it('builds Purchase payloads with real value and currency', () => {
@@ -292,6 +359,22 @@ describe('meta conversions dispatcher', () => {
       actionSource: 'business_messaging',
       batchSize: 3,
       valueSignalCurrency: 'ARS'
+    });
+  });
+
+  it('uses website action source for landing CAPI config without changing global CTWA action source', () => {
+    const config = buildLandingMetaConversionsConfigFromEnv({
+      META_ENABLED: 'true',
+      META_DATASET_ID: '2123208205169806',
+      META_ACCESS_TOKEN: 'secret-token',
+      META_ACTION_SOURCE: 'system_generated',
+      META_LANDING_ACTION_SOURCE: 'website'
+    });
+
+    expect(config).toMatchObject({
+      enabled: true,
+      actionSource: 'website',
+      datasetId: '2123208205169806'
     });
   });
 

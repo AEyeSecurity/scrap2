@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import cors from '@fastify/cors';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { z } from 'zod';
@@ -12,13 +14,22 @@ import { runDepositJob } from './deposit-job';
 import { fundsOperationSchema } from './funds-operation';
 import { JobManager } from './jobs';
 import { runLoginJob } from './login-job';
-import { buildMetaConversionsConfigFromEnv, MetaConversionsHttpDispatcher, type MetaConversionsDispatcher } from './meta-conversions';
+import {
+  buildLandingMetaConversionsConfigFromEnv,
+  buildMetaConversionsConfigFromEnv,
+  MetaConversionsHttpDispatcher,
+  type MetaConversionsDispatcher
+} from './meta-conversions';
 import {
   createMetaConversionsStoreFromEnv,
   type MetaConversionsStore
 } from './meta-conversions-store';
 import { MetaConversionsWorker } from './meta-conversions-worker';
-import { isAttributableMetaSourceContext, normalizeMetaSourceContext } from './meta-source-context';
+import {
+  buildStoredMetaSourcePayload,
+  isAttributableMetaSourceContext,
+  normalizeMetaSourceContext
+} from './meta-source-context';
 import {
   createMastercrmUserStoreFromEnv,
   normalizeMastercrmNombre,
@@ -86,6 +97,7 @@ interface ServerDependencies {
   metaWorkerScanLimit?: number;
   metaWorkerBatchSize?: number;
   metaConversionsDispatcher?: MetaConversionsDispatcher;
+  landingMetaConversionsDispatcher?: MetaConversionsDispatcher;
   reportWorkerEnabled?: boolean;
   reportWorkerConcurrency?: number;
   reportWorkerPollMs?: number;
@@ -97,6 +109,31 @@ interface ServerDependencies {
 interface ValidationIssue {
   path: string;
   message: string;
+}
+
+const LANDING_PUBLIC_DIR = join(process.cwd(), 'public', 'landing');
+const LANDING_WHATSAPP_PHONE = '5493516549344';
+const LANDING_WHATSAPP_MESSAGE = 'Hola quiero mi usuario en Rey de Ases';
+const LANDING_WHATSAPP_URL = `https://wa.me/${LANDING_WHATSAPP_PHONE}?text=${encodeURIComponent(
+  LANDING_WHATSAPP_MESSAGE
+)}`;
+const LANDING_VARIANT = 'rda-luqui10-v1';
+const LANDING_OWNER_CONTEXT: OwnerContext = {
+  ownerKey: 'luqui10:luqui10',
+  ownerLabel: 'Lucas10',
+  actorAlias: 'luqui10',
+  actorPhone: '+5493516549344'
+};
+
+interface LandingPublicConfig {
+  pixelId: string | null;
+  contactEndpoint: string;
+  whatsappUrl: string;
+  whatsappPhone: string;
+  whatsappMessage: string;
+  landingVariant: string;
+  ownerKey: string;
+  ownerLabel: string;
 }
 
 function formatHttpMoneyWithoutComma(value: number): string {
@@ -162,11 +199,27 @@ const ownerContextSchema = z.object({
 
 const sourceContextSchema = z.object({
   ctwaClid: z.string().trim().min(1).nullable().optional(),
+  fbp: z.string().trim().min(1).nullable().optional(),
+  fbc: z.string().trim().min(1).nullable().optional(),
+  fbclid: z.string().trim().min(1).nullable().optional(),
   referralSourceId: z.string().trim().min(1).nullable().optional(),
   referralSourceUrl: z.string().trim().min(1).nullable().optional(),
   referralHeadline: z.string().trim().min(1).nullable().optional(),
   referralBody: z.string().trim().min(1).nullable().optional(),
   referralSourceType: z.string().trim().min(1).nullable().optional(),
+  eventSourceUrl: z.string().trim().min(1).nullable().optional(),
+  referrer: z.string().trim().min(1).nullable().optional(),
+  landingSessionId: z.string().trim().min(1).nullable().optional(),
+  landingVariant: z.string().trim().min(1).nullable().optional(),
+  ctaType: z.string().trim().min(1).nullable().optional(),
+  utmSource: z.string().trim().min(1).nullable().optional(),
+  utmMedium: z.string().trim().min(1).nullable().optional(),
+  utmCampaign: z.string().trim().min(1).nullable().optional(),
+  utmContent: z.string().trim().min(1).nullable().optional(),
+  utmTerm: z.string().trim().min(1).nullable().optional(),
+  consentMarketing: z.boolean().nullable().optional(),
+  consentTimestamp: z.string().trim().min(1).nullable().optional(),
+  whatsappUrl: z.string().trim().min(1).nullable().optional(),
   waId: z.string().trim().min(1).nullable().optional(),
   messageSid: z.string().trim().min(1).nullable().optional(),
   accountSid: z.string().trim().min(1).nullable().optional(),
@@ -244,6 +297,26 @@ const whatsappIntakeBodySchema = z.object({
   ownerContext: ownerContextSchema.optional(),
   sourceContext: sourceContextSchema.optional()
 });
+
+const landingContactBodySchema = z
+  .object({
+    eventId: z.string().trim().min(1),
+    landingSessionId: z.string().trim().min(1),
+    fbp: z.string().trim().min(1).nullable().optional(),
+    fbc: z.string().trim().min(1).nullable().optional(),
+    fbclid: z.string().trim().min(1).nullable().optional(),
+    eventSourceUrl: z.string().trim().min(1).nullable().optional(),
+    referrer: z.string().trim().min(1).nullable().optional(),
+    utmSource: z.string().trim().min(1).nullable().optional(),
+    utmMedium: z.string().trim().min(1).nullable().optional(),
+    utmCampaign: z.string().trim().min(1).nullable().optional(),
+    utmContent: z.string().trim().min(1).nullable().optional(),
+    utmTerm: z.string().trim().min(1).nullable().optional(),
+    consentMarketing: z.boolean().nullable().optional(),
+    consentTimestamp: z.string().trim().min(1).nullable().optional(),
+    whatsappUrl: z.string().trim().min(1).nullable().optional()
+  })
+  .passthrough();
 
 const depositBodySchema = z
   .object({
@@ -565,6 +638,84 @@ function resolveMastercrmCorsOrigins(env: NodeJS.ProcessEnv = process.env): stri
   return parseListEnv(env.MASTERCRM_CORS_ORIGINS, DEFAULT_MASTERCRM_CORS_ORIGINS);
 }
 
+function isLandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseBooleanEnv(env.LANDING_ENABLED) ?? true;
+}
+
+function resolveLandingAllowedOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
+  return parseListEnv(env.LANDING_ALLOWED_ORIGINS, resolveMastercrmCorsOrigins(env));
+}
+
+function isOriginAllowed(origin: string | undefined, allowedOrigins: string[]): boolean {
+  if (!origin) {
+    return true;
+  }
+
+  return allowedOrigins.includes('*') || allowedOrigins.includes(origin);
+}
+
+function getLandingPixelId(env: NodeJS.ProcessEnv = process.env): string | null {
+  const pixelId = env.META_PIXEL_ID?.trim();
+  return pixelId && /^\d+$/.test(pixelId) ? pixelId : null;
+}
+
+function buildLandingPublicConfig(env: NodeJS.ProcessEnv = process.env): LandingPublicConfig {
+  return {
+    pixelId: getLandingPixelId(env),
+    contactEndpoint: '/landing/contact',
+    whatsappUrl: LANDING_WHATSAPP_URL,
+    whatsappPhone: LANDING_WHATSAPP_PHONE,
+    whatsappMessage: LANDING_WHATSAPP_MESSAGE,
+    landingVariant: LANDING_VARIANT,
+    ownerKey: LANDING_OWNER_CONTEXT.ownerKey,
+    ownerLabel: LANDING_OWNER_CONTEXT.ownerLabel
+  };
+}
+
+function escapeScriptJson(input: unknown): string {
+  return JSON.stringify(input).replace(/</g, '\\u003c');
+}
+
+function buildMetaPixelNoscript(pixelId: string | null): string {
+  if (!pixelId) {
+    return '';
+  }
+
+  return `<noscript><img height="1" width="1" style="display:none" alt="" src="https://www.facebook.com/tr?id=${encodeURIComponent(
+    pixelId
+  )}&ev=PageView&noscript=1" /></noscript>`;
+}
+
+function landingContentType(filePath: string): string {
+  if (filePath.endsWith('.css')) {
+    return 'text/css; charset=utf-8';
+  }
+  if (filePath.endsWith('.js')) {
+    return 'application/javascript; charset=utf-8';
+  }
+  if (filePath.endsWith('.svg')) {
+    return 'image/svg+xml; charset=utf-8';
+  }
+  if (filePath.endsWith('.webp')) {
+    return 'image/webp';
+  }
+  if (filePath.endsWith('.html')) {
+    return 'text/html; charset=utf-8';
+  }
+
+  return 'application/octet-stream';
+}
+
+function getRequestIp(input: { headers: Record<string, unknown>; ip?: string }): string | null {
+  const forwardedFor = input.headers['x-forwarded-for'];
+  const rawForwardedFor = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+  if (typeof rawForwardedFor === 'string' && rawForwardedFor.trim()) {
+    return rawForwardedFor.split(',')[0]?.trim() || null;
+  }
+
+  return input.ip?.trim() || null;
+}
+
 function resolveMastercrmStaffLinkPassword(env: NodeJS.ProcessEnv = process.env): string {
   const password = env.MASTERCRM_STAFF_LINK_PASSWORD?.trim();
   if (!password) {
@@ -843,7 +994,13 @@ export function createServer(
   const metaConfiguredFromEnv = Boolean(
     process.env.META_DATASET_ID?.trim() && process.env.META_ACCESS_TOKEN?.trim() && hasSupabaseConfig
   );
+  const landingMetaConfiguredFromEnv = Boolean(
+    process.env.META_DATASET_ID?.trim() && process.env.META_ACCESS_TOKEN?.trim()
+  );
   const metaEnabled = dependencies?.metaEnabled ?? (rawMetaEnabled && metaConfiguredFromEnv);
+  const landingMetaEnabled = dependencies?.metaEnabled ?? (rawMetaEnabled && landingMetaConfiguredFromEnv);
+  const landingEnabled = isLandingEnabled();
+  const landingAllowedOrigins = resolveLandingAllowedOrigins();
   const metaLeadEnabled = parseBooleanEnv(process.env.META_LEAD_ENABLED) ?? true;
   const metaPurchaseEnabled = parseBooleanEnv(process.env.META_PURCHASE_ENABLED) ?? true;
   const metaValueSignalThreshold = parsePositiveNumberEnv(process.env.META_VALUE_SIGNAL_THRESHOLD, 10_000);
@@ -910,6 +1067,18 @@ export function createServer(
 
     cachedMetaConversionsStore = createMetaConversionsStoreFromEnv();
     return cachedMetaConversionsStore;
+  }
+
+  function getLandingMetaDispatcher(): MetaConversionsDispatcher | null {
+    if (dependencies?.landingMetaConversionsDispatcher) {
+      return dependencies.landingMetaConversionsDispatcher;
+    }
+
+    if (!landingMetaConfiguredFromEnv) {
+      return null;
+    }
+
+    return new MetaConversionsHttpDispatcher(buildLandingMetaConversionsConfigFromEnv());
   }
 
   async function persistPendingIntake(input: {
@@ -1039,6 +1208,196 @@ export function createServer(
     });
     metaWorker.start();
   }
+
+  async function sendLandingHtml(reply: FastifyReply, fileName: string) {
+    const template = await readFile(join(LANDING_PUBLIC_DIR, fileName), 'utf8');
+    const config = buildLandingPublicConfig();
+    const html = template
+      .replace('__LANDING_CONFIG_JSON__', escapeScriptJson(config))
+      .replace('__META_PIXEL_NOSCRIPT__', buildMetaPixelNoscript(config.pixelId));
+
+    return reply
+      .header('content-type', 'text/html; charset=utf-8')
+      .header('cache-control', 'no-store')
+      .send(html);
+  }
+
+  async function sendLandingAsset(reply: FastifyReply, fileName: string, cacheControl: string) {
+    const body = await readFile(join(LANDING_PUBLIC_DIR, fileName));
+    return reply
+      .header('content-type', landingContentType(fileName))
+      .header('cache-control', cacheControl)
+      .send(body);
+  }
+
+  fastify.get('/landing', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'index.html');
+  });
+
+  fastify.get('/landing/', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'index.html');
+  });
+
+  fastify.get('/landing/privacidad', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'privacidad.html');
+  });
+
+  fastify.get('/landing/terminos', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'terminos.html');
+  });
+
+  const landingAssetRoutes = [
+    { route: '/landing/styles.css', fileName: 'styles.css', cacheControl: 'public, max-age=300' },
+    { route: '/landing/landing.js', fileName: 'landing.js', cacheControl: 'public, max-age=300' },
+    {
+      route: '/landing/assets/logo-rey-de-ases.svg',
+      fileName: 'assets/logo-rey-de-ases.svg',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/whatsapp.svg',
+      fileName: 'assets/whatsapp.svg',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/hero-monkey-king.webp',
+      fileName: 'assets/hero-monkey-king.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    }
+  ];
+
+  for (const asset of landingAssetRoutes) {
+    fastify.get(asset.route, async (_request, reply) => {
+      if (!landingEnabled) {
+        return reply.code(404).send({ message: 'Landing disabled' });
+      }
+
+      return sendLandingAsset(reply, asset.fileName, asset.cacheControl);
+    });
+  }
+
+  fastify.post('/landing/contact', async (request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    const origin = Array.isArray(request.headers.origin) ? request.headers.origin[0] : request.headers.origin;
+    if (!isOriginAllowed(origin, landingAllowedOrigins)) {
+      return reply.code(403).send({ message: 'Origin not allowed' });
+    }
+
+    const parsed = landingContactBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        code: 'INVALID_PAYLOAD',
+        details: {
+          issues: toValidationIssues(parsed.error)
+        },
+        whatsappUrl: LANDING_WHATSAPP_URL
+      });
+    }
+
+    const payload = parsed.data;
+    const receivedAt = new Date().toISOString();
+    const clientIpAddress = getRequestIp({ headers: request.headers, ip: request.ip });
+    const userAgentHeader = request.headers['user-agent'];
+    const clientUserAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader ?? null;
+    const referrerHeader = request.headers.referer;
+    const referrer = payload.referrer ?? (Array.isArray(referrerHeader) ? referrerHeader[0] : referrerHeader) ?? null;
+    const sourceContext: MetaSourceContext = {
+      fbp: payload.fbp ?? null,
+      fbc: payload.fbc ?? null,
+      fbclid: payload.fbclid ?? null,
+      eventSourceUrl: payload.eventSourceUrl ?? null,
+      referrer,
+      landingSessionId: payload.landingSessionId,
+      landingVariant: LANDING_VARIANT,
+      ctaType: 'whatsapp_click',
+      utmSource: payload.utmSource ?? null,
+      utmMedium: payload.utmMedium ?? null,
+      utmCampaign: payload.utmCampaign ?? null,
+      utmContent: payload.utmContent ?? null,
+      utmTerm: payload.utmTerm ?? null,
+      consentMarketing: payload.consentMarketing ?? null,
+      consentTimestamp: payload.consentTimestamp ?? null,
+      whatsappUrl: payload.whatsappUrl ?? LANDING_WHATSAPP_URL,
+      clientIpAddress,
+      clientUserAgent,
+      receivedAt
+    };
+
+    let tracked = false;
+    let trackingStatus: 'sent' | 'disabled' | 'not_configured' | 'failed' = 'disabled';
+
+    if (landingMetaEnabled) {
+      const dispatcher = getLandingMetaDispatcher();
+      if (!dispatcher) {
+        trackingStatus = 'not_configured';
+      } else {
+        try {
+          await dispatcher.dispatch({
+            id: randomUUID(),
+            ownerId: LANDING_OWNER_CONTEXT.ownerKey,
+            clientId: payload.landingSessionId,
+            eventStage: 'landing_contact',
+            metaEventName: 'Contact',
+            eventId: payload.eventId,
+            eventTime: receivedAt,
+            phoneE164: null,
+            username: null,
+            sourcePayload: buildStoredMetaSourcePayload({
+              ownerContext: LANDING_OWNER_CONTEXT,
+              sourceContext
+            }),
+            attempts: 1,
+            maxAttempts: 1
+          });
+          tracked = true;
+          trackingStatus = 'sent';
+        } catch (error) {
+          trackingStatus = 'failed';
+          logger.warn(
+            {
+              error,
+              eventId: payload.eventId,
+              landingSessionId: payload.landingSessionId,
+              ownerKey: LANDING_OWNER_CONTEXT.ownerKey
+            },
+            'Landing Contact CAPI dispatch failed'
+          );
+        }
+      }
+    }
+
+    return reply.send({
+      status: 'ok',
+      tracked,
+      trackingStatus,
+      eventId: payload.eventId,
+      whatsappUrl: LANDING_WHATSAPP_URL,
+      ownerContext: {
+        ownerKey: LANDING_OWNER_CONTEXT.ownerKey,
+        ownerLabel: LANDING_OWNER_CONTEXT.ownerLabel
+      }
+    });
+  });
 
   fastify.post('/login', async (request, reply) => {
     const parsed = loginBodySchema.safeParse(request.body);
@@ -1858,6 +2217,52 @@ export function createServer(
     }
   });
 
+  fastify.post('/reports/rda/run', async (request, reply) => {
+    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
+    const parsed = reportRunBodySchema.safeParse({ ...body, pagina: 'RdA' });
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    let runId: string | null = null;
+    try {
+      const payload = parsed.data;
+      const store = getReportRunStore();
+      const run = await store.createRun({
+        pagina: 'RdA',
+        principalKey: payload.principalKey,
+        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
+        agente: payload.agente,
+        contrasenaAgente: payload.contrasena_agente
+      });
+      runId = run.id;
+      await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
+
+      return reply.code(202).send({
+        runId: run.id,
+        status: 'queued',
+        statusUrl: `/reports/rda/run/${run.id}`
+      });
+    } catch (error) {
+      if (runId) {
+        await getReportRunStore()
+          .deleteRun(runId)
+          .catch((cleanupError) => logger.warn({ error: cleanupError, runId }, 'Could not clean report run after enqueue failure'));
+      }
+
+      const mappedError = toReportHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /reports/rda/run error');
+      return reply.code(500).send({ message: 'Unexpected report persistence error' });
+    }
+  });
+
   async function handleGetReportRun(runId: string, reply: FastifyReply, logLabel: string) {
     try {
       const run = await getReportRunStore().getRunById(runId);
@@ -1889,6 +2294,15 @@ export function createServer(
     }
 
     return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/asn/run/:runId error');
+  });
+
+  fastify.get('/reports/rda/run/:runId', async (request, reply) => {
+    const parsed = reportRunParamsSchema.safeParse(request.params);
+    if (!parsed.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/rda/run/:runId error');
   });
 
   async function handleListReportRunItems(
@@ -1939,6 +2353,15 @@ export function createServer(
     }
 
     return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/asn/run/:runId/items error');
+  });
+
+  fastify.get('/reports/rda/run/:runId/items', async (request, reply) => {
+    const parsedParams = reportRunParamsSchema.safeParse(request.params);
+    if (!parsedParams.success) {
+      return reply.code(400).send({ message: 'Invalid run id' });
+    }
+
+    return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/rda/run/:runId/items error');
   });
 
   fastify.get('/jobs/:id', async (request, reply) => {

@@ -2,12 +2,14 @@ import { createHash } from 'node:crypto';
 import type { MetaConversionLease } from './meta-conversions-store';
 import { extractMetaSourceContext } from './meta-source-context';
 
+type MetaActionSource = 'system_generated' | 'business_messaging' | 'website';
+
 export interface MetaConversionsConfig {
   enabled: boolean;
   datasetId: string;
   accessToken: string;
   apiVersion: string;
-  actionSource: 'system_generated' | 'business_messaging';
+  actionSource: MetaActionSource;
   batchSize: number;
   valueSignalCurrency: string;
   pageId?: string;
@@ -63,7 +65,7 @@ function normalizeExternalId(ownerId: string, clientId: string): string {
   return sha256(`${ownerId}:${clientId}`.toLowerCase());
 }
 
-function normalizeActionSource(value: string | undefined): 'system_generated' | 'business_messaging' {
+function normalizeActionSource(value: string | undefined): MetaActionSource {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'system_generated') {
     return 'system_generated';
@@ -71,8 +73,11 @@ function normalizeActionSource(value: string | undefined): 'system_generated' | 
   if (normalized === 'business_messaging') {
     return 'business_messaging';
   }
+  if (normalized === 'website') {
+    return 'website';
+  }
 
-  throw new Error('META_ACTION_SOURCE must be system_generated or business_messaging');
+  throw new Error('META_ACTION_SOURCE must be system_generated, business_messaging or website');
 }
 
 function normalizeBatchSize(value: string | undefined): number {
@@ -158,6 +163,19 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   };
 }
 
+export function buildLandingMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MetaConversionsConfig {
+  const config = buildMetaConversionsConfigFromEnv(env);
+  const actionSource = normalizeActionSource(env.META_LANDING_ACTION_SOURCE || 'website');
+  if (actionSource !== 'website') {
+    throw new Error('META_LANDING_ACTION_SOURCE must be website');
+  }
+
+  return {
+    ...config,
+    actionSource
+  };
+}
+
 function readNumericSourcePayloadField(payload: Record<string, unknown>, key: string): number | null {
   const value = payload[key];
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -184,10 +202,19 @@ export function buildMetaConversionsRequestBody(
   const sourceContext = extractMetaSourceContext(lease.sourcePayload);
   const ownerKey = typeof lease.sourcePayload.owner_key === 'string' ? lease.sourcePayload.owner_key : null;
   const ownerLabel = typeof lease.sourcePayload.owner_label === 'string' ? lease.sourcePayload.owner_label : null;
+  const eventSourceUrl = sourceContext?.eventSourceUrl ?? sourceContext?.referralSourceUrl ?? null;
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
     external_id: [normalizeExternalId(lease.ownerId, lease.clientId)],
-    ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {})
+    ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {}),
+    ...(config.actionSource === 'website' && sourceContext?.fbp ? { fbp: sourceContext.fbp } : {}),
+    ...(config.actionSource === 'website' && sourceContext?.fbc ? { fbc: sourceContext.fbc } : {}),
+    ...(config.actionSource === 'website' && sourceContext?.clientIpAddress
+      ? { client_ip_address: sourceContext.clientIpAddress }
+      : {}),
+    ...(config.actionSource === 'website' && sourceContext?.clientUserAgent
+      ? { client_user_agent: sourceContext.clientUserAgent }
+      : {})
   };
 
   const monetaryValue = lease.metaEventName === 'Purchase'
@@ -230,9 +257,27 @@ export function buildMetaConversionsRequestBody(
 
   const customData = Object.fromEntries(
     Object.entries({
-      event_source: 'crm',
+      event_source: lease.metaEventName === 'Contact' ? 'landing' : 'crm',
       ...(resolvedEventName === 'Lead' || resolvedEventName === 'LeadSubmitted'
         ? { lead_event_source: 'scrap2' }
+        : {}),
+      ...(lease.metaEventName === 'Contact'
+        ? {
+            contact_event_source: 'landing',
+            landing_session_id: sourceContext?.landingSessionId ?? null,
+            landing_variant: sourceContext?.landingVariant ?? null,
+            cta_type: sourceContext?.ctaType ?? null,
+            fbclid: sourceContext?.fbclid ?? null,
+            referrer: sourceContext?.referrer ?? null,
+            utm_source: sourceContext?.utmSource ?? null,
+            utm_medium: sourceContext?.utmMedium ?? null,
+            utm_campaign: sourceContext?.utmCampaign ?? null,
+            utm_content: sourceContext?.utmContent ?? null,
+            utm_term: sourceContext?.utmTerm ?? null,
+            consent_marketing: sourceContext?.consentMarketing ?? null,
+            consent_timestamp: sourceContext?.consentTimestamp ?? null,
+            whatsapp_url: sourceContext?.whatsappUrl ?? null
+          }
         : {}),
       ...(lease.metaEventName === 'Purchase'
         ? {
@@ -267,7 +312,7 @@ export function buildMetaConversionsRequestBody(
     event_time: Math.floor(new Date(lease.eventTime).getTime() / 1000),
     event_id: lease.eventId,
     action_source: config.actionSource,
-    ...(sourceContext?.referralSourceUrl ? { event_source_url: sourceContext.referralSourceUrl } : {}),
+    ...(eventSourceUrl ? { event_source_url: eventSourceUrl } : {}),
     ...(config.actionSource === 'business_messaging' ? { messaging_channel: 'whatsapp' } : {}),
     user_data: {
       ...userData,

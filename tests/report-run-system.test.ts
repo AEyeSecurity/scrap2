@@ -615,6 +615,72 @@ describe('report run system', () => {
     await server.close();
   });
 
+  it('creates RdA alias runs on different dates without interfering with the next day', async () => {
+    const store = new FakeReportRunStore({
+      owners: [{ id: 'owner-rda', ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas 10 RdA', pagina: 'RdA' }],
+      clients: [{ id: 'client-rda', phone: '+5492222222222', pagina: 'RdA' }],
+      links: [{ id: 'link-rda', ownerId: 'owner-rda', clientId: 'client-rda', status: 'assigned' }],
+      identities: [
+        {
+          id: 'identity-rda',
+          ownerId: 'owner-rda',
+          clientId: 'client-rda',
+          linkId: 'link-rda',
+          username: 'sameuser',
+          isActive: true,
+          pagina: 'RdA'
+        }
+      ]
+    });
+    const logger = createLogger('silent', false);
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false }
+    );
+
+    const basePayload = {
+      principalKey: 'luqui10',
+      agente: 'elpity24',
+      contrasena_agente: '123abc'
+    };
+
+    const today = await server.inject({
+      method: 'POST',
+      url: '/reports/rda/run',
+      payload: { ...basePayload, reportDate: '2026-04-22' }
+    });
+    expect(today.statusCode).toBe(202);
+    expect(today.json().statusUrl).toBe(`/reports/rda/run/${today.json().runId}`);
+
+    const tomorrow = await server.inject({
+      method: 'POST',
+      url: '/reports/rda/run',
+      payload: { ...basePayload, reportDate: '2026-04-23' }
+    });
+    expect(tomorrow.statusCode).toBe(202);
+    expect(tomorrow.json().statusUrl).toBe(`/reports/rda/run/${tomorrow.json().runId}`);
+
+    const todayItems = await server.inject({
+      method: 'GET',
+      url: `/reports/rda/run/${today.json().runId}/items`
+    });
+    expect(todayItems.statusCode).toBe(200);
+    expect(todayItems.json().total).toBe(1);
+
+    const duplicateToday = await server.inject({
+      method: 'POST',
+      url: '/reports/rda/run',
+      payload: { ...basePayload, reportDate: '2026-04-22' }
+    });
+    expect(duplicateToday.statusCode).toBe(409);
+
+    await server.close();
+  });
+
   it('processes a full run end-to-end and persists snapshots plus outbox', async () => {
     const store = createSeededStore();
     const logger = createLogger('silent', false);

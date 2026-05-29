@@ -5,11 +5,27 @@ export interface StoredMetaSourcePayload extends Record<string, unknown> {
   owner_label?: string;
   source_context?: Record<string, unknown>;
   ReferralCtwaClid?: string;
+  Fbp?: string;
+  Fbc?: string;
+  Fbclid?: string;
   ReferralSourceId?: string;
   ReferralSourceUrl?: string;
   ReferralHeadline?: string;
   ReferralBody?: string;
   ReferralSourceType?: string;
+  EventSourceUrl?: string;
+  Referrer?: string;
+  LandingSessionId?: string;
+  LandingVariant?: string;
+  CtaType?: string;
+  UtmSource?: string;
+  UtmMedium?: string;
+  UtmCampaign?: string;
+  UtmContent?: string;
+  UtmTerm?: string;
+  ConsentMarketing?: boolean;
+  ConsentTimestamp?: string;
+  WhatsappUrl?: string;
   WaId?: string;
   MessageSid?: string;
   AccountSid?: string;
@@ -42,6 +58,10 @@ function normalizeOptionalTimestamp(value: string | null | undefined): string | 
   return parsed.toISOString();
 }
 
+function normalizeOptionalBoolean(value: boolean | null | undefined): boolean | null {
+  return typeof value === 'boolean' ? value : null;
+}
+
 export function normalizeMetaSourceContext(input: MetaSourceContext | null | undefined): MetaSourceContext | null {
   if (!input) {
     return null;
@@ -49,11 +69,27 @@ export function normalizeMetaSourceContext(input: MetaSourceContext | null | und
 
   const normalized: MetaSourceContext = {
     ctwaClid: normalizeOptionalText(input.ctwaClid),
+    fbp: normalizeOptionalText(input.fbp),
+    fbc: normalizeOptionalText(input.fbc),
+    fbclid: normalizeOptionalText(input.fbclid),
     referralSourceId: normalizeOptionalText(input.referralSourceId),
     referralSourceUrl: normalizeOptionalText(input.referralSourceUrl),
     referralHeadline: normalizeOptionalText(input.referralHeadline),
     referralBody: normalizeOptionalText(input.referralBody),
     referralSourceType: normalizeOptionalText(input.referralSourceType),
+    eventSourceUrl: normalizeOptionalText(input.eventSourceUrl),
+    referrer: normalizeOptionalText(input.referrer),
+    landingSessionId: normalizeOptionalText(input.landingSessionId),
+    landingVariant: normalizeOptionalText(input.landingVariant),
+    ctaType: normalizeOptionalText(input.ctaType),
+    utmSource: normalizeOptionalText(input.utmSource),
+    utmMedium: normalizeOptionalText(input.utmMedium),
+    utmCampaign: normalizeOptionalText(input.utmCampaign),
+    utmContent: normalizeOptionalText(input.utmContent),
+    utmTerm: normalizeOptionalText(input.utmTerm),
+    consentMarketing: normalizeOptionalBoolean(input.consentMarketing),
+    consentTimestamp: normalizeOptionalTimestamp(input.consentTimestamp),
+    whatsappUrl: normalizeOptionalText(input.whatsappUrl),
     waId: normalizeOptionalText(input.waId),
     messageSid: normalizeOptionalText(input.messageSid),
     accountSid: normalizeOptionalText(input.accountSid),
@@ -89,11 +125,27 @@ export function buildStoredMetaSourcePayload(input: {
     owner_label: normalizeOptionalText(input.ownerContext?.ownerLabel),
     source_context: sourceContext ? pruneNullish({ ...sourceContext }) : null,
     ReferralCtwaClid: sourceContext?.ctwaClid ?? null,
+    Fbp: sourceContext?.fbp ?? null,
+    Fbc: sourceContext?.fbc ?? null,
+    Fbclid: sourceContext?.fbclid ?? null,
     ReferralSourceId: sourceContext?.referralSourceId ?? null,
     ReferralSourceUrl: sourceContext?.referralSourceUrl ?? null,
     ReferralHeadline: sourceContext?.referralHeadline ?? null,
     ReferralBody: sourceContext?.referralBody ?? null,
     ReferralSourceType: sourceContext?.referralSourceType ?? null,
+    EventSourceUrl: sourceContext?.eventSourceUrl ?? null,
+    Referrer: sourceContext?.referrer ?? null,
+    LandingSessionId: sourceContext?.landingSessionId ?? null,
+    LandingVariant: sourceContext?.landingVariant ?? null,
+    CtaType: sourceContext?.ctaType ?? null,
+    UtmSource: sourceContext?.utmSource ?? null,
+    UtmMedium: sourceContext?.utmMedium ?? null,
+    UtmCampaign: sourceContext?.utmCampaign ?? null,
+    UtmContent: sourceContext?.utmContent ?? null,
+    UtmTerm: sourceContext?.utmTerm ?? null,
+    ConsentMarketing: sourceContext?.consentMarketing ?? null,
+    ConsentTimestamp: sourceContext?.consentTimestamp ?? null,
+    WhatsappUrl: sourceContext?.whatsappUrl ?? null,
     WaId: sourceContext?.waId ?? null,
     MessageSid: sourceContext?.messageSid ?? null,
     AccountSid: sourceContext?.accountSid ?? null,
@@ -111,6 +163,11 @@ function readPayloadField(payload: Record<string, unknown>, key: string): string
   return typeof value === 'string' ? normalizeOptionalText(value) : null;
 }
 
+function readPayloadBooleanField(payload: Record<string, unknown>, key: string): boolean | null {
+  const value = payload[key];
+  return typeof value === 'boolean' ? value : null;
+}
+
 export function extractMetaSourceContext(payload: Record<string, unknown> | null | undefined): MetaSourceContext | null {
   if (!payload || typeof payload !== 'object') {
     return null;
@@ -124,6 +181,9 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
     ctwaClid:
       readPayloadField(payload, 'ReferralCtwaClid') ??
       (nestedSource ? readPayloadField(nestedSource, 'ctwaClid') : null),
+    fbp: readPayloadField(payload, 'Fbp') ?? (nestedSource ? readPayloadField(nestedSource, 'fbp') : null),
+    fbc: readPayloadField(payload, 'Fbc') ?? (nestedSource ? readPayloadField(nestedSource, 'fbc') : null),
+    fbclid: readPayloadField(payload, 'Fbclid') ?? (nestedSource ? readPayloadField(nestedSource, 'fbclid') : null),
     referralSourceId:
       readPayloadField(payload, 'ReferralSourceId') ??
       (nestedSource ? readPayloadField(nestedSource, 'referralSourceId') : null),
@@ -139,6 +199,38 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
     referralSourceType:
       readPayloadField(payload, 'ReferralSourceType') ??
       (nestedSource ? readPayloadField(nestedSource, 'referralSourceType') : null),
+    eventSourceUrl:
+      readPayloadField(payload, 'EventSourceUrl') ??
+      (nestedSource ? readPayloadField(nestedSource, 'eventSourceUrl') : null),
+    referrer:
+      readPayloadField(payload, 'Referrer') ?? (nestedSource ? readPayloadField(nestedSource, 'referrer') : null),
+    landingSessionId:
+      readPayloadField(payload, 'LandingSessionId') ??
+      (nestedSource ? readPayloadField(nestedSource, 'landingSessionId') : null),
+    landingVariant:
+      readPayloadField(payload, 'LandingVariant') ??
+      (nestedSource ? readPayloadField(nestedSource, 'landingVariant') : null),
+    ctaType: readPayloadField(payload, 'CtaType') ?? (nestedSource ? readPayloadField(nestedSource, 'ctaType') : null),
+    utmSource:
+      readPayloadField(payload, 'UtmSource') ?? (nestedSource ? readPayloadField(nestedSource, 'utmSource') : null),
+    utmMedium:
+      readPayloadField(payload, 'UtmMedium') ?? (nestedSource ? readPayloadField(nestedSource, 'utmMedium') : null),
+    utmCampaign:
+      readPayloadField(payload, 'UtmCampaign') ??
+      (nestedSource ? readPayloadField(nestedSource, 'utmCampaign') : null),
+    utmContent:
+      readPayloadField(payload, 'UtmContent') ?? (nestedSource ? readPayloadField(nestedSource, 'utmContent') : null),
+    utmTerm:
+      readPayloadField(payload, 'UtmTerm') ?? (nestedSource ? readPayloadField(nestedSource, 'utmTerm') : null),
+    consentMarketing:
+      readPayloadBooleanField(payload, 'ConsentMarketing') ??
+      (nestedSource ? readPayloadBooleanField(nestedSource, 'consentMarketing') : null),
+    consentTimestamp:
+      readPayloadField(payload, 'ConsentTimestamp') ??
+      (nestedSource ? readPayloadField(nestedSource, 'consentTimestamp') : null),
+    whatsappUrl:
+      readPayloadField(payload, 'WhatsappUrl') ??
+      (nestedSource ? readPayloadField(nestedSource, 'whatsappUrl') : null),
     waId: readPayloadField(payload, 'WaId') ?? (nestedSource ? readPayloadField(nestedSource, 'waId') : null),
     messageSid:
       readPayloadField(payload, 'MessageSid') ?? (nestedSource ? readPayloadField(nestedSource, 'messageSid') : null),

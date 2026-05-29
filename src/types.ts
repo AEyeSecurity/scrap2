@@ -152,11 +152,27 @@ export interface OwnerContext {
 
 export interface MetaSourceContext {
   ctwaClid?: string | null;
+  fbp?: string | null;
+  fbc?: string | null;
+  fbclid?: string | null;
   referralSourceId?: string | null;
   referralSourceUrl?: string | null;
   referralHeadline?: string | null;
   referralBody?: string | null;
   referralSourceType?: string | null;
+  eventSourceUrl?: string | null;
+  referrer?: string | null;
+  landingSessionId?: string | null;
+  landingVariant?: string | null;
+  ctaType?: string | null;
+  utmSource?: string | null;
+  utmMedium?: string | null;
+  utmCampaign?: string | null;
+  utmContent?: string | null;
+  utmTerm?: string | null;
+  consentMarketing?: boolean | null;
+  consentTimestamp?: string | null;
+  whatsappUrl?: string | null;
   waId?: string | null;
   messageSid?: string | null;
   accountSid?: string | null;

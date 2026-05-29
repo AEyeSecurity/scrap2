@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 380" role="img" aria-labelledby="title desc">
+  <title id="title">Rey de Ases</title>
+  <desc id="desc">Wordmark original dorado y verde para Rey de Ases</desc>
+  <defs>
+    <linearGradient id="gold" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#fff3a4"/>
+      <stop offset="0.32" stop-color="#f2c84c"/>
+      <stop offset="0.66" stop-color="#a66e16"/>
+      <stop offset="1" stop-color="#ffe676"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" x2="1">
+      <stop offset="0" stop-color="#08270e"/>
+      <stop offset="1" stop-color="#126b35"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="8" flood-color="#000" flood-opacity="0.65"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="4" flood-color="#ffe36b" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <path d="M315 58c28-31 54-12 61 19 11-31 48-46 69-10 9 15 10 33 3 51l-56-18-38 44-42-40-58 17c4-26 18-48 61-63Z" fill="url(#gold)" stroke="#422800" stroke-width="9" filter="url(#shadow)"/>
+  <circle cx="317" cy="55" r="17" fill="#fff0a6" stroke="#523400" stroke-width="7"/>
+  <circle cx="379" cy="54" r="17" fill="#fff0a6" stroke="#523400" stroke-width="7"/>
+  <circle cx="452" cy="62" r="15" fill="#fff0a6" stroke="#523400" stroke-width="7"/>
+  <path d="M118 276c76 25 392 24 486-6" fill="none" stroke="url(#gold)" stroke-width="16" stroke-linecap="round" opacity=".78"/>
+  <path d="M95 225c38-80 61-114 93-103 28 10 27 45-5 69l-27 19 57 77-54 2-43-65-20 1Z" fill="url(#green)" stroke="#e6bd4a" stroke-width="9" opacity=".72"/>
+  <path d="M615 225c-38-80-61-114-93-103-28 10-27 45 5 69l27 19-57 77 54 2 43-65 20 1Z" fill="url(#green)" stroke="#e6bd4a" stroke-width="9" opacity=".72"/>
+  <g filter="url(#shadow)">
+    <text x="360" y="185" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="138" font-weight="900" letter-spacing="-9" fill="url(#gold)" stroke="#151006" stroke-width="9" paint-order="stroke">Rey</text>
+    <text x="360" y="296" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="88" font-weight="900" letter-spacing="-2" fill="url(#gold)" stroke="#151006" stroke-width="7" paint-order="stroke">de Ases</text>
+  </g>
+</svg>
