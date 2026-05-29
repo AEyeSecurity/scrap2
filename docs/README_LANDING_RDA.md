@@ -138,6 +138,26 @@ Repo actual:
 https://github.com/AEyeSecurity/scrap2.git
 ```
 
+## Autodeploy desde GitHub
+
+Estado validado el `2026-05-29`:
+
+- Tarea programada Windows: `Megascrap Git AutoDeploy`.
+- Frecuencia: cada 1 minuto.
+- Script: `C:\ServerCIT\scripts\update_megascrap_from_main_if_new.ps1`.
+- Deploy usado: `C:\ServerCIT\scripts\deploy_megascrap_from_main.ps1`.
+- Fuente observada: `origin/main` del repo `https://github.com/AEyeSecurity/scrap2.git`.
+- Estado ultimo deploy: `C:\ServerCIT\state\megascrap-last-deployed-sha.txt`.
+- Logs: `C:\ServerCIT\logs\megascrap\autodeploy-YYYYMMDD.log`.
+
+Funcionamiento:
+
+- Si alguien pushea a `main` desde otra PC, la tarea hace `git fetch origin --prune`.
+- Si `origin/main` cambio respecto del ultimo SHA desplegado, ejecuta el deploy productivo.
+- El deploy crea una imagen Docker `scrap2:main-auto-<sha>` y reemplaza `scrap2-api`.
+- El script usa un lock global para evitar ejecuciones solapadas.
+- No es webhook instantaneo: el cambio deberia verse en el siguiente ciclo de 1 minuto, mas el tiempo de build/redeploy.
+
 ## Deploy productivo actual en ServerCIT
 
 Estado validado el `2026-05-29`:
