@@ -1,10 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="WhatsApp">
   <defs>
-    <linearGradient id="wa" x1="12" x2="52" y1="8" y2="56">
-      <stop offset="0" stop-color="#39f28a"/>
-      <stop offset="1" stop-color="#0fa15a"/>
+    <linearGradient id="wa" x1="14" x2="50" y1="6" y2="58">
+      <stop offset="0" stop-color="#4cf598"/>
+      <stop offset="0.55" stop-color="#1fd268"/>
+      <stop offset="1" stop-color="#0a8c4c"/>
     </linearGradient>
+    <radialGradient id="waGloss" cx="38%" cy="26%" r="62%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.12"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
   </defs>
-  <path fill="url(#wa)" d="M32 6c14.4 0 26 11.2 26 25.1S46.4 56.2 32 56.2c-4.2 0-8.2-.9-11.7-2.7L8 58l4.4-11.8A24.4 24.4 0 0 1 6 31.1C6 17.2 17.6 6 32 6Z"/>
+  <circle cx="32" cy="31.1" r="26" fill="url(#wa)"/>
+  <circle cx="32" cy="31.1" r="25" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="1.4"/>
+  <circle cx="32" cy="31.1" r="26" fill="url(#waGloss)"/>
   <path fill="#fff" d="M32 11.2c-11.3 0-20.5 8.9-20.5 19.9 0 4.1 1.3 7.9 3.5 11l.6.8-2.5 6.6 6.9-2.4.8.5a21.2 21.2 0 0 0 11.2 3.2c11.3 0 20.5-8.9 20.5-19.8S43.3 11.2 32 11.2Zm11.9 28.1c-.5 1.4-2.9 2.6-4.1 2.8-1.1.2-2.5.3-4-.2-.9-.3-2.1-.7-3.6-1.3-6.3-2.6-10.5-8.5-10.8-8.9-.3-.4-2.6-3.4-2.6-6.5s1.7-4.6 2.3-5.2c.6-.6 1.3-.8 1.8-.8h1.3c.4 0 1-.1 1.5 1.1.6 1.4 2 4.8 2.1 5.1.2.4.3.8.1 1.2-.2.4-.3.7-.7 1.1-.3.4-.7.9-1 1.2-.3.4-.7.8-.3 1.5.4.7 1.7 2.8 3.7 4.5 2.5 2.2 4.7 2.9 5.4 3.2.7.3 1.1.2 1.5-.2.5-.5 1.7-2 2.2-2.7.5-.7.9-.6 1.5-.4.6.2 4 1.9 4.7 2.2.7.3 1.1.5 1.3.8.2.4.2 1.8-.3 3.2Z"/>
 </svg>

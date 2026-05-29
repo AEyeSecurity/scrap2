@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Rey de Ases | Atencion por WhatsApp</title>
+    <title>Rey de Ases | Atención por WhatsApp</title>
     <meta
       name="description"
-      content="Rey de Ases: atencion por WhatsApp, registro asistido y entretenimiento para mayores de 18 anos."
+      content="Rey de Ases: atención por WhatsApp, registro asistido y entretenimiento para mayores de 18 años."
     />
     <meta name="robots" content="index,follow" />
     <meta name="theme-color" content="#071408" />
@@ -14,7 +14,8 @@
     <meta property="og:description" content="Atencion por WhatsApp. Solo mayores de 18 anos." />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="/landing/assets/hero-monkey-king.webp?v=__LANDING_ASSET_VERSION__" />
-    <link rel="preload" as="image" href="/landing/assets/hero-monkey-king.webp?v=__LANDING_ASSET_VERSION__" />
+    <link rel="preload" as="image" href="/landing/assets/hero-monkey-king.webp?v=__LANDING_ASSET_VERSION__" fetchpriority="high" />
+    <link rel="preload" as="image" href="/landing/assets/logo-rey-de-ases.webp?v=__LANDING_ASSET_VERSION__" />
     <link rel="stylesheet" href="/landing/styles.css?v=__LANDING_ASSET_VERSION__" />
     <script>
       window.__RDA_LANDING_CONFIG__ = __LANDING_CONFIG_JSON__;
@@ -23,28 +24,44 @@
   <body>
     __META_PIXEL_NOSCRIPT__
     <main class="landing-shell" aria-label="Landing Rey de Ases">
-      <section class="hero" aria-labelledby="landing-title">
+      <section class="hero" aria-label="Rey de Ases — Atención por WhatsApp">
         <div class="hero__media" aria-hidden="true"></div>
         <div class="hero__veil" aria-hidden="true"></div>
+
         <header class="hero__topbar" aria-label="Informacion principal">
-          <span class="trust-badge trust-badge--service">24 hs</span>
+          <div class="trust-badge trust-badge--service" aria-label="Atención las 24 horas">
+            <svg class="badge-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+              <defs>
+                <linearGradient id="badgeGold" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#fff6c2" />
+                  <stop offset="0.5" stop-color="#ffd34d" />
+                  <stop offset="1" stop-color="#b9821a" />
+                </linearGradient>
+              </defs>
+              <g fill="none" stroke="url(#badgeGold)" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M50 20a22 22 0 1 0 4 14" />
+                <path d="M54 20v9h-9" />
+                <path d="M31 19v14l10 6" />
+              </g>
+            </svg>
+            <span class="trust-badge__label">24 HS</span>
+          </div>
           <img
             class="brand-logo"
-            src="/landing/assets/logo-rey-de-ases.svg?v=__LANDING_ASSET_VERSION__"
-            width="250"
-            height="132"
+            src="/landing/assets/logo-rey-de-ases.webp?v=__LANDING_ASSET_VERSION__"
+            width="488"
+            height="348"
             alt="Rey de Ases"
+            loading="eager"
+            decoding="async"
           />
-          <span class="trust-badge trust-badge--age">18+</span>
+          <div class="trust-badge trust-badge--age" aria-label="Solo mayores de 18 años">
+            <span class="trust-badge__age">18<sup>+</sup></span>
+          </div>
         </header>
 
         <div class="hero__content">
-          <p class="eyebrow">Atencion personalizada por WhatsApp</p>
-          <h1 id="landing-title">Tu usuario de Rey de Ases, asistido por un operador.</h1>
-          <p class="hero__copy">
-            Escribinos y te guiamos paso a paso. Entretenimiento para mayores de 18 anos, sin promesas de ganancia.
-          </p>
-
+          <!-- CTA primero — conversión inmediata -->
           <a
             id="primary-whatsapp-cta"
             class="cta"
@@ -62,6 +79,12 @@
             />
           </a>
 
+          <!-- Texto de soporte debajo del CTA (más pequeño) -->
+          <p class="eyebrow">Atención personalizada por WhatsApp</p>
+          <p class="hero__copy">
+            Escribinos y te guiamos paso a paso. Entretenimiento para mayores de 18 años, sin promesas de ganancia.
+          </p>
+
           <ul class="value-list" aria-label="Beneficios del servicio">
             <li>Respuesta rapida</li>
             <li>Registro guiado</li>
@@ -70,7 +93,7 @@
         </div>
 
         <footer class="hero__legal" aria-label="Legales">
-          <p>Solo mayores de 18 anos. Juga con responsabilidad. La participacion no garantiza resultados.</p>
+          <p>Solo mayores de 18 años. Jugá con responsabilidad. La participación no garantiza resultados.</p>
           <nav aria-label="Links legales">
             <a href="/landing/privacidad">Privacidad</a>
             <a href="/landing/terminos">Terminos</a>

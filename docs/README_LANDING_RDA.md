@@ -31,12 +31,50 @@ public/landing/landing.js
 public/landing/privacidad.html
 public/landing/terminos.html
 public/landing/assets/hero-monkey-king.webp
+public/landing/assets/logo-rey-de-ases.webp
 public/landing/assets/logo-rey-de-ases.svg
 public/landing/assets/whatsapp.svg
 ```
 
 El hero `hero-monkey-king.webp` esta optimizado para mobile y pesa cerca de `92 KB`.
-El peso critico aproximado de HTML + CSS + JS + SVGs + hero es `~110 KB`, sin contar scripts externos de Meta.
+El logo `logo-rey-de-ases.webp` (wordmark dorado con fondo recortado a transparencia) pesa `~68 KB`.
+El `logo-rey-de-ases.svg` queda como fallback historico pero ya no se referencia desde el HTML.
+El peso critico aproximado de HTML + CSS + JS + SVGs + hero + logo es `~180 KB`, sin contar scripts externos de Meta.
+
+## Rediseno visual (2026-05-29)
+
+Cambios de UI/UX manteniendo el tracking y la estructura de `server.ts` intactos.
+
+Layout y copy:
+
+- El CTA WhatsApp pasa a ir primero en el flujo (conversion inmediata); el texto de soporte queda debajo y mas chico.
+- Se elimino el `<h1>` "Tu usuario de Rey de Ases, asistido por un operador." y se reemplazo el `aria-labelledby` por `aria-label` en la `section`.
+- Acentos corregidos: "anos" -> "años", "Atencion" -> "Atención", "Juga" -> "Jugá", "participacion" -> "participación".
+
+Logo:
+
+- Nuevo wordmark dorado `logo-rey-de-ases.webp`, extraido del arte original quitando el fondo a transparencia para integrarlo al hero sin recuadro.
+- El HTML referencia el `.webp` (con preload) en vez del `.svg`.
+
+Badges de confianza:
+
+- "24 HS" y "18+" rehechos como circulos dorados premium con SVG inline (sin requests extra, nitidos en cualquier densidad).
+- El de servicio usa un icono de reloj; el de edad usa "18+" en serif.
+
+Boton CTA:
+
+- Ico WhatsApp premium: `whatsapp.svg` con degrade verde, anillo y gloss radial.
+- Latido continuo via `transform: scale` (compositado por GPU; se evito animar `box-shadow` por costo de repaint).
+- Reactivo al cursor (hover: escala + brillo + glow), al click (`:active` se hunde) y foco accesible (`:focus-visible`).
+- Variable CSS `--s` para que hover/click no choquen con la animacion de latido.
+- Respeta `prefers-reduced-motion` (desactiva el latido).
+
+Eficiencia (todas las gamas Android/iOS/tablet):
+
+- Iconos en SVG inline / CSS, cero imagenes raster extra.
+- Animaciones limitadas a `transform`/`opacity`/`filter` (GPU-friendly).
+- Logo servido en WebP, con fallback SVG disponible.
+- `background-image` del hero referenciado relativo (`assets/...`) para robustez de cache.
 
 ## Configuracion
 
