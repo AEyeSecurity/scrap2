@@ -7,6 +7,7 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY public ./public
 
 RUN npm run build
 
