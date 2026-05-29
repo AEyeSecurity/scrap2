@@ -157,6 +157,13 @@ Funcionamiento:
 - El deploy crea una imagen Docker `scrap2:main-auto-<sha>` y reemplaza `scrap2-api`.
 - El script usa un lock global para evitar ejecuciones solapadas.
 - No es webhook instantaneo: el cambio deberia verse en el siguiente ciclo de 1 minuto, mas el tiempo de build/redeploy.
+- Si el push se hizo desde el mismo ServerCIT y `local HEAD` ya coincide con `origin/main`, el script fuerza rebuild/redeploy cuando ese SHA todavia no esta marcado como desplegado.
+
+Cache de frontend:
+
+- El HTML de `/landing` se sirve con `cache-control: no-store`.
+- CSS, JS e imagenes se referencian con `?v=<version-de-arranque>`.
+- Cada deploy reinicia el proceso y cambia esa version, evitando que navegadores o Cloudflare mantengan assets viejos con el mismo nombre.
 
 ## Deploy productivo actual en ServerCIT
 

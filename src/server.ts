@@ -124,6 +124,7 @@ const LANDING_OWNER_CONTEXT: OwnerContext = {
   actorAlias: 'luqui10',
   actorPhone: '+5493516549344'
 };
+const LANDING_ASSET_VERSION = process.env.LANDING_ASSET_VERSION?.trim() || Date.now().toString(36);
 
 interface LandingPublicConfig {
   pixelId: string | null;
@@ -1214,7 +1215,8 @@ export function createServer(
     const config = buildLandingPublicConfig();
     const html = template
       .replace('__LANDING_CONFIG_JSON__', escapeScriptJson(config))
-      .replace('__META_PIXEL_NOSCRIPT__', buildMetaPixelNoscript(config.pixelId));
+      .replace('__META_PIXEL_NOSCRIPT__', buildMetaPixelNoscript(config.pixelId))
+      .replaceAll('__LANDING_ASSET_VERSION__', encodeURIComponent(LANDING_ASSET_VERSION));
 
     return reply
       .header('content-type', 'text/html; charset=utf-8')
