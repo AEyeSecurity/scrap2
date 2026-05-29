@@ -154,7 +154,7 @@ Variables productivas locales agregadas en `.env.production`:
 
 ```env
 LANDING_ENABLED=true
-LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.aeye.com.ar,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
+LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.aeye.com.ar,https://reydeasesluck.com.ar,https://www.reydeasesluck.com.ar,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
 META_PIXEL_ID=2123208205169806
 META_LANDING_ACTION_SOURCE=website
 ```
@@ -172,10 +172,14 @@ Tunnel origin: http://localhost:3000
 
 Hostnames adicionales preparados a nivel backend pero pendientes de DNS/Cloudflare:
 
+- `https://reydeasesluck.com.ar/landing`
+- `https://www.reydeasesluck.com.ar/landing`
 - `https://reydeasesluck.mastercrmrl.com/landing`
 - `https://landing.mastercrmrl.com/landing`
 - `https://reydeasesluck.com/landing`
 - `https://www.reydeasesluck.com/landing`
+
+Nota `reydeasesluck.com.ar`: validado el `2026-05-29` contra RDAP de NIC Argentina y DNS publico; el dominio no esta registrado/delegado y devuelve NXDOMAIN. Para usarlo hay que registrarlo en NIC Argentina, agregarlo como zona en Cloudflare, delegar los nameservers indicados por Cloudflare y crear el CNAME del tunnel.
 
 Para activar cualquiera de esos hostnames hay que entrar al dashboard de Cloudflare con permisos sobre la zona y agregar un Public Hostname al tunnel `cloudflared-apiscrap`, apuntando a:
 
