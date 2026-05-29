@@ -138,6 +138,41 @@ Repo actual:
 https://github.com/AEyeSecurity/scrap2.git
 ```
 
+## Deploy productivo actual en ServerCIT
+
+Estado validado el `2026-05-29`:
+
+- URL productiva usable: `https://apiscrap.mastercrmrl.com/landing`.
+- Contenedor: `scrap2-api`.
+- Imagen: `scrap2:main-auto-7b027d1`.
+- Commit: `7b027d1 Include landing assets in Docker image`.
+- Cloudflare Tunnel persistente: `cloudflared-apiscrap`.
+- Origen local: `http://127.0.0.1:3000`.
+
+Variables productivas locales agregadas en `.env.production`:
+
+```env
+LANDING_ENABLED=true
+LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
+META_PIXEL_ID=2123208205169806
+META_LANDING_ACTION_SOURCE=website
+```
+
+Hostnames dedicados preparados a nivel backend pero pendientes de DNS/Cloudflare:
+
+- `https://reydeasesluck.mastercrmrl.com/landing`
+- `https://landing.mastercrmrl.com/landing`
+- `https://reydeasesluck.com/landing`
+- `https://www.reydeasesluck.com/landing`
+
+Para activar cualquiera de esos hostnames hay que entrar al dashboard de Cloudflare con permisos sobre la zona y agregar un Public Hostname al tunnel `cloudflared-apiscrap`, apuntando a:
+
+```text
+http://localhost:3000
+```
+
+Si se usa un dominio nuevo como `reydeasesluck.com`, primero hay que registrar el dominio y sumarlo a Cloudflare. Luego crear `reydeasesluck.com` y `www.reydeasesluck.com` como hostnames del tunnel.
+
 ## QA ejecutado
 
 ```powershell
@@ -152,6 +187,10 @@ Resultado:
 - QA visual mobile `390x844`: OK.
 - QA visual mobile chico `360x640`: OK.
 - CTA final verificado contra `wa.me/5493516549344`.
+- Deploy Docker productivo: OK.
+- `GET https://apiscrap.mastercrmrl.com/landing`: OK.
+- Assets/legales productivos: OK.
+- `POST https://apiscrap.mastercrmrl.com/landing/contact`: OK, `tracked=true`.
 
 Nota: `npm test` completo tiene un fallo no relacionado en `tests/report-run-system.test.ts`, caso `retries a failed username and finishes the run without losing state`, que queda en `running` en vez de `completed`.
 
