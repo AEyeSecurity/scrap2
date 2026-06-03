@@ -4,7 +4,8 @@ import {
   buildMetaConversionsConfigFromEnv,
   buildMetaConversionsRequestBody,
   MetaConversionsDispatchError,
-  MetaConversionsHttpDispatcher
+  MetaConversionsHttpDispatcher,
+  MetaConversionsRoutingDispatcher
 } from '../src/meta-conversions';
 import {
   MetaConversionsStoreError,
@@ -14,7 +15,12 @@ import {
   type MetaFailurePersistenceInput,
   type MetaConversionsStore
 } from '../src/meta-conversions-store';
-import { buildStoredMetaSourcePayload, extractMetaSourceContext, isAttributableMetaSourceContext } from '../src/meta-source-context';
+import {
+  buildStoredMetaSourcePayload,
+  extractMetaSourceContext,
+  isAttributableMetaSourceContext,
+  isLandingMetaSourceContext
+} from '../src/meta-source-context';
 import { MetaConversionsWorker } from '../src/meta-conversions-worker';
 import { createLogger } from '../src/logging';
 
@@ -26,6 +32,16 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
   public leases: MetaConversionLease[] = [];
 
   async enqueueLead(_input: {
+    ownerId: string;
+    clientId: string;
+    phoneE164: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext: Record<string, unknown>;
+  }): Promise<void> {
+    // not used here
+  }
+
+  async enqueueLandingLead(_input: {
     ownerId: string;
     clientId: string;
     phoneE164: string;
@@ -199,7 +215,7 @@ describe('meta conversions dispatcher', () => {
             utmSource: 'meta',
             utmMedium: 'paid_social',
             utmCampaign: 'abril_rda',
-            whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases',
+            whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             clientIpAddress: '181.45.10.22',
             clientUserAgent: 'Mozilla/5.0',
             receivedAt: '2026-04-21T15:25:00.000Z'
@@ -241,6 +257,66 @@ describe('meta conversions dispatcher', () => {
       }
     });
     expect((body.data[0].user_data as Record<string, unknown>).ph).toBeUndefined();
+  });
+
+  it('builds website Lead payloads for landing WhatsApp intakes with phone and browser match fields', () => {
+    const body = buildMetaConversionsRequestBody(
+      buildLease({
+        eventStage: 'landing_lead',
+        metaEventName: 'Lead',
+        eventId: 'landing_lead:test',
+        phoneE164: '+5493511112222',
+        sourcePayload: buildStoredMetaSourcePayload({
+          ownerContext: { ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas10' },
+          sourceContext: {
+            fbp: 'fb.1.1710000000000.111',
+            fbc: 'fb.1.1710000000000.fbclid-123',
+            fbclid: 'fbclid-123',
+            eventSourceUrl: 'https://reydeases.imperial-support.com/landing?fbclid=fbclid-123',
+            landingSessionId: 'session_landing_lead',
+            landingVariant: 'rda-luqui10-v1',
+            ctaType: 'whatsapp_click',
+            whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            waId: '5493511112222',
+            messageSid: 'SM-LANDING',
+            profileName: 'Cliente Landing',
+            clientIpAddress: '181.45.10.22',
+            clientUserAgent: 'Mozilla/5.0',
+            receivedAt: '2026-06-03T18:00:00.000Z'
+          }
+        })
+      }),
+      {
+        actionSource: 'website',
+        valueSignalCurrency: 'ARS'
+      }
+    );
+
+    expect(body.data[0]).toMatchObject({
+      event_name: 'Lead',
+      event_id: 'landing_lead:test',
+      action_source: 'website',
+      event_source_url: 'https://reydeases.imperial-support.com/landing?fbclid=fbclid-123',
+      user_data: {
+        fbp: 'fb.1.1710000000000.111',
+        fbc: 'fb.1.1710000000000.fbclid-123',
+        client_ip_address: '181.45.10.22',
+        client_user_agent: 'Mozilla/5.0'
+      },
+      custom_data: {
+        event_source: 'landing',
+        lead_event_source: 'landing_whatsapp',
+        landing_session_id: 'session_landing_lead',
+        landing_variant: 'rda-luqui10-v1',
+        cta_type: 'whatsapp_click',
+        fbclid: 'fbclid-123',
+        whatsapp_url: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        wa_id: '5493511112222',
+        message_sid: 'SM-LANDING',
+        profile_name: 'Cliente Landing'
+      }
+    });
+    expect((body.data[0].user_data as { ph?: string[] }).ph?.[0]).toMatch(/^[a-f0-9]{64}$/);
   });
 
   it('builds Purchase payloads with real value and currency', () => {
@@ -402,6 +478,35 @@ describe('meta conversions dispatcher', () => {
         whatsapp_business_account_id: '1234567890'
       }
     });
+  });
+
+  it('routes landing-attributed leases to the landing dispatcher', async () => {
+    const defaultDispatcher = { dispatch: vi.fn() };
+    const landingDispatcher = {
+      dispatch: vi.fn().mockResolvedValue({
+        requestBody: { data: [{ event_name: 'Lead' }] },
+        responseStatus: 200,
+        responseBody: { events_received: 1 },
+        fbtraceId: null
+      })
+    };
+    const router = new MetaConversionsRoutingDispatcher(defaultDispatcher, landingDispatcher);
+
+    await router.dispatch(
+      buildLease({
+        eventStage: 'value_signal',
+        metaEventName: 'Purchase',
+        sourcePayload: buildStoredMetaSourcePayload({
+          ownerContext: { ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas10' },
+          sourceContext: {
+            landingSessionId: 'session_123'
+          }
+        })
+      })
+    );
+
+    expect(defaultDispatcher.dispatch).not.toHaveBeenCalled();
+    expect(landingDispatcher.dispatch).toHaveBeenCalledTimes(1);
   });
 });
 

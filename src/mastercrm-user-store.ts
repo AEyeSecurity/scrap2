@@ -1,7 +1,8 @@
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
-import type { PaginaCode } from './types';
+import { extractMetaSourceContext } from './meta-source-context';
+import type { MetaSourceContext, PaginaCode } from './types';
 
 const scrypt = promisify(scryptCallback);
 const PASSWORD_HASH_PREFIX = 'scrypt';
@@ -120,6 +121,11 @@ export interface MastercrmOwnerClientRecord {
   telefono: string | null;
   pagina: PaginaCode;
   estado: 'assigned' | 'pending';
+  source?: string | null;
+  origen?: string | null;
+  Campana?: string | null;
+  lastCampaign?: string | null;
+  attribution?: MastercrmClientAttribution;
   ownerKey: string;
   ownerLabel: string;
   firstSeenAt: string | null;
@@ -130,6 +136,37 @@ export interface MastercrmOwnerClientRecord {
   isReingresoMes: boolean;
   assignedEnMes: boolean;
   assignedDesdeBacklogMes: boolean;
+}
+
+export type MastercrmClientAttributionKind = 'landing' | 'landing_unmatched' | 'meta_ctwa' | 'unknown';
+
+export interface MastercrmClientAttributionMeta {
+  referralSourceId: string | null;
+  referralSourceUrl: string | null;
+  referralHeadline: string | null;
+  referralBody: string | null;
+  referralSourceType: string | null;
+  ctwaClid: string | null;
+}
+
+export interface MastercrmClientAttributionLanding {
+  landingSessionId: string | null;
+  utmSource: string | null;
+  utmMedium: string | null;
+  utmCampaign: string | null;
+  utmContent: string | null;
+  utmTerm: string | null;
+  fbclid: string | null;
+  eventSourceUrl: string | null;
+  whatsappUrl: string | null;
+}
+
+export interface MastercrmClientAttribution {
+  kind: MastercrmClientAttributionKind;
+  label: string;
+  campaign: string | null;
+  meta: MastercrmClientAttributionMeta;
+  landing: MastercrmClientAttributionLanding;
 }
 
 export interface MastercrmMonthlyTrendPoint {
@@ -244,6 +281,8 @@ interface OwnerMonthlyAdSpendRow {
 interface OwnerClientEventRow {
   client_id: string | null;
   event_type: 'intake' | 'assign_username' | 'unassign_username' | 'create_player' | 'link_sent';
+  payload: Record<string, unknown> | null;
+  occurred_at: string;
 }
 
 interface ReportRunFinishedAtRow {
@@ -400,6 +439,108 @@ function compareIsoDatesDesc(left: string, right: string): number {
   const normalizedRight = Number.isFinite(rightTime) ? rightTime : 0;
 
   return normalizedRight - normalizedLeft;
+}
+
+function nullableText(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function emptyAttribution(): MastercrmClientAttribution {
+  return {
+    kind: 'unknown',
+    label: 'Sin dato',
+    campaign: null,
+    meta: {
+      referralSourceId: null,
+      referralSourceUrl: null,
+      referralHeadline: null,
+      referralBody: null,
+      referralSourceType: null,
+      ctwaClid: null
+    },
+    landing: {
+      landingSessionId: null,
+      utmSource: null,
+      utmMedium: null,
+      utmCampaign: null,
+      utmContent: null,
+      utmTerm: null,
+      fbclid: null,
+      eventSourceUrl: null,
+      whatsappUrl: null
+    }
+  };
+}
+
+function attributionFromSourceContext(sourceContext: MetaSourceContext | null): MastercrmClientAttribution {
+  if (!sourceContext) {
+    return emptyAttribution();
+  }
+
+  const meta: MastercrmClientAttributionMeta = {
+    referralSourceId: nullableText(sourceContext.referralSourceId),
+    referralSourceUrl: nullableText(sourceContext.referralSourceUrl),
+    referralHeadline: nullableText(sourceContext.referralHeadline),
+    referralBody: nullableText(sourceContext.referralBody),
+    referralSourceType: nullableText(sourceContext.referralSourceType),
+    ctwaClid: nullableText(sourceContext.ctwaClid)
+  };
+  const landing: MastercrmClientAttributionLanding = {
+    landingSessionId: nullableText(sourceContext.landingSessionId),
+    utmSource: nullableText(sourceContext.utmSource),
+    utmMedium: nullableText(sourceContext.utmMedium),
+    utmCampaign: nullableText(sourceContext.utmCampaign),
+    utmContent: nullableText(sourceContext.utmContent),
+    utmTerm: nullableText(sourceContext.utmTerm),
+    fbclid: nullableText(sourceContext.fbclid),
+    eventSourceUrl: nullableText(sourceContext.eventSourceUrl),
+    whatsappUrl: nullableText(sourceContext.whatsappUrl)
+  };
+  const hasLandingSignal = Object.values(landing).some((value) => value !== null);
+  const hasMetaSignal = Object.values(meta).some((value) => value !== null);
+
+  if (landing.landingSessionId) {
+    return {
+      kind: 'landing',
+      label: 'Landing',
+      campaign: landing.utmCampaign ?? landing.utmContent ?? landing.fbclid ?? landing.eventSourceUrl,
+      meta,
+      landing
+    };
+  }
+
+  if (hasLandingSignal) {
+    return {
+      kind: 'landing_unmatched',
+      label: 'Landing sin match',
+      campaign: landing.utmCampaign ?? landing.utmContent ?? landing.fbclid ?? landing.eventSourceUrl,
+      meta,
+      landing
+    };
+  }
+
+  if (hasMetaSignal) {
+    return {
+      kind: 'meta_ctwa',
+      label: 'Meta WhatsApp',
+      campaign: meta.referralHeadline ?? meta.referralSourceId ?? meta.referralSourceUrl,
+      meta,
+      landing
+    };
+  }
+
+  return emptyAttribution();
+}
+
+function pickFirstAttributionEvent(rows: OwnerClientEventRow[]): OwnerClientEventRow | null {
+  const attributedRows = rows.filter((row) => attributionFromSourceContext(extractMetaSourceContext(row.payload)).kind !== 'unknown');
+  const candidates = attributedRows.length > 0 ? attributedRows : rows;
+  return [...candidates].sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at))[0] ?? null;
 }
 
 function pickPreferredAliasPhone(rows: OwnerAliasRow[]): string | null {
@@ -846,6 +987,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       .map((fact) => (typeof fact.link_id === 'string' && fact.link_id.length > 0 ? fact.link_id : null))
       .filter((linkId): linkId is string => Boolean(linkId));
     const linkFirstSeenById = new Map<string, string | null>();
+    const attributionByClientId = new Map<string, MastercrmClientAttribution>();
 
     if (ownerClientLinkIds.length > 0) {
       const { data: ownerClientLinksData, error: ownerClientLinksError } = await this.client
@@ -861,6 +1003,36 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       const ownerClientLinks = (ownerClientLinksData as OwnerClientLinkFirstSeenRow[] | null) ?? [];
       for (const link of ownerClientLinks) {
         linkFirstSeenById.set(link.id, link.first_seen_at ?? null);
+      }
+    }
+
+    if (dashboardClientIds.size > 0) {
+      const { data: ownerClientEventsData, error: ownerClientEventsError } = await this.client
+        .from('owner_client_events')
+        .select('client_id, event_type, payload, occurred_at')
+        .eq('owner_id', owner.id)
+        .eq('event_type', 'intake')
+        .in('client_id', [...dashboardClientIds]);
+
+      if (ownerClientEventsError) {
+        throw mapPostgrestError(ownerClientEventsError, 'Could not read owner client attribution events');
+      }
+
+      const eventsByClientId = new Map<string, OwnerClientEventRow[]>();
+      const ownerClientEvents = (ownerClientEventsData as OwnerClientEventRow[] | null) ?? [];
+      for (const event of ownerClientEvents) {
+        if (!event.client_id || !dashboardClientIds.has(event.client_id)) {
+          continue;
+        }
+
+        const events = eventsByClientId.get(event.client_id) ?? [];
+        events.push(event);
+        eventsByClientId.set(event.client_id, events);
+      }
+
+      for (const [clientId, events] of eventsByClientId.entries()) {
+        const event = pickFirstAttributionEvent(events);
+        attributionByClientId.set(clientId, attributionFromSourceContext(extractMetaSourceContext(event?.payload)));
       }
     }
 
@@ -1011,6 +1183,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       .map((fact) => {
         const client = unwrapSingleRelation(fact.clients);
         const snapshot = snapshotByClientId.get(fact.client_id);
+        const attribution = attributionByClientId.get(fact.client_id) ?? emptyAttribution();
 
         return {
           id: fact.link_id,
@@ -1018,6 +1191,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           telefono: client?.phone_e164 ?? null,
           pagina: client?.pagina ?? owner.pagina,
           estado: fact.status_at_month_end,
+          source: attribution.label === 'Sin dato' ? null : attribution.label,
+          origen: attribution.label === 'Sin dato' ? null : attribution.label,
+          Campana: attribution.campaign,
+          lastCampaign: attribution.campaign,
+          attribution,
           ownerKey: owner.owner_key,
           ownerLabel: owner.owner_label,
           firstSeenAt: linkFirstSeenById.get(fact.link_id) ?? client?.created_at ?? null,

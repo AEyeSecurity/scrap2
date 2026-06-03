@@ -694,6 +694,7 @@ describe('report run system', () => {
         reportRunStore: store,
         reportWorkerEnabled: true,
         reportWorkerPollMs: 5,
+        reportWorkerMaxPollMs: 100,
         reportWorkerConcurrency: 3,
         reportWorkerLeaseSeconds: 60,
         reportWorkerMaxAttempts: 3,
@@ -717,14 +718,14 @@ describe('report run system', () => {
     const { runId } = response.json() as { runId: string };
 
     let runStatus = 'queued';
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
       const runResponse = await server.inject({ method: 'GET', url: `/reports/asn/run/${runId}` });
       expect(runResponse.statusCode).toBe(200);
       runStatus = runResponse.json().status;
       if (runStatus === 'completed') {
         break;
       }
-      await delay(10);
+      await delay(20);
     }
 
     expect(runStatus).toBe('completed');
@@ -768,6 +769,7 @@ describe('report run system', () => {
         reportRunStore: store,
         reportWorkerEnabled: true,
         reportWorkerPollMs: 5,
+        reportWorkerMaxPollMs: 100,
         reportWorkerConcurrency: 2,
         reportWorkerLeaseSeconds: 60,
         reportWorkerMaxAttempts: 3,
@@ -802,7 +804,7 @@ describe('report run system', () => {
     }
 
     let finalStatus = 'queued';
-    for (let attempt = 0; attempt < 100; attempt += 1) {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
       const runResponse = await server.inject({ method: 'GET', url: `/reports/asn/run/${runId}` });
       finalStatus = runResponse.json().status;
       if (finalStatus === 'completed') {
@@ -812,7 +814,7 @@ describe('report run system', () => {
       if (mutableGladis?.status === 'retry_wait') {
         mutableGladis.nextRetryAt = new Date(Date.now() - 1_000).toISOString();
       }
-      await delay(10);
+      await delay(20);
     }
 
     expect(finalStatus).toBe('completed');

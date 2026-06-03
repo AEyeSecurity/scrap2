@@ -132,6 +132,33 @@ class FakeSupabaseClient {
   }
 }
 
+function expectedEmptyAttribution() {
+  return {
+    kind: 'unknown',
+    label: 'Sin dato',
+    campaign: null,
+    meta: {
+      referralSourceId: null,
+      referralSourceUrl: null,
+      referralHeadline: null,
+      referralBody: null,
+      referralSourceType: null,
+      ctwaClid: null
+    },
+    landing: {
+      landingSessionId: null,
+      utmSource: null,
+      utmMedium: null,
+      utmCampaign: null,
+      utmContent: null,
+      utmTerm: null,
+      fbclid: null,
+      eventSourceUrl: null,
+      whatsappUrl: null
+    }
+  };
+}
+
 function createPostgrestError(code: string, message: string): PostgrestError {
   return {
     code,
@@ -587,6 +614,10 @@ describe('mastercrm clients dashboard', () => {
       data: [],
       error: null
     });
+    client.queue('owner_client_events', 'select', {
+      data: [],
+      error: null
+    });
 
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
@@ -598,6 +629,11 @@ describe('mastercrm clients dashboard', () => {
         telefono: '+5493735506280',
         pagina: 'ASN',
         estado: 'pending',
+        source: null,
+        origen: null,
+        Campana: null,
+        lastCampaign: null,
+        attribution: expectedEmptyAttribution(),
         ownerKey: 'asnlucas10:vicky',
         ownerLabel: 'Vicky',
         firstSeenAt: '2026-02-14T09:30:00.000Z',
@@ -610,6 +646,173 @@ describe('mastercrm clients dashboard', () => {
         assignedDesdeBacklogMes: false
       }
     ]);
+  });
+
+  it('adds exact landing and Meta attribution from intake events to dashboard clients', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 654,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'luqui10:luqui10',
+          owner_label: 'Lucas10',
+          pagina: 'RdA'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_monthly_facts', 'select', {
+      data: [
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-landing',
+          link_id: 'link-landing',
+          month_start: '2026-03-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-landing',
+          username_at_month_end: 'landinguser',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-landing', phone_e164: '+5493511112222', pagina: 'RdA' }
+        },
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-meta',
+          link_id: 'link-meta',
+          month_start: '2026-03-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-meta',
+          username_at_month_end: 'metauser',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-meta', phone_e164: '+5493513334444', pagina: 'RdA' }
+        }
+      ],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [
+        { id: 'link-landing', first_seen_at: '2026-03-01T10:00:00.000Z' },
+        { id: 'link-meta', first_seen_at: '2026-03-02T10:00:00.000Z' }
+      ],
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [
+        {
+          client_id: 'client-landing',
+          event_type: 'intake',
+          occurred_at: '2026-03-01T10:01:00.000Z',
+          payload: {
+            LandingSessionId: 'session-landing',
+            UtmSource: 'meta',
+            UtmCampaign: 'rda_landing',
+            Fbclid: 'fbclid-landing',
+            EventSourceUrl: 'https://reydeases.imperial-support.com/landing?utm_campaign=rda_landing',
+            WhatsappUrl: 'https://wa.me/5493516346253'
+          }
+        },
+        {
+          client_id: 'client-meta',
+          event_type: 'intake',
+          occurred_at: '2026-03-02T10:01:00.000Z',
+          payload: {
+            ReferralCtwaClid: 'ctwa-123',
+            ReferralSourceId: '6967964924256',
+            ReferralSourceUrl: 'https://fb.me/4zpjtyI5v',
+            ReferralHeadline: 'ROYAL LUCK',
+            ReferralBody: 'Texto real del anuncio',
+            ReferralSourceType: 'ad'
+          }
+        }
+      ],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard({ userId: 654, month: '2026-03' });
+
+    expect(dashboard.clientes).toHaveLength(2);
+    expect(dashboard.clientes.find((item) => item.id === 'link-landing')).toMatchObject({
+      source: 'Landing',
+      origen: 'Landing',
+      Campana: 'rda_landing',
+      lastCampaign: 'rda_landing',
+      attribution: {
+        kind: 'landing',
+        label: 'Landing',
+        campaign: 'rda_landing',
+        landing: {
+          landingSessionId: 'session-landing',
+          utmSource: 'meta',
+          utmCampaign: 'rda_landing',
+          fbclid: 'fbclid-landing'
+        }
+      }
+    });
+    expect(dashboard.clientes.find((item) => item.id === 'link-meta')).toMatchObject({
+      source: 'Meta WhatsApp',
+      origen: 'Meta WhatsApp',
+      Campana: 'ROYAL LUCK',
+      lastCampaign: 'ROYAL LUCK',
+      attribution: {
+        kind: 'meta_ctwa',
+        label: 'Meta WhatsApp',
+        campaign: 'ROYAL LUCK',
+        meta: {
+          referralSourceId: '6967964924256',
+          referralSourceUrl: 'https://fb.me/4zpjtyI5v',
+          referralHeadline: 'ROYAL LUCK',
+          referralBody: 'Texto real del anuncio',
+          referralSourceType: 'ad',
+          ctwaClid: 'ctwa-123'
+        }
+      }
+    });
   });
 
   it('calculates intake to assignment rate from unique monthly leads that ended assigned', async () => {
@@ -719,6 +922,10 @@ describe('mastercrm clients dashboard', () => {
         { id: 'link-2', first_seen_at: '2026-03-02T10:00:00.000Z' },
         { id: 'link-3', first_seen_at: '2026-03-03T10:00:00.000Z' }
       ],
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [],
       error: null
     });
 

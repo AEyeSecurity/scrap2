@@ -203,6 +203,10 @@ export function buildMetaConversionsRequestBody(
   const ownerKey = typeof lease.sourcePayload.owner_key === 'string' ? lease.sourcePayload.owner_key : null;
   const ownerLabel = typeof lease.sourcePayload.owner_label === 'string' ? lease.sourcePayload.owner_label : null;
   const eventSourceUrl = sourceContext?.eventSourceUrl ?? sourceContext?.referralSourceUrl ?? null;
+  const isLandingEvent =
+    lease.eventStage === 'landing_contact' ||
+    lease.eventStage === 'landing_lead' ||
+    typeof sourceContext?.landingSessionId === 'string';
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
     external_id: [normalizeExternalId(lease.ownerId, lease.clientId)],
@@ -257,9 +261,24 @@ export function buildMetaConversionsRequestBody(
 
   const customData = Object.fromEntries(
     Object.entries({
-      event_source: lease.metaEventName === 'Contact' ? 'landing' : 'crm',
+      event_source: isLandingEvent || lease.metaEventName === 'Contact' ? 'landing' : 'crm',
       ...(resolvedEventName === 'Lead' || resolvedEventName === 'LeadSubmitted'
-        ? { lead_event_source: 'scrap2' }
+        ? { lead_event_source: isLandingEvent ? 'landing_whatsapp' : 'scrap2' }
+        : {}),
+      ...(isLandingEvent && lease.metaEventName !== 'Contact'
+        ? {
+            landing_session_id: sourceContext?.landingSessionId ?? null,
+            landing_variant: sourceContext?.landingVariant ?? null,
+            cta_type: sourceContext?.ctaType ?? null,
+            fbclid: sourceContext?.fbclid ?? null,
+            referrer: sourceContext?.referrer ?? null,
+            utm_source: sourceContext?.utmSource ?? null,
+            utm_medium: sourceContext?.utmMedium ?? null,
+            utm_campaign: sourceContext?.utmCampaign ?? null,
+            utm_content: sourceContext?.utmContent ?? null,
+            utm_term: sourceContext?.utmTerm ?? null,
+            whatsapp_url: sourceContext?.whatsappUrl ?? null
+          }
         : {}),
       ...(lease.metaEventName === 'Contact'
         ? {
@@ -393,5 +412,22 @@ export class MetaConversionsHttpDispatcher implements MetaConversionsDispatcher 
       responseBody: parsedBody,
       fbtraceId
     };
+  }
+}
+
+export class MetaConversionsRoutingDispatcher implements MetaConversionsDispatcher {
+  constructor(
+    private readonly defaultDispatcher: MetaConversionsDispatcher,
+    private readonly landingDispatcher: MetaConversionsDispatcher
+  ) {}
+
+  async dispatch(lease: MetaConversionLease): Promise<MetaDispatchResult> {
+    const sourceContext = extractMetaSourceContext(lease.sourcePayload);
+    const isLandingLease =
+      lease.eventStage === 'landing_contact' ||
+      lease.eventStage === 'landing_lead' ||
+      typeof sourceContext?.landingSessionId === 'string';
+
+    return isLandingLease ? this.landingDispatcher.dispatch(lease) : this.defaultDispatcher.dispatch(lease);
   }
 }

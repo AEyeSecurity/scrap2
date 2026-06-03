@@ -10,7 +10,7 @@ interface DatabaseErrorLike {
   message: string;
 }
 
-export type MetaConversionStage = 'lead' | 'qualified_lead' | 'value_signal' | 'landing_contact';
+export type MetaConversionStage = 'lead' | 'landing_lead' | 'qualified_lead' | 'value_signal' | 'landing_contact';
 export type MetaConversionStatus =
   | 'pending'
   | 'leased'
@@ -70,6 +70,7 @@ export interface MetaValueSignalScanOptions {
 
 export interface MetaConversionsStore {
   enqueueLead(input: EnqueueMetaLeadInput): Promise<void>;
+  enqueueLandingLead(input: EnqueueMetaLeadInput): Promise<void>;
   scanForValueSignals(limit: number, options?: MetaValueSignalScanOptions): Promise<number>;
   leaseNextEvent(leaseSeconds: number, maxAttempts: number): Promise<MetaConversionLease | null>;
   markSent(input: MetaDispatchPersistenceInput): Promise<void>;
@@ -134,8 +135,15 @@ function buildLeadAttributionKey(sourceContext: MetaSourceContext | null): strin
   return clid && clid.length > 0 ? clid : null;
 }
 
+function buildLandingAttributionKey(sourceContext: MetaSourceContext | null): string | null {
+  const landingSessionId = sourceContext?.landingSessionId?.trim().toLowerCase();
+  return landingSessionId && landingSessionId.length > 0 ? `landing:${landingSessionId}` : null;
+}
+
 function buildStableEventId(stage: MetaConversionStage, ownerId: string, clientId: string, attributionKey?: string | null): string {
-  const parts = stage === 'lead' ? [ownerId, clientId, attributionKey ?? ''] : [ownerId, clientId];
+  const parts = stage === 'lead' || stage === 'landing_lead'
+    ? [ownerId, clientId, attributionKey ?? '']
+    : [ownerId, clientId];
   return `${stage}:${sha256hex(parts.join(':').toLowerCase())}`;
 }
 
@@ -227,6 +235,54 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
         return;
       }
       throw mapPostgrestError(error, 'Could not enqueue Meta lead conversion');
+    }
+  }
+
+  async enqueueLandingLead(input: EnqueueMetaLeadInput): Promise<void> {
+    const ownerId = normalizeUuid(input.ownerId, 'ownerId');
+    const clientId = normalizeUuid(input.clientId, 'clientId');
+    const phoneE164 = input.phoneE164.trim();
+    if (!phoneE164) {
+      throw new MetaConversionsStoreError('VALIDATION', 'phoneE164 is required');
+    }
+
+    const normalizedSource = normalizeMetaSourceContext(input.sourceContext);
+    if (!normalizedSource) {
+      throw new MetaConversionsStoreError('VALIDATION', 'sourceContext is required');
+    }
+
+    const attributionKey = buildLandingAttributionKey(normalizedSource);
+    if (!attributionKey) {
+      throw new MetaConversionsStoreError('VALIDATION', 'landingSessionId is required for landing Meta leads');
+    }
+
+    const eventTime = normalizeEventTime(input.eventTime ?? normalizedSource.receivedAt ?? undefined);
+    const { error } = await this.client.from('meta_conversion_outbox').insert(
+      {
+        owner_id: ownerId,
+        client_id: clientId,
+        event_stage: 'landing_lead',
+        meta_event_name: 'Lead',
+        event_id: buildStableEventId('landing_lead', ownerId, clientId, attributionKey),
+        attribution_key: attributionKey,
+        status: 'pending',
+        event_time: eventTime,
+        phone_e164: phoneE164,
+        username: null,
+        qualification_reason: 'landing_whatsapp_intake',
+        qualified_at: eventTime,
+        source_payload: buildStoredMetaSourcePayload({
+          ownerContext: input.ownerContext,
+          sourceContext: normalizedSource
+        })
+      }
+    );
+
+    if (error) {
+      if (error.code === '23505') {
+        return;
+      }
+      throw mapPostgrestError(error, 'Could not enqueue Meta landing lead conversion');
     }
   }
 

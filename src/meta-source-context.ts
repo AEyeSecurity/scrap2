@@ -115,6 +115,11 @@ export function isAttributableMetaSourceContext(input: MetaSourceContext | null 
   return normalized.referralSourceType?.toLowerCase() === 'ad' && typeof normalized.ctwaClid === 'string';
 }
 
+export function isLandingMetaSourceContext(input: MetaSourceContext | null | undefined): boolean {
+  const normalized = normalizeMetaSourceContext(input);
+  return typeof normalized?.landingSessionId === 'string' && normalized.landingSessionId.length > 0;
+}
+
 export function buildStoredMetaSourcePayload(input: {
   ownerContext?: Pick<OwnerContext, 'ownerKey' | 'ownerLabel'> | null;
   sourceContext?: MetaSourceContext | null;

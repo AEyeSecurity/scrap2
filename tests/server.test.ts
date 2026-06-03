@@ -9,6 +9,7 @@ import {
   type MastercrmUserCashierLinkRecord,
   type MastercrmUserStore
 } from '../src/mastercrm-user-store';
+import { normalizeLandingMessageKey, type LandingSessionRecord, type LandingSessionStore } from '../src/landing-session-store';
 import type { MetaConversionsDispatcher, MetaDispatchResult } from '../src/meta-conversions';
 import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conversions-store';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
@@ -308,8 +309,73 @@ class FakePlayerPhoneStore implements PlayerPhoneStore {
   }
 }
 
+class FakeLandingSessionStore implements LandingSessionStore {
+  public readonly createInputs: Parameters<LandingSessionStore['createSession']>[0][] = [];
+  public readonly claimInputs: Parameters<LandingSessionStore['claimPendingSession']>[0][] = [];
+  public readonly sessions: LandingSessionRecord[] = [];
+
+  async createSession(input: Parameters<LandingSessionStore['createSession']>[0]): Promise<LandingSessionRecord> {
+    this.createInputs.push(input);
+    const row: LandingSessionRecord = {
+      id: `landing-session-${this.sessions.length + 1}`,
+      landingSessionId: input.landingSessionId,
+      contactEventId: input.contactEventId,
+      messageText: input.messageText,
+      messageKey: input.messageKey,
+      status: 'pending',
+      pagina: input.pagina,
+      ownerKey: input.ownerContext.ownerKey,
+      ownerLabel: input.ownerContext.ownerLabel,
+      botPhoneE164: input.botPhoneE164,
+      cashierPhoneE164: input.cashierPhoneE164,
+      fbp: input.fbp ?? null,
+      fbc: input.fbc ?? null,
+      fbclid: input.fbclid ?? null,
+      eventSourceUrl: input.eventSourceUrl ?? null,
+      referrer: input.referrer ?? null,
+      utmSource: input.utmSource ?? null,
+      utmMedium: input.utmMedium ?? null,
+      utmCampaign: input.utmCampaign ?? null,
+      utmContent: input.utmContent ?? null,
+      utmTerm: input.utmTerm ?? null,
+      clientIpAddress: input.clientIpAddress ?? null,
+      clientUserAgent: input.clientUserAgent ?? null,
+      whatsappUrl: input.whatsappUrl,
+      createdAt: '2026-06-03T15:00:00.000Z',
+      claimedAt: null,
+      claimedPhoneE164: null,
+      claimedMessageSid: null
+    };
+    this.sessions.push(row);
+    return row;
+  }
+
+  async claimPendingSession(input: Parameters<LandingSessionStore['claimPendingSession']>[0]): Promise<LandingSessionRecord | null> {
+    this.claimInputs.push(input);
+    const messageKey = normalizeLandingMessageKey(input.messageText);
+    const session = this.sessions.find((item) => item.status === 'pending' && item.messageKey === messageKey);
+    if (!session) {
+      return null;
+    }
+
+    session.status = 'claimed';
+    session.claimedAt = input.claimedAt ?? '2026-06-03T15:01:00.000Z';
+    session.claimedPhoneE164 = input.phoneE164;
+    session.claimedMessageSid = input.messageSid ?? null;
+    return session;
+  }
+}
+
 class FakeMetaConversionsStore implements MetaConversionsStore {
   public readonly leadInputs: Array<{
+    ownerId: string;
+    clientId: string;
+    phoneE164: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext: Record<string, unknown>;
+    eventTime?: string;
+  }> = [];
+  public readonly landingLeadInputs: Array<{
     ownerId: string;
     clientId: string;
     phoneE164: string;
@@ -327,6 +393,17 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     eventTime?: string;
   }): Promise<void> {
     this.leadInputs.push(input);
+  }
+
+  async enqueueLandingLead(input: {
+    ownerId: string;
+    clientId: string;
+    phoneE164: string;
+    ownerContext: { ownerKey: string; ownerLabel: string };
+    sourceContext: Record<string, unknown>;
+    eventTime?: string;
+  }): Promise<void> {
+    this.landingLeadInputs.push(input);
   }
 
   async scanForValueSignals(_limit: number): Promise<number> {
@@ -1794,13 +1871,14 @@ describe('server routes', () => {
         expect(response.headers['content-type']).toContain('text/html');
         expect(response.body).toContain('Rey de Ases');
         expect(response.body).toContain('Quiero mi bono');
-        expect(response.body).toContain('18+');
+        expect(response.body).toContain('18<sup>+</sup>');
         expect(response.body).toContain('Juego responsable');
         expect(response.body).toContain('/landing/privacidad');
         expect(response.body).toContain('/landing/terminos');
         expect(response.body).toContain('"pixelId":"1234567890"');
+        expect(response.body).toContain('"whatsappPhone":"5493516346253"');
         expect(response.body).toContain(
-          'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases'
+          'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
         );
 
         await server.close();
@@ -1852,6 +1930,7 @@ describe('server routes', () => {
         const queue = new FakeQueue();
         const dispatcher = new FakeLandingMetaConversionsDispatcher();
         const playerPhoneStore = new FakePlayerPhoneStore();
+        const landingSessionStore = new FakeLandingSessionStore();
         const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
         const logger = createLogger('silent', false);
         const server = createServer(
@@ -1861,6 +1940,7 @@ describe('server routes', () => {
           queue,
           {
             playerPhoneStore,
+            landingSessionStore,
             metaEnabled: true,
             reportWorkerEnabled: false,
             metaWorkerEnabled: false,
@@ -1896,11 +1976,23 @@ describe('server routes', () => {
           tracked: true,
           trackingStatus: 'sent',
           eventId: 'contact:test',
-          whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases',
+          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+          whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
+          attributionStatus: 'persisted',
           ownerContext: {
             ownerKey: 'luqui10:luqui10',
             ownerLabel: 'Lucas10'
           }
+        });
+        expect(landingSessionStore.createInputs).toHaveLength(1);
+        expect(landingSessionStore.createInputs[0]).toMatchObject({
+          landingSessionId: 'session_123',
+          contactEventId: 'contact:test',
+          messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
+          messageKey: 'hola quiero mi usuario suertudo del rey dorado',
+          pagina: 'RdA',
+          botPhoneE164: '+5493516346253',
+          cashierPhoneE164: '+5493516549344'
         });
         expect(playerPhoneStore.intakeInputs).toEqual([]);
         expect(dispatcher.leases).toHaveLength(1);
@@ -1926,6 +2018,7 @@ describe('server routes', () => {
             UtmSource: 'meta',
             UtmMedium: 'paid_social',
             UtmCampaign: 'mayo_rda',
+            WhatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             ClientIpAddress: '181.45.10.22',
             ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
           }
@@ -1969,9 +2062,11 @@ describe('server routes', () => {
       expect(response.json()).toMatchObject({
         status: 'ok',
         tracked: false,
-        trackingStatus: 'disabled',
-        whatsappUrl: 'https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases'
-      });
+          trackingStatus: 'disabled',
+          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+          whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
+          attributionStatus: 'incomplete'
+        });
 
       await server.close();
     });
@@ -2356,6 +2451,142 @@ describe('server routes', () => {
         eventTime: '2026-04-07T13:00:00.000Z'
       }
     ]);
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake claims a landing session and enqueues a website landing Lead', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const landingSessionStore = new FakeLandingSessionStore();
+    const metaStore = new FakeMetaConversionsStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore,
+        landingSessionStore,
+        metaConversionsStore: metaStore,
+        metaEnabled: true,
+        metaWorkerEnabled: false
+      }
+    );
+
+    const contact = await server.inject({
+      method: 'POST',
+      url: '/landing/contact',
+      headers: {
+        'user-agent': 'Mozilla/5.0 MetaInAppBrowser',
+        'x-forwarded-for': '181.45.10.22'
+      },
+      payload: {
+        eventId: 'contact:landing-lead',
+        landingSessionId: 'session_landing_lead',
+        fbp: 'fb.1.1710000000000.111',
+        fbc: 'fb.1.1710000000000.fbclid-123',
+        fbclid: 'fbclid-123',
+        eventSourceUrl: 'https://reydeases.imperial-support.com/landing?fbclid=fbclid-123&utm_source=meta',
+        utmSource: 'meta',
+        utmMedium: 'paid_social',
+        utmCampaign: 'rda_landing'
+      }
+    });
+    const contactBody = contact.json();
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'RdA',
+        body: {
+          WaId: '5493511112222',
+          From: 'whatsapp:+5493511112222',
+          Body: contactBody.whatsappMessage,
+          ProfileName: 'Cliente Landing',
+          MessageSid: 'SM-LANDING',
+          AccountSid: 'AC-LANDING',
+          ReceivedAt: '2026-06-03T18:00:00.000Z'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'ok',
+      pagina: 'RdA',
+      telefono: '+5493511112222',
+      landingSessionId: 'session_landing_lead',
+      ownerContext: {
+        ownerKey: 'luqui10:luqui10',
+        ownerLabel: 'Lucas10',
+        actorAlias: 'Lucas10',
+        actorPhone: '+5493516549344'
+      }
+    });
+    expect(landingSessionStore.claimInputs).toEqual([
+      {
+        messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
+        phoneE164: '+5493511112222',
+        messageSid: 'SM-LANDING',
+        claimedAt: '2026-06-03T18:00:00.000Z'
+      }
+    ]);
+    expect(playerPhoneStore.intakeInputs).toHaveLength(1);
+    expect(playerPhoneStore.intakeInputs[0]).toMatchObject({
+      pagina: 'RdA',
+      telefono: '+5493511112222',
+      ownerContext: {
+        ownerKey: 'luqui10:luqui10',
+        ownerLabel: 'Lucas10',
+        actorAlias: 'Lucas10',
+        actorPhone: '+5493516549344'
+      },
+      sourceContext: {
+        fbp: 'fb.1.1710000000000.111',
+        fbc: 'fb.1.1710000000000.fbclid-123',
+        fbclid: 'fbclid-123',
+        eventSourceUrl: 'https://reydeases.imperial-support.com/landing?fbclid=fbclid-123&utm_source=meta',
+        landingSessionId: 'session_landing_lead',
+        landingVariant: 'rda-luqui10-v1',
+        ctaType: 'whatsapp_click',
+        utmSource: 'meta',
+        utmMedium: 'paid_social',
+        utmCampaign: 'rda_landing',
+        whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        waId: '5493511112222',
+        messageSid: 'SM-LANDING',
+        accountSid: 'AC-LANDING',
+        profileName: 'Cliente Landing',
+        clientIpAddress: '181.45.10.22',
+        clientUserAgent: 'Mozilla/5.0 MetaInAppBrowser',
+        receivedAt: '2026-06-03T18:00:00.000Z'
+      }
+    });
+    expect(metaStore.leadInputs).toEqual([]);
+    expect(metaStore.landingLeadInputs).toHaveLength(1);
+    expect(metaStore.landingLeadInputs[0]).toMatchObject({
+      ownerId: 'owner-1',
+      clientId: 'client-1',
+      phoneE164: '+5493511112222',
+      ownerContext: {
+        ownerKey: 'luqui10:luqui10',
+        ownerLabel: 'Lucas10',
+        actorAlias: 'Lucas10',
+        actorPhone: '+5493516549344'
+      },
+      sourceContext: {
+        landingSessionId: 'session_landing_lead',
+        fbp: 'fb.1.1710000000000.111',
+        fbc: 'fb.1.1710000000000.fbclid-123',
+        clientIpAddress: '181.45.10.22',
+        clientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
+      },
+      eventTime: '2026-06-03T18:00:00.000Z'
+    });
 
     await server.close();
   });

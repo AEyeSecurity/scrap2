@@ -106,7 +106,7 @@
       "track",
       "Contact",
       {
-        content_name: "Rey de Ases WhatsApp CTA",
+        content_name: "Rey Dorado WhatsApp CTA",
         destination: "whatsapp",
         landing_variant: config.landingVariant || "rda-luqui10-v1"
       },
@@ -120,7 +120,7 @@
 
   async function postContact(payload) {
     if (!config.contactEndpoint) {
-      return;
+      return null;
     }
 
     const request = fetch(config.contactEndpoint, {
@@ -131,14 +131,18 @@
       body: JSON.stringify(payload),
       credentials: "same-origin",
       keepalive: true
-    }).catch(() => undefined);
+    })
+      .then((response) => (response && response.ok ? response.json().catch(() => null) : null))
+      .catch(() => null);
 
-    await Promise.race([request, timeout(TRACKING_TIMEOUT_MS)]);
+    return Promise.race([request, timeout(TRACKING_TIMEOUT_MS).then(() => null)]);
   }
 
-  function redirectToWhatsapp() {
+  function redirectToWhatsapp(whatsappUrl) {
     window.location.href =
-      config.whatsappUrl || "https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases";
+      whatsappUrl ||
+      config.whatsappUrl ||
+      "https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado";
   }
 
   function bindCta() {
@@ -159,11 +163,8 @@
       const payload = buildContactPayload(eventId);
       trackPixelContact(eventId);
 
-      try {
-        await postContact(payload);
-      } finally {
-        redirectToWhatsapp();
-      }
+      const result = await postContact(payload);
+      redirectToWhatsapp(result && typeof result.whatsappUrl === "string" ? result.whatsappUrl : null);
     });
   }
 

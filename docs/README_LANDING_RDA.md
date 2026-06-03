@@ -5,9 +5,9 @@ Landing mobile-first servida desde el backend Fastify en `GET /landing`.
 ## Objetivo
 
 - Mostrar una landing de Rey de Ases para RdA.
-- Enviar al usuario a WhatsApp de `luqui10:luqui10`.
+- Enviar al usuario al bot WhatsApp RdA/n8n `+5493516346253`.
 - Medir el click con Meta Pixel y Meta CAPI como evento `Contact`.
-- No crear clientes, leads ni links CRM desde el click de landing.
+- No crear clientes, leads ni links CRM desde el click de landing; el `Lead` se crea cuando entra el primer WhatsApp real y queda asociado a `luqui10:luqui10`.
 
 ## URLs
 
@@ -19,7 +19,7 @@ Landing mobile-first servida desde el backend Fastify en `GET /landing`.
 CTA final:
 
 ```text
-https://wa.me/5493516549344?text=Hola%20quiero%20mi%20usuario%20en%20Rey%20de%20Ases
+https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado
 ```
 
 ## Archivos front
@@ -124,8 +124,8 @@ Backend CAPI:
 - `user_data`: `fbp`, `fbc`, `client_ip_address`, `client_user_agent`.
 - `custom_data`: owner, variante, CTA, fbclid, referrer, UTMs y WhatsApp URL.
 
-No se manda telefono del jugador porque todavia no existe antes de WhatsApp.
-El `Lead` real sigue entrando por `/whatsapp/intake`.
+No se manda telefono del jugador en el click porque todavia no existe antes de WhatsApp.
+El `Lead` real entra por `/whatsapp/intake` cuando n8n recibe el primer mensaje y matchea la frase natural de landing.
 
 ## Owner destino
 
@@ -133,7 +133,8 @@ El `Lead` real sigue entrando por `/whatsapp/intake`.
 owner_key: luqui10:luqui10
 owner_label: Lucas10
 pagina: RdA
-telefono: +5493516549344
+bot_entrada: +5493516346253
+cajero_final: +5493516549344
 ```
 
 ## Desarrollo local
@@ -279,7 +280,7 @@ Resultado:
 - Tests focales landing/CAPI/server: OK.
 - QA visual mobile `390x844`: OK.
 - QA visual mobile chico `360x640`: OK.
-- CTA final verificado contra `wa.me/5493516549344`.
+- CTA final verificado contra `wa.me/5493516346253`.
 - Deploy Docker productivo: OK.
 - `GET https://reydeases.imperial-support.com/landing`: OK.
 - Assets/legales productivos en `reydeases.imperial-support.com`: OK.
