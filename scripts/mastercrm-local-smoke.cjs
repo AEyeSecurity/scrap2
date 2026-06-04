@@ -2,8 +2,8 @@ const { spawn } = require('child_process');
 const { createClient } = require('@supabase/supabase-js');
 const { chromium } = require('playwright');
 
-const backendCwd = 'C:/Guiga/CIT/Master CRM RL/scrap2';
-const frontendCwd = 'C:/Guiga/CIT/Master CRM RL/mastercrmrl/client-admin-portal';
+const backendCwd = 'C:/ServerCIT/services/megascrap';
+const frontendCwd = 'C:/ServerCIT/services/mastercrmrl/client-admin-portal';
 const backendUrl = process.env.MASTERCRM_BACKEND_URL || 'http://127.0.0.1:3000';
 const frontendUrl = process.env.MASTERCRM_FRONTEND_URL || 'http://127.0.0.1:5173';
 const staffPassword = process.env.MASTERCRM_STAFF_LINK_PASSWORD;

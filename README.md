@@ -4,7 +4,7 @@ ScrapSinoca es un servicio Node.js + Playwright orientado a automatizar operacio
 
 Guia operativa para retomar este repo sin contexto:
 
-- [OPERATIONS.md](C:/Guiga/CIT/Master%20CRM%20RL/scrap2/OPERATIONS.md)
+- [OPERATIONS.md](./OPERATIONS.md)
 
 Hoy el proyecto cubre dos frentes:
 

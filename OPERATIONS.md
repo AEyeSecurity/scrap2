@@ -19,7 +19,7 @@ Branch principal usada en esta etapa:
 Verificar antes de trabajar:
 
 ```powershell
-cd "C:\Guiga\CIT\Master CRM RL\scrap2"
+cd "C:\ServerCIT\services\megascrap"
 git branch --show-current
 git remote -v
 git status --short
@@ -127,7 +127,7 @@ Prechecks cerrados del script antes de recrear `scrap2-api`:
 ## Levantar local
 
 ```powershell
-cd "C:\Guiga\CIT\Master CRM RL\scrap2"
+cd "C:\ServerCIT\services\megascrap"
 $env:SUPABASE_URL="..."
 $env:SUPABASE_SERVICE_ROLE_KEY="..."
 $env:MASTERCRM_STAFF_LINK_PASSWORD="..."
