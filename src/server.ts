@@ -161,7 +161,6 @@ interface LandingPublicConfig {
   contactEndpoint: string;
   whatsappUrl: string;
   whatsappPhone: string;
-  cashierPhone: string;
   whatsappMessage: string;
   landingVariant: string;
   ownerKey: string;
@@ -735,7 +734,6 @@ function buildLandingPublicConfig(env: NodeJS.ProcessEnv = process.env): Landing
     contactEndpoint: '/landing/contact',
     whatsappUrl: LANDING_WHATSAPP_URL,
     whatsappPhone: LANDING_BOT_WHATSAPP_PHONE,
-    cashierPhone: LANDING_CASHIER_WHATSAPP_PHONE,
     whatsappMessage: LANDING_WHATSAPP_MESSAGE,
     landingVariant: LANDING_VARIANT,
     ownerKey: LANDING_OWNER_CONTEXT.ownerKey,

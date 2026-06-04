@@ -1841,7 +1841,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('GET /landing renders the Rey de Ases landing with CTA, legal badges and Pixel config', async () => {
+  it('GET /landing renders the Rey Dorado landing with CTA, legal badges and Pixel config', async () => {
     await withEnv(
       {
         LANDING_ENABLED: 'true',
@@ -1869,7 +1869,7 @@ describe('server routes', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.headers['content-type']).toContain('text/html');
-        expect(response.body).toContain('Rey de Ases');
+        expect(response.body).toContain('Rey Dorado');
         expect(response.body).toContain('Quiero mi bono');
         expect(response.body).toContain('18<sup>+</sup>');
         expect(response.body).toContain('Juego responsable');
@@ -1877,6 +1877,8 @@ describe('server routes', () => {
         expect(response.body).toContain('/landing/terminos');
         expect(response.body).toContain('"pixelId":"1234567890"');
         expect(response.body).toContain('"whatsappPhone":"5493516346253"');
+        expect(response.body).not.toContain('"cashierPhone"');
+        expect(response.body).not.toContain('5493516549344');
         expect(response.body).toContain(
           'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
         );
