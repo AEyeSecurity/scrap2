@@ -134,7 +134,8 @@ interface ValidationIssue {
 }
 
 const LANDING_PUBLIC_DIR = join(process.cwd(), 'public', 'landing');
-const LANDING_BOT_WHATSAPP_PHONE = '5493516346253';
+const LANDING_BOT_WHATSAPP_PHONES = ['5493515747477', '5491124872583'] as const;
+const LANDING_BOT_WHATSAPP_PHONE = LANDING_BOT_WHATSAPP_PHONES[0];
 const LANDING_CASHIER_WHATSAPP_PHONE = '5493516549344';
 const LANDING_WHATSAPP_MESSAGE = 'Hola quiero mi usuario suertudo del Rey Dorado';
 const LANDING_WHATSAPP_URL = `https://wa.me/${LANDING_BOT_WHATSAPP_PHONE}?text=${encodeURIComponent(
@@ -171,6 +172,7 @@ interface LandingPublicConfig {
   contactEndpoint: string;
   whatsappUrl: string;
   whatsappPhone: string;
+  whatsappPhones: string[];
   whatsappMessage: string;
   landingVariant: string;
   ownerKey: string;
@@ -255,9 +257,13 @@ const sourceContextSchema = z.object({
   ctaType: z.string().trim().min(1).nullable().optional(),
   utmSource: z.string().trim().min(1).nullable().optional(),
   utmMedium: z.string().trim().min(1).nullable().optional(),
+  utmId: z.string().trim().min(1).nullable().optional(),
   utmCampaign: z.string().trim().min(1).nullable().optional(),
   utmContent: z.string().trim().min(1).nullable().optional(),
   utmTerm: z.string().trim().min(1).nullable().optional(),
+  adsetId: z.string().trim().min(1).nullable().optional(),
+  adId: z.string().trim().min(1).nullable().optional(),
+  placement: z.string().trim().min(1).nullable().optional(),
   consentMarketing: z.boolean().nullable().optional(),
   consentTimestamp: z.string().trim().min(1).nullable().optional(),
   whatsappUrl: z.string().trim().min(1).nullable().optional(),
@@ -350,9 +356,13 @@ const landingContactBodySchema = z
     referrer: z.string().trim().min(1).nullable().optional(),
     utmSource: z.string().trim().min(1).nullable().optional(),
     utmMedium: z.string().trim().min(1).nullable().optional(),
+    utmId: z.string().trim().min(1).nullable().optional(),
     utmCampaign: z.string().trim().min(1).nullable().optional(),
     utmContent: z.string().trim().min(1).nullable().optional(),
     utmTerm: z.string().trim().min(1).nullable().optional(),
+    adsetId: z.string().trim().min(1).nullable().optional(),
+    adId: z.string().trim().min(1).nullable().optional(),
+    placement: z.string().trim().min(1).nullable().optional(),
     consentMarketing: z.boolean().nullable().optional(),
     consentTimestamp: z.string().trim().min(1).nullable().optional(),
     whatsappUrl: z.string().trim().min(1).nullable().optional()
@@ -697,6 +707,19 @@ function computeLandingDescriptorIndex(seed: string, attempt: number): number {
   return 1 + (hash % Math.max(1, LANDING_DESCRIPTOR_ATTEMPTS - 1));
 }
 
+function computeLandingBotPhoneIndex(seed: string): number {
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
+  }
+
+  return hash % LANDING_BOT_WHATSAPP_PHONES.length;
+}
+
+function resolveLandingBotWhatsappPhone(landingSessionId: string): string {
+  return LANDING_BOT_WHATSAPP_PHONES[computeLandingBotPhoneIndex(landingSessionId)];
+}
+
 function buildLandingDescriptor(index: number): string {
   if (index === 0) {
     return LANDING_PRIMARY_DESCRIPTOR;
@@ -718,8 +741,8 @@ function buildLandingWhatsappMessage(landingSessionId: string, attempt: number):
   return `Hola quiero mi usuario suertudo del ${descriptor}`;
 }
 
-function buildLandingWhatsappUrl(message: string): string {
-  return `https://wa.me/${LANDING_BOT_WHATSAPP_PHONE}?text=${encodeURIComponent(message)}`;
+function buildLandingWhatsappUrl(phone: string, message: string): string {
+  return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
 }
 
 function resolveLandingAllowedOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -745,6 +768,7 @@ function buildLandingPublicConfig(env: NodeJS.ProcessEnv = process.env): Landing
     contactEndpoint: '/landing/contact',
     whatsappUrl: LANDING_WHATSAPP_URL,
     whatsappPhone: LANDING_BOT_WHATSAPP_PHONE,
+    whatsappPhones: [...LANDING_BOT_WHATSAPP_PHONES],
     whatsappMessage: LANDING_WHATSAPP_MESSAGE,
     landingVariant: LANDING_VARIANT,
     ownerKey: LANDING_OWNER_CONTEXT.ownerKey,
@@ -1249,6 +1273,7 @@ export function createServer(
       return null;
     }
 
+    const botPhone = resolveLandingBotWhatsappPhone(input.payload.landingSessionId);
     for (let attempt = 0; attempt < LANDING_DESCRIPTOR_ATTEMPTS; attempt += 1) {
       const messageText = buildLandingWhatsappMessage(input.payload.landingSessionId, attempt);
       const messageKey = normalizeLandingMessageKey(messageText);
@@ -1264,7 +1289,7 @@ export function createServer(
           messageKey,
           pagina: 'RdA',
           ownerContext: LANDING_OWNER_CONTEXT,
-          botPhoneE164: `+${LANDING_BOT_WHATSAPP_PHONE}`,
+          botPhoneE164: `+${botPhone}`,
           cashierPhoneE164: `+${LANDING_CASHIER_WHATSAPP_PHONE}`,
           fbp: input.payload.fbp ?? null,
           fbc: input.payload.fbc ?? null,
@@ -1273,12 +1298,16 @@ export function createServer(
           referrer: input.payload.referrer ?? null,
           utmSource: input.payload.utmSource ?? null,
           utmMedium: input.payload.utmMedium ?? null,
+          utmId: input.payload.utmId ?? null,
           utmCampaign: input.payload.utmCampaign ?? null,
           utmContent: input.payload.utmContent ?? null,
           utmTerm: input.payload.utmTerm ?? null,
+          adsetId: input.payload.adsetId ?? null,
+          adId: input.payload.adId ?? null,
+          placement: input.payload.placement ?? null,
           clientIpAddress: input.clientIpAddress,
           clientUserAgent: input.clientUserAgent,
-          whatsappUrl: buildLandingWhatsappUrl(messageText)
+          whatsappUrl: buildLandingWhatsappUrl(botPhone, messageText)
         });
       } catch (error) {
         if (error instanceof LandingSessionStoreError && error.code === 'CONFLICT') {
@@ -1309,9 +1338,13 @@ export function createServer(
       ctaType: 'whatsapp_click',
       utmSource: landingSourceContext.utmSource ?? whatsappSourceContext?.utmSource ?? null,
       utmMedium: landingSourceContext.utmMedium ?? whatsappSourceContext?.utmMedium ?? null,
+      utmId: landingSourceContext.utmId ?? whatsappSourceContext?.utmId ?? null,
       utmCampaign: landingSourceContext.utmCampaign ?? whatsappSourceContext?.utmCampaign ?? null,
       utmContent: landingSourceContext.utmContent ?? whatsappSourceContext?.utmContent ?? null,
       utmTerm: landingSourceContext.utmTerm ?? whatsappSourceContext?.utmTerm ?? null,
+      adsetId: landingSourceContext.adsetId ?? whatsappSourceContext?.adsetId ?? null,
+      adId: landingSourceContext.adId ?? whatsappSourceContext?.adId ?? null,
+      placement: landingSourceContext.placement ?? whatsappSourceContext?.placement ?? null,
       whatsappUrl: landingSession.whatsappUrl,
       clientIpAddress: landingSourceContext.clientIpAddress ?? whatsappSourceContext?.clientIpAddress ?? null,
       clientUserAgent: landingSourceContext.clientUserAgent ?? whatsappSourceContext?.clientUserAgent ?? null
@@ -1576,6 +1609,9 @@ export function createServer(
     const clientUserAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader ?? null;
     const referrerHeader = request.headers.referer;
     const referrer = payload.referrer ?? (Array.isArray(referrerHeader) ? referrerHeader[0] : referrerHeader) ?? null;
+    const fallbackBotPhone = resolveLandingBotWhatsappPhone(payload.landingSessionId);
+    const fallbackWhatsappUrl =
+      payload.whatsappUrl ?? buildLandingWhatsappUrl(fallbackBotPhone, LANDING_WHATSAPP_MESSAGE);
     let landingSession: LandingSessionRecord | null = null;
     let attributionError: string | null = null;
     try {
@@ -1595,7 +1631,7 @@ export function createServer(
         'Landing session persistence failed; returning marked WhatsApp redirect'
       );
     }
-    const whatsappUrl = landingSession?.whatsappUrl ?? LANDING_WHATSAPP_URL;
+    const whatsappUrl = landingSession?.whatsappUrl ?? fallbackWhatsappUrl;
     const whatsappMessage = landingSession?.messageText ?? LANDING_WHATSAPP_MESSAGE;
     const sourceContext: MetaSourceContext = {
       fbp: payload.fbp ?? null,
@@ -1608,9 +1644,13 @@ export function createServer(
       ctaType: 'whatsapp_click',
       utmSource: payload.utmSource ?? null,
       utmMedium: payload.utmMedium ?? null,
+      utmId: payload.utmId ?? null,
       utmCampaign: payload.utmCampaign ?? null,
       utmContent: payload.utmContent ?? null,
       utmTerm: payload.utmTerm ?? null,
+      adsetId: payload.adsetId ?? null,
+      adId: payload.adId ?? null,
+      placement: payload.placement ?? null,
       consentMarketing: payload.consentMarketing ?? null,
       consentTimestamp: payload.consentTimestamp ?? null,
       whatsappUrl,
@@ -2131,18 +2171,21 @@ export function createServer(
       const sourceContext = landingSession
         ? mergeLandingSourceContext(landingSession, whatsappSourceContext)
         : whatsappSourceContext;
-      const ownerContext = landingSession
+      const landingOwnerContext = landingSession
         ? {
             ownerKey: landingSession.ownerKey,
             ownerLabel: landingSession.ownerLabel,
             actorAlias: landingSession.ownerLabel,
             actorPhone: landingSession.cashierPhoneE164
           }
-        : payload.ownerContext ??
-          (await getPlayerPhoneStore().resolveOwnerContextByPhone({
-            pagina,
-            telefono
-          }));
+        : null;
+      const ownerContext =
+        payload.ownerContext ??
+        landingOwnerContext ??
+        (await getPlayerPhoneStore().resolveOwnerContextByPhone({
+          pagina,
+          telefono
+        }));
 
       if (!ownerContext) {
         return reply.code(400).send({

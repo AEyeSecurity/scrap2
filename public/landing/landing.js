@@ -1,6 +1,9 @@
 (function () {
   const config = window.__RDA_LANDING_CONFIG__ || {};
   const TRACKING_TIMEOUT_MS = 900;
+  const FBP_POLL_INTERVAL_MS = 100;
+  const FBP_POLL_TIMEOUT_MS = 5000;
+  let cachedFbp = null;
 
   function safeRandomId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -51,6 +54,48 @@
     return generated;
   }
 
+  function readValidFbp() {
+    const value = readCookie("_fbp");
+    return typeof value === "string" && value.startsWith("fb.") ? value : null;
+  }
+
+  function captureFbp() {
+    const current = readValidFbp();
+    if (current && !cachedFbp) {
+      cachedFbp = current;
+    }
+    return current || cachedFbp;
+  }
+
+  function startFbpCapture() {
+    captureFbp();
+    const startedAt = Date.now();
+    const timer = window.setInterval(function () {
+      if (captureFbp() || Date.now() - startedAt >= FBP_POLL_TIMEOUT_MS) {
+        window.clearInterval(timer);
+      }
+    }, FBP_POLL_INTERVAL_MS);
+  }
+
+  function getWhatsappPhones() {
+    return Array.isArray(config.whatsappPhones) && config.whatsappPhones.length > 0
+      ? config.whatsappPhones
+      : [config.whatsappPhone || "5493515747477"];
+  }
+
+  function pickWhatsappPhone(landingSessionId) {
+    const phones = getWhatsappPhones();
+    let hash = 0;
+    for (let index = 0; index < landingSessionId.length; index += 1) {
+      hash = (hash * 31 + landingSessionId.charCodeAt(index)) >>> 0;
+    }
+    return phones[hash % phones.length];
+  }
+
+  function buildWhatsappUrl(phone, message) {
+    return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+  }
+
   function initPixel() {
     if (!config.pixelId || window.fbq) {
       return;
@@ -78,22 +123,31 @@
 
   function buildContactPayload(eventId) {
     const fbclid = getSearchParam("fbclid");
+    const landingSessionId = getLandingSessionId();
+    const fallbackWhatsappUrl = buildWhatsappUrl(
+      pickWhatsappPhone(landingSessionId),
+      config.whatsappMessage || "Hola quiero mi usuario suertudo del Rey Dorado"
+    );
     return {
       eventId,
-      landingSessionId: getLandingSessionId(),
-      fbp: readCookie("_fbp"),
+      landingSessionId,
+      fbp: captureFbp(),
       fbc: getFbc(fbclid),
       fbclid,
       eventSourceUrl: window.location.href,
       referrer: document.referrer || null,
       utmSource: getSearchParam("utm_source"),
       utmMedium: getSearchParam("utm_medium"),
+      utmId: getSearchParam("utm_id"),
       utmCampaign: getSearchParam("utm_campaign"),
       utmContent: getSearchParam("utm_content"),
       utmTerm: getSearchParam("utm_term"),
+      adsetId: getSearchParam("adset_id"),
+      adId: getSearchParam("ad_id"),
+      placement: getSearchParam("placement"),
       consentMarketing: null,
       consentTimestamp: null,
-      whatsappUrl: config.whatsappUrl
+      whatsappUrl: fallbackWhatsappUrl
     };
   }
 
@@ -142,7 +196,7 @@
     window.location.href =
       whatsappUrl ||
       config.whatsappUrl ||
-      "https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado";
+      "https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado";
   }
 
   function bindCta() {
@@ -160,14 +214,15 @@
       redirecting = true;
 
       const eventId = safeRandomId("contact");
-      const payload = buildContactPayload(eventId);
       trackPixelContact(eventId);
+      const payload = buildContactPayload(eventId);
 
       const result = await postContact(payload);
-      redirectToWhatsapp(result && typeof result.whatsappUrl === "string" ? result.whatsappUrl : null);
+      redirectToWhatsapp(result && typeof result.whatsappUrl === "string" ? result.whatsappUrl : payload.whatsappUrl);
     });
   }
 
   initPixel();
+  startFbpCapture();
   bindCta();
 })();

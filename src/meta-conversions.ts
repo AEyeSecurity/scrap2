@@ -65,6 +65,10 @@ function normalizeExternalId(ownerId: string, clientId: string): string {
   return sha256(`${ownerId}:${clientId}`.toLowerCase());
 }
 
+function normalizeLandingExternalId(landingSessionId: string): string {
+  return sha256(`landing:${landingSessionId}`.toLowerCase());
+}
+
 function normalizeActionSource(value: string | undefined): MetaActionSource {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'system_generated') {
@@ -207,9 +211,19 @@ export function buildMetaConversionsRequestBody(
     lease.eventStage === 'landing_contact' ||
     lease.eventStage === 'landing_lead' ||
     typeof sourceContext?.landingSessionId === 'string';
+  const crmExternalId = normalizeExternalId(lease.ownerId, lease.clientId);
+  const landingExternalId = sourceContext?.landingSessionId
+    ? normalizeLandingExternalId(sourceContext.landingSessionId)
+    : null;
+  const externalIds =
+    lease.eventStage === 'landing_contact' && landingExternalId
+      ? [landingExternalId]
+      : lease.eventStage === 'landing_lead' && landingExternalId
+        ? [landingExternalId, crmExternalId]
+        : [crmExternalId];
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
-    external_id: [normalizeExternalId(lease.ownerId, lease.clientId)],
+    external_id: [...new Set(externalIds)],
     ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {}),
     ...(config.actionSource === 'website' && sourceContext?.fbp ? { fbp: sourceContext.fbp } : {}),
     ...(config.actionSource === 'website' && sourceContext?.fbc ? { fbc: sourceContext.fbc } : {}),
@@ -274,9 +288,13 @@ export function buildMetaConversionsRequestBody(
             referrer: sourceContext?.referrer ?? null,
             utm_source: sourceContext?.utmSource ?? null,
             utm_medium: sourceContext?.utmMedium ?? null,
+            utm_id: sourceContext?.utmId ?? null,
             utm_campaign: sourceContext?.utmCampaign ?? null,
             utm_content: sourceContext?.utmContent ?? null,
             utm_term: sourceContext?.utmTerm ?? null,
+            adset_id: sourceContext?.adsetId ?? null,
+            ad_id: sourceContext?.adId ?? null,
+            placement: sourceContext?.placement ?? null,
             whatsapp_url: sourceContext?.whatsappUrl ?? null
           }
         : {}),
@@ -290,9 +308,13 @@ export function buildMetaConversionsRequestBody(
             referrer: sourceContext?.referrer ?? null,
             utm_source: sourceContext?.utmSource ?? null,
             utm_medium: sourceContext?.utmMedium ?? null,
+            utm_id: sourceContext?.utmId ?? null,
             utm_campaign: sourceContext?.utmCampaign ?? null,
             utm_content: sourceContext?.utmContent ?? null,
             utm_term: sourceContext?.utmTerm ?? null,
+            adset_id: sourceContext?.adsetId ?? null,
+            ad_id: sourceContext?.adId ?? null,
+            placement: sourceContext?.placement ?? null,
             consent_marketing: sourceContext?.consentMarketing ?? null,
             consent_timestamp: sourceContext?.consentTimestamp ?? null,
             whatsapp_url: sourceContext?.whatsappUrl ?? null

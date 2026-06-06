@@ -358,9 +358,13 @@ class FakeLandingSessionStore implements LandingSessionStore {
       referrer: input.referrer ?? null,
       utmSource: input.utmSource ?? null,
       utmMedium: input.utmMedium ?? null,
+      utmId: input.utmId ?? null,
       utmCampaign: input.utmCampaign ?? null,
       utmContent: input.utmContent ?? null,
       utmTerm: input.utmTerm ?? null,
+      adsetId: input.adsetId ?? null,
+      adId: input.adId ?? null,
+      placement: input.placement ?? null,
       clientIpAddress: input.clientIpAddress ?? null,
       clientUserAgent: input.clientUserAgent ?? null,
       whatsappUrl: input.whatsappUrl,
@@ -1999,11 +2003,12 @@ describe('server routes', () => {
         expect(response.body).toContain('/landing/privacidad');
         expect(response.body).toContain('/landing/terminos');
         expect(response.body).toContain('"pixelId":"1234567890"');
-        expect(response.body).toContain('"whatsappPhone":"5493516346253"');
+        expect(response.body).toContain('"whatsappPhone":"5493515747477"');
+        expect(response.body).toContain('"whatsappPhones":["5493515747477","5491124872583"]');
         expect(response.body).not.toContain('"cashierPhone"');
         expect(response.body).not.toContain('5493516549344');
         expect(response.body).toContain(
-          'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+          'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
         );
 
         await server.close();
@@ -2091,7 +2096,13 @@ describe('server routes', () => {
             referrer: 'https://facebook.com/',
             utmSource: 'meta',
             utmMedium: 'paid_social',
-            utmCampaign: 'mayo_rda'
+            utmId: '6991129588056',
+            utmCampaign: 'Mayo RDA',
+            utmTerm: 'Prospeccion',
+            utmContent: 'Video 1',
+            adsetId: '69911377388568',
+            adId: '699113773885680',
+            placement: 'facebook_feed'
           }
         });
 
@@ -2101,7 +2112,7 @@ describe('server routes', () => {
           tracked: true,
           trackingStatus: 'sent',
           eventId: 'contact:test',
-          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+          whatsappUrl: 'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
           whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
           attributionStatus: 'persisted',
           ownerContext: {
@@ -2116,8 +2127,15 @@ describe('server routes', () => {
           messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
           messageKey: 'hola quiero mi usuario suertudo del rey dorado',
           pagina: 'RdA',
-          botPhoneE164: '+5493516346253',
-          cashierPhoneE164: '+5493516549344'
+          botPhoneE164: '+5491124872583',
+          cashierPhoneE164: '+5493516549344',
+          utmId: '6991129588056',
+          utmCampaign: 'Mayo RDA',
+          utmTerm: 'Prospeccion',
+          utmContent: 'Video 1',
+          adsetId: '69911377388568',
+          adId: '699113773885680',
+          placement: 'facebook_feed'
         });
         expect(playerPhoneStore.intakeInputs).toEqual([]);
         expect(dispatcher.leases).toHaveLength(1);
@@ -2142,8 +2160,14 @@ describe('server routes', () => {
             CtaType: 'whatsapp_click',
             UtmSource: 'meta',
             UtmMedium: 'paid_social',
-            UtmCampaign: 'mayo_rda',
-            WhatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            UtmId: '6991129588056',
+            UtmCampaign: 'Mayo RDA',
+            UtmTerm: 'Prospeccion',
+            UtmContent: 'Video 1',
+            AdsetId: '69911377388568',
+            AdId: '699113773885680',
+            Placement: 'facebook_feed',
+            WhatsappUrl: 'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             ClientIpAddress: '181.45.10.22',
             ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
           }
@@ -2187,11 +2211,64 @@ describe('server routes', () => {
       expect(response.json()).toMatchObject({
         status: 'ok',
         tracked: false,
-          trackingStatus: 'disabled',
-          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
-          whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
-          attributionStatus: 'incomplete'
-        });
+        trackingStatus: 'disabled',
+        whatsappUrl: 'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
+        attributionStatus: 'incomplete'
+      });
+
+      await server.close();
+    });
+  });
+
+  it('POST /landing/contact splits WhatsApp redirects deterministically across both bot numbers', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const landingSessionStore = new FakeLandingSessionStore();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          landingSessionStore,
+          metaEnabled: false,
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const primary = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:split-primary',
+          landingSessionId: 'session_1'
+        }
+      });
+      const secondary = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:split-secondary',
+          landingSessionId: 'session_0'
+        }
+      });
+
+      expect(primary.statusCode).toBe(200);
+      expect(secondary.statusCode).toBe(200);
+      expect(primary.json().whatsappUrl).toBe(
+        'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+      );
+      expect(secondary.json().whatsappUrl).toBe(
+        'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+      );
+      expect(landingSessionStore.createInputs.map((input) => input.botPhoneE164)).toEqual([
+        '+5493515747477',
+        '+5491124872583'
+      ]);
 
       await server.close();
     });
@@ -2681,7 +2758,7 @@ describe('server routes', () => {
         utmSource: 'meta',
         utmMedium: 'paid_social',
         utmCampaign: 'rda_landing',
-        whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsappUrl: 'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
         waId: '5493511112222',
         messageSid: 'SM-LANDING',
         accountSid: 'AC-LANDING',
@@ -2711,6 +2788,92 @@ describe('server routes', () => {
         clientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
       },
       eventTime: '2026-06-03T18:00:00.000Z'
+    });
+
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake keeps explicit n8n ownerContext when claiming a landing session', async () => {
+    const queue = new FakeQueue();
+    const playerPhoneStore = new FakePlayerPhoneStore();
+    const landingSessionStore = new FakeLandingSessionStore();
+    const metaStore = new FakeMetaConversionsStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      {
+        playerPhoneStore,
+        landingSessionStore,
+        metaConversionsStore: metaStore,
+        metaEnabled: true,
+        metaWorkerEnabled: false
+      }
+    );
+
+    const contact = await server.inject({
+      method: 'POST',
+      url: '/landing/contact',
+      headers: {
+        'user-agent': 'Mozilla/5.0 MetaInAppBrowser',
+        'x-forwarded-for': '181.45.10.22'
+      },
+      payload: {
+        eventId: 'contact:landing-n8n-owner',
+        landingSessionId: 'session_landing_n8n_owner',
+        fbp: 'fb.1.1710000000000.111',
+        eventSourceUrl: 'https://reydeases.imperial-support.com/landing?utm_source=meta',
+        utmSource: 'meta'
+      }
+    });
+    const contactBody = contact.json();
+
+    const ownerContext = {
+      ownerKey: 'luqui10:lear',
+      ownerLabel: 'Lea Riqueza',
+      actorAlias: 'Lea Riqueza',
+      actorPhone: '+5491154816740'
+    };
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'RdA',
+        ownerContext,
+        body: {
+          WaId: '5493562554282',
+          From: 'whatsapp:+5493562554282',
+          Body: contactBody.whatsappMessage,
+          ProfileName: 'Cliente Landing',
+          MessageSid: 'SM-LANDING-N8N',
+          AccountSid: 'AC-LANDING',
+          ReceivedAt: '2026-06-06T06:29:13.000Z'
+        }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'ok',
+      pagina: 'RdA',
+      telefono: '+5493562554282',
+      landingSessionId: 'session_landing_n8n_owner',
+      ownerContext
+    });
+    expect(playerPhoneStore.intakeInputs).toHaveLength(1);
+    expect(playerPhoneStore.intakeInputs[0]).toMatchObject({
+      ownerContext,
+      sourceContext: {
+        landingSessionId: 'session_landing_n8n_owner',
+        ctaType: 'whatsapp_click',
+        whatsappUrl: 'https://wa.me/5491124872583?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+      }
+    });
+    expect(metaStore.landingLeadInputs[0]).toMatchObject({
+      ownerContext
     });
 
     await server.close();

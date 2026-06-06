@@ -167,9 +167,13 @@ export interface MetaSourceContext {
   ctaType?: string | null;
   utmSource?: string | null;
   utmMedium?: string | null;
+  utmId?: string | null;
   utmCampaign?: string | null;
   utmContent?: string | null;
   utmTerm?: string | null;
+  adsetId?: string | null;
+  adId?: string | null;
+  placement?: string | null;
   consentMarketing?: boolean | null;
   consentTimestamp?: string | null;
   whatsappUrl?: string | null;

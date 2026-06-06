@@ -1,6 +1,7 @@
 import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import {
+  attributionFromSourceContext,
   createMastercrmUserStore,
   hashMastercrmPassword,
   normalizeMastercrmNombre,
@@ -147,11 +148,21 @@ function expectedEmptyAttribution() {
     },
     landing: {
       landingSessionId: null,
+      platform: null,
+      placement: null,
       utmSource: null,
       utmMedium: null,
+      utmId: null,
       utmCampaign: null,
       utmContent: null,
       utmTerm: null,
+      campaignName: null,
+      campaignId: null,
+      adsetName: null,
+      adsetId: null,
+      adName: null,
+      adId: null,
+      legacyIdsOnly: false,
       fbclid: null,
       eventSourceUrl: null,
       whatsappUrl: null
@@ -169,6 +180,31 @@ function createPostgrestError(code: string, message: string): PostgrestError {
 }
 
 describe('mastercrm user store helpers', () => {
+  it('maps historical numeric UTM values to IDs without inventing names', () => {
+    expect(
+      attributionFromSourceContext({
+        landingSessionId: 'session-historical',
+        utmSource: 'fb',
+        utmCampaign: '6991129588056',
+        utmTerm: '69911377388568',
+        utmContent: '699113773885680'
+      })
+    ).toMatchObject({
+      kind: 'landing',
+      campaign: '6991129588056',
+      landing: {
+        platform: 'fb',
+        campaignName: null,
+        campaignId: '6991129588056',
+        adsetName: null,
+        adsetId: '69911377388568',
+        adName: null,
+        adId: '699113773885680',
+        legacyIdsOnly: true
+      }
+    });
+  });
+
   it('normalizes username to lowercase trimmed value', () => {
     expect(normalizeMastercrmUsername('  JuAn  ')).toBe('juan');
   });
@@ -749,11 +785,17 @@ describe('mastercrm clients dashboard', () => {
           occurred_at: '2026-03-01T10:01:00.000Z',
           payload: {
             LandingSessionId: 'session-landing',
-            UtmSource: 'meta',
-            UtmCampaign: 'rda_landing',
+            UtmSource: 'fb',
+            UtmId: '6991129588056',
+            UtmCampaign: 'RDA Landing',
+            UtmTerm: 'Prospeccion',
+            UtmContent: 'Video 1',
+            AdsetId: '69911377388568',
+            AdId: '699113773885680',
+            Placement: 'facebook_feed',
             Fbclid: 'fbclid-landing',
-            EventSourceUrl: 'https://reydeases.imperial-support.com/landing?utm_campaign=rda_landing',
-            WhatsappUrl: 'https://wa.me/5493516346253'
+            EventSourceUrl: 'https://reydeases.imperial-support.com/landing?utm_campaign=RDA%20Landing',
+            WhatsappUrl: 'https://wa.me/5493515747477'
           }
         },
         {
@@ -780,16 +822,26 @@ describe('mastercrm clients dashboard', () => {
     expect(dashboard.clientes.find((item) => item.id === 'link-landing')).toMatchObject({
       source: 'Landing',
       origen: 'Landing',
-      Campana: 'rda_landing',
-      lastCampaign: 'rda_landing',
+      Campana: 'RDA Landing',
+      lastCampaign: 'RDA Landing',
       attribution: {
         kind: 'landing',
         label: 'Landing',
-        campaign: 'rda_landing',
+        campaign: 'RDA Landing',
         landing: {
           landingSessionId: 'session-landing',
-          utmSource: 'meta',
-          utmCampaign: 'rda_landing',
+          platform: 'fb',
+          placement: 'facebook_feed',
+          utmSource: 'fb',
+          utmId: '6991129588056',
+          utmCampaign: 'RDA Landing',
+          campaignName: 'RDA Landing',
+          campaignId: '6991129588056',
+          adsetName: 'Prospeccion',
+          adsetId: '69911377388568',
+          adName: 'Video 1',
+          adId: '699113773885680',
+          legacyIdsOnly: false,
           fbclid: 'fbclid-landing'
         }
       }

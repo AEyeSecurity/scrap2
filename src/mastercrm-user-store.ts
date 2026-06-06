@@ -151,11 +151,21 @@ export interface MastercrmClientAttributionMeta {
 
 export interface MastercrmClientAttributionLanding {
   landingSessionId: string | null;
+  platform: string | null;
+  placement: string | null;
   utmSource: string | null;
   utmMedium: string | null;
+  utmId: string | null;
   utmCampaign: string | null;
   utmContent: string | null;
   utmTerm: string | null;
+  campaignName: string | null;
+  campaignId: string | null;
+  adsetName: string | null;
+  adsetId: string | null;
+  adName: string | null;
+  adId: string | null;
+  legacyIdsOnly: boolean;
   fbclid: string | null;
   eventSourceUrl: string | null;
   whatsappUrl: string | null;
@@ -465,11 +475,21 @@ function emptyAttribution(): MastercrmClientAttribution {
     },
     landing: {
       landingSessionId: null,
+      platform: null,
+      placement: null,
       utmSource: null,
       utmMedium: null,
+      utmId: null,
       utmCampaign: null,
       utmContent: null,
       utmTerm: null,
+      campaignName: null,
+      campaignId: null,
+      adsetName: null,
+      adsetId: null,
+      adName: null,
+      adId: null,
+      legacyIdsOnly: false,
       fbclid: null,
       eventSourceUrl: null,
       whatsappUrl: null
@@ -477,7 +497,11 @@ function emptyAttribution(): MastercrmClientAttribution {
   };
 }
 
-function attributionFromSourceContext(sourceContext: MetaSourceContext | null): MastercrmClientAttribution {
+function isNumericMetaId(value: string | null): boolean {
+  return typeof value === 'string' && /^\d+$/.test(value);
+}
+
+export function attributionFromSourceContext(sourceContext: MetaSourceContext | null): MastercrmClientAttribution {
   if (!sourceContext) {
     return emptyAttribution();
   }
@@ -490,25 +514,52 @@ function attributionFromSourceContext(sourceContext: MetaSourceContext | null): 
     referralSourceType: nullableText(sourceContext.referralSourceType),
     ctwaClid: nullableText(sourceContext.ctwaClid)
   };
+  const utmId = nullableText(sourceContext.utmId);
+  const utmCampaign = nullableText(sourceContext.utmCampaign);
+  const utmContent = nullableText(sourceContext.utmContent);
+  const utmTerm = nullableText(sourceContext.utmTerm);
+  const explicitAdsetId = nullableText(sourceContext.adsetId);
+  const explicitAdId = nullableText(sourceContext.adId);
+  const legacyCampaignId = !utmId && isNumericMetaId(utmCampaign) ? utmCampaign : null;
+  const legacyAdsetId = !explicitAdsetId && isNumericMetaId(utmTerm) ? utmTerm : null;
+  const legacyAdId = !explicitAdId && isNumericMetaId(utmContent) ? utmContent : null;
   const landing: MastercrmClientAttributionLanding = {
     landingSessionId: nullableText(sourceContext.landingSessionId),
+    platform: nullableText(sourceContext.utmSource),
+    placement: nullableText(sourceContext.placement),
     utmSource: nullableText(sourceContext.utmSource),
     utmMedium: nullableText(sourceContext.utmMedium),
-    utmCampaign: nullableText(sourceContext.utmCampaign),
-    utmContent: nullableText(sourceContext.utmContent),
-    utmTerm: nullableText(sourceContext.utmTerm),
+    utmId,
+    utmCampaign,
+    utmContent,
+    utmTerm,
+    campaignName: legacyCampaignId ? null : utmCampaign,
+    campaignId: utmId ?? legacyCampaignId,
+    adsetName: legacyAdsetId ? null : utmTerm,
+    adsetId: explicitAdsetId ?? legacyAdsetId,
+    adName: legacyAdId ? null : utmContent,
+    adId: explicitAdId ?? legacyAdId,
+    legacyIdsOnly: Boolean(legacyCampaignId || legacyAdsetId || legacyAdId),
     fbclid: nullableText(sourceContext.fbclid),
     eventSourceUrl: nullableText(sourceContext.eventSourceUrl),
     whatsappUrl: nullableText(sourceContext.whatsappUrl)
   };
-  const hasLandingSignal = Object.values(landing).some((value) => value !== null);
+  const hasLandingSignal = Object.entries(landing).some(
+    ([key, value]) => key !== 'legacyIdsOnly' && value !== null
+  );
   const hasMetaSignal = Object.values(meta).some((value) => value !== null);
 
   if (landing.landingSessionId) {
     return {
       kind: 'landing',
       label: 'Landing',
-      campaign: landing.utmCampaign ?? landing.utmContent ?? landing.fbclid ?? landing.eventSourceUrl,
+      campaign:
+        landing.campaignName ??
+        landing.campaignId ??
+        landing.adName ??
+        landing.adId ??
+        landing.fbclid ??
+        landing.eventSourceUrl,
       meta,
       landing
     };
@@ -518,7 +569,13 @@ function attributionFromSourceContext(sourceContext: MetaSourceContext | null): 
     return {
       kind: 'landing_unmatched',
       label: 'Landing sin match',
-      campaign: landing.utmCampaign ?? landing.utmContent ?? landing.fbclid ?? landing.eventSourceUrl,
+      campaign:
+        landing.campaignName ??
+        landing.campaignId ??
+        landing.adName ??
+        landing.adId ??
+        landing.fbclid ??
+        landing.eventSourceUrl,
       meta,
       landing
     };

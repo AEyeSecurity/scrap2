@@ -20,9 +20,13 @@ export interface StoredMetaSourcePayload extends Record<string, unknown> {
   CtaType?: string;
   UtmSource?: string;
   UtmMedium?: string;
+  UtmId?: string;
   UtmCampaign?: string;
   UtmContent?: string;
   UtmTerm?: string;
+  AdsetId?: string;
+  AdId?: string;
+  Placement?: string;
   ConsentMarketing?: boolean;
   ConsentTimestamp?: string;
   WhatsappUrl?: string;
@@ -42,6 +46,19 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeMetaDynamicName(value: string | null | undefined): string | null {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    return decodeURIComponent(normalized.replace(/\+/g, ' ')).trim() || null;
+  } catch {
+    return normalized;
+  }
 }
 
 function normalizeOptionalTimestamp(value: string | null | undefined): string | null {
@@ -84,9 +101,13 @@ export function normalizeMetaSourceContext(input: MetaSourceContext | null | und
     ctaType: normalizeOptionalText(input.ctaType),
     utmSource: normalizeOptionalText(input.utmSource),
     utmMedium: normalizeOptionalText(input.utmMedium),
-    utmCampaign: normalizeOptionalText(input.utmCampaign),
-    utmContent: normalizeOptionalText(input.utmContent),
-    utmTerm: normalizeOptionalText(input.utmTerm),
+    utmId: normalizeOptionalText(input.utmId),
+    utmCampaign: normalizeMetaDynamicName(input.utmCampaign),
+    utmContent: normalizeMetaDynamicName(input.utmContent),
+    utmTerm: normalizeMetaDynamicName(input.utmTerm),
+    adsetId: normalizeOptionalText(input.adsetId),
+    adId: normalizeOptionalText(input.adId),
+    placement: normalizeOptionalText(input.placement),
     consentMarketing: normalizeOptionalBoolean(input.consentMarketing),
     consentTimestamp: normalizeOptionalTimestamp(input.consentTimestamp),
     whatsappUrl: normalizeOptionalText(input.whatsappUrl),
@@ -145,9 +166,13 @@ export function buildStoredMetaSourcePayload(input: {
     CtaType: sourceContext?.ctaType ?? null,
     UtmSource: sourceContext?.utmSource ?? null,
     UtmMedium: sourceContext?.utmMedium ?? null,
+    UtmId: sourceContext?.utmId ?? null,
     UtmCampaign: sourceContext?.utmCampaign ?? null,
     UtmContent: sourceContext?.utmContent ?? null,
     UtmTerm: sourceContext?.utmTerm ?? null,
+    AdsetId: sourceContext?.adsetId ?? null,
+    AdId: sourceContext?.adId ?? null,
+    Placement: sourceContext?.placement ?? null,
     ConsentMarketing: sourceContext?.consentMarketing ?? null,
     ConsentTimestamp: sourceContext?.consentTimestamp ?? null,
     WhatsappUrl: sourceContext?.whatsappUrl ?? null,
@@ -220,6 +245,7 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
       readPayloadField(payload, 'UtmSource') ?? (nestedSource ? readPayloadField(nestedSource, 'utmSource') : null),
     utmMedium:
       readPayloadField(payload, 'UtmMedium') ?? (nestedSource ? readPayloadField(nestedSource, 'utmMedium') : null),
+    utmId: readPayloadField(payload, 'UtmId') ?? (nestedSource ? readPayloadField(nestedSource, 'utmId') : null),
     utmCampaign:
       readPayloadField(payload, 'UtmCampaign') ??
       (nestedSource ? readPayloadField(nestedSource, 'utmCampaign') : null),
@@ -227,6 +253,11 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
       readPayloadField(payload, 'UtmContent') ?? (nestedSource ? readPayloadField(nestedSource, 'utmContent') : null),
     utmTerm:
       readPayloadField(payload, 'UtmTerm') ?? (nestedSource ? readPayloadField(nestedSource, 'utmTerm') : null),
+    adsetId:
+      readPayloadField(payload, 'AdsetId') ?? (nestedSource ? readPayloadField(nestedSource, 'adsetId') : null),
+    adId: readPayloadField(payload, 'AdId') ?? (nestedSource ? readPayloadField(nestedSource, 'adId') : null),
+    placement:
+      readPayloadField(payload, 'Placement') ?? (nestedSource ? readPayloadField(nestedSource, 'placement') : null),
     consentMarketing:
       readPayloadBooleanField(payload, 'ConsentMarketing') ??
       (nestedSource ? readPayloadBooleanField(nestedSource, 'consentMarketing') : null),

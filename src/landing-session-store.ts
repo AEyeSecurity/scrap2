@@ -25,9 +25,13 @@ export interface CreateLandingSessionInput {
   referrer?: string | null;
   utmSource?: string | null;
   utmMedium?: string | null;
+  utmId?: string | null;
   utmCampaign?: string | null;
   utmContent?: string | null;
   utmTerm?: string | null;
+  adsetId?: string | null;
+  adId?: string | null;
+  placement?: string | null;
   clientIpAddress?: string | null;
   clientUserAgent?: string | null;
   whatsappUrl: string;
@@ -59,9 +63,13 @@ export interface LandingSessionRecord {
   referrer: string | null;
   utmSource: string | null;
   utmMedium: string | null;
+  utmId: string | null;
   utmCampaign: string | null;
   utmContent: string | null;
   utmTerm: string | null;
+  adsetId: string | null;
+  adId: string | null;
+  placement: string | null;
   clientIpAddress: string | null;
   clientUserAgent: string | null;
   whatsappUrl: string;
@@ -106,9 +114,13 @@ interface LandingSessionRow {
   referrer: string | null;
   utm_source: string | null;
   utm_medium: string | null;
+  utm_id: string | null;
   utm_campaign: string | null;
   utm_content: string | null;
   utm_term: string | null;
+  adset_id: string | null;
+  ad_id: string | null;
+  placement: string | null;
   client_ip_address: string | null;
   client_user_agent: string | null;
   whatsapp_url: string;
@@ -154,9 +166,13 @@ function mapRow(row: LandingSessionRow): LandingSessionRecord {
     referrer: row.referrer,
     utmSource: row.utm_source,
     utmMedium: row.utm_medium,
+    utmId: row.utm_id,
     utmCampaign: row.utm_campaign,
     utmContent: row.utm_content,
     utmTerm: row.utm_term,
+    adsetId: row.adset_id,
+    adId: row.ad_id,
+    placement: row.placement,
     clientIpAddress: row.client_ip_address,
     clientUserAgent: row.client_user_agent,
     whatsappUrl: row.whatsapp_url,
@@ -195,9 +211,13 @@ function toMetaSourceContext(row: LandingSessionRecord): MetaSourceContext {
     ctaType: 'whatsapp_click',
     utmSource: row.utmSource,
     utmMedium: row.utmMedium,
+    utmId: row.utmId,
     utmCampaign: row.utmCampaign,
     utmContent: row.utmContent,
     utmTerm: row.utmTerm,
+    adsetId: row.adsetId,
+    adId: row.adId,
+    placement: row.placement,
     whatsappUrl: row.whatsappUrl,
     clientIpAddress: row.clientIpAddress,
     clientUserAgent: row.clientUserAgent
@@ -232,9 +252,13 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
         referrer: input.referrer ?? null,
         utm_source: input.utmSource ?? null,
         utm_medium: input.utmMedium ?? null,
+        utm_id: input.utmId ?? null,
         utm_campaign: input.utmCampaign ?? null,
         utm_content: input.utmContent ?? null,
         utm_term: input.utmTerm ?? null,
+        adset_id: input.adsetId ?? null,
+        ad_id: input.adId ?? null,
+        placement: input.placement ?? null,
         client_ip_address: input.clientIpAddress ?? null,
         client_user_agent: input.clientUserAgent ?? null,
         whatsapp_url: input.whatsappUrl

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 import {
   buildLandingMetaConversionsConfigFromEnv,
   buildMetaConversionsConfigFromEnv,
@@ -108,6 +109,10 @@ function buildLease(overrides: Partial<MetaConversionLease> = {}): MetaConversio
   };
 }
 
+function expectedExternalId(value: string): string {
+  return createHash('sha256').update(value.toLowerCase()).digest('hex');
+}
+
 describe('meta source context helpers', () => {
   it('builds and re-extracts Twilio source metadata', () => {
     const payload = buildStoredMetaSourcePayload({
@@ -142,6 +147,22 @@ describe('meta source context helpers', () => {
       receivedAt: null
     });
     expect(isAttributableMetaSourceContext(extractMetaSourceContext(payload))).toBe(true);
+  });
+
+  it('decodes the extra URL encoding applied by Meta dynamic parameters', () => {
+    const payload = buildStoredMetaSourcePayload({
+      sourceContext: {
+        utmCampaign: 'CAMPA%C3%91A+TESTEO',
+        utmTerm: 'BONOS',
+        utmContent: '%231+%28BONO%29'
+      }
+    });
+
+    expect(extractMetaSourceContext(payload)).toMatchObject({
+      utmCampaign: 'CAMPAÑA TESTEO',
+      utmTerm: 'BONOS',
+      utmContent: '#1 (BONO)'
+    });
   });
 });
 
@@ -214,8 +235,14 @@ describe('meta conversions dispatcher', () => {
             ctaType: 'whatsapp_click',
             utmSource: 'meta',
             utmMedium: 'paid_social',
-            utmCampaign: 'abril_rda',
-            whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            utmId: '6991129588056',
+            utmCampaign: 'Abril RDA',
+            utmTerm: 'Prospeccion',
+            utmContent: 'Video 1',
+            adsetId: '69911377388568',
+            adId: '699113773885680',
+            placement: 'facebook_feed',
+            whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             clientIpAddress: '181.45.10.22',
             clientUserAgent: 'Mozilla/5.0',
             receivedAt: '2026-04-21T15:25:00.000Z'
@@ -251,12 +278,21 @@ describe('meta conversions dispatcher', () => {
         referrer: 'https://facebook.com/',
         utm_source: 'meta',
         utm_medium: 'paid_social',
-        utm_campaign: 'abril_rda',
+        utm_id: '6991129588056',
+        utm_campaign: 'Abril RDA',
+        utm_term: 'Prospeccion',
+        utm_content: 'Video 1',
+        adset_id: '69911377388568',
+        ad_id: '699113773885680',
+        placement: 'facebook_feed',
         owner_key: 'luqui10:luqui10',
         owner_label: 'Lucas10'
       }
     });
     expect((body.data[0].user_data as Record<string, unknown>).ph).toBeUndefined();
+    expect((body.data[0].user_data as { external_id?: string[] }).external_id).toEqual([
+      expectedExternalId('landing:session_123')
+    ]);
   });
 
   it('builds website Lead payloads for landing WhatsApp intakes with phone and browser match fields', () => {
@@ -276,7 +312,7 @@ describe('meta conversions dispatcher', () => {
             landingSessionId: 'session_landing_lead',
             landingVariant: 'rda-luqui10-v1',
             ctaType: 'whatsapp_click',
-            whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             waId: '5493511112222',
             messageSid: 'SM-LANDING',
             profileName: 'Cliente Landing',
@@ -310,13 +346,17 @@ describe('meta conversions dispatcher', () => {
         landing_variant: 'rda-luqui10-v1',
         cta_type: 'whatsapp_click',
         fbclid: 'fbclid-123',
-        whatsapp_url: 'https://wa.me/5493516346253?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsapp_url: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
         wa_id: '5493511112222',
         message_sid: 'SM-LANDING',
         profile_name: 'Cliente Landing'
       }
     });
     expect((body.data[0].user_data as { ph?: string[] }).ph?.[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect((body.data[0].user_data as { external_id?: string[] }).external_id).toEqual([
+      expectedExternalId('landing:session_landing_lead'),
+      expectedExternalId('owner-1:client-1')
+    ]);
   });
 
   it('builds Purchase payloads with real value and currency', () => {
@@ -327,7 +367,13 @@ describe('meta conversions dispatcher', () => {
         eventId: 'value_signal:test',
         username: 'leandro034',
         sourcePayload: {
-          ...buildLease().sourcePayload,
+          ...buildStoredMetaSourcePayload({
+            ownerContext: { ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas10' },
+            sourceContext: {
+              landingSessionId: 'session_purchase',
+              eventSourceUrl: 'https://reydeases.imperial-support.com/landing'
+            }
+          }),
           first_day_report_date: '2026-03-25',
           first_day_cargado_hoy: 12500
         }
@@ -342,9 +388,9 @@ describe('meta conversions dispatcher', () => {
       event_name: 'Purchase',
       event_id: 'value_signal:test',
       action_source: 'system_generated',
-      event_source_url: 'https://fb.me/8cuWQu6gD',
+      event_source_url: 'https://reydeases.imperial-support.com/landing',
       custom_data: {
-        event_source: 'crm',
+        event_source: 'landing',
         value: 12500,
         currency: 'ARS',
         first_day_report_date: '2026-03-25',
@@ -352,6 +398,9 @@ describe('meta conversions dispatcher', () => {
         username: 'leandro034'
       }
     });
+    expect((body.data[0].user_data as { external_id?: string[] }).external_id).toEqual([
+      expectedExternalId('owner-1:client-1')
+    ]);
   });
 
   it('posts events to Meta Graph API and includes the test event code', async () => {

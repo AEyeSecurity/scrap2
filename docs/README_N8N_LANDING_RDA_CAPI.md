@@ -1,6 +1,6 @@
 # n8n Landing RdA CAPI Intake
 
-Objetivo: cuando la landing redirige a WhatsApp del bot `+5493516346253`, n8n debe avisar al backend en el primer mensaje real para unir telefono + metadata WhatsApp con la sesion web guardada por `/landing/contact`.
+Objetivo: cuando la landing redirige a WhatsApp del bot asignado 50/50 (`+5493515747477` o `+5491124872583`), n8n debe avisar al backend en el primer mensaje real para unir telefono + metadata WhatsApp con la sesion web guardada por `/landing/contact`.
 
 ## Workflow destino
 
@@ -11,7 +11,7 @@ name: L10 Royal L Support
 id: SNPyXfKncVbOERFG
 webhook: RLS
 path: rls
-bot: +5493516346253
+bot: +5493515747477 / +5491124872583
 ```
 
 No modificar `Valerio Alta Fortuna`: solo se usa para confirmar el shape real de los campos Meta click-to-WhatsApp.
