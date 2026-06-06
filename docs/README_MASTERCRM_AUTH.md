@@ -10,6 +10,7 @@ Se agregaron rutas nuevas dentro de esta API para cubrir el contrato que hoy esp
 - `POST /mastercrm-login`
 - `POST /mastercrm-clients`
 - `POST /mastercrm-link-cashier`
+- `POST /mastercrm-owner-financials`
 
 La ruta existente `POST /login` no se toca. Sigue siendo el login asincrono de agentes para Playwright.
 
@@ -59,8 +60,11 @@ Acepta aliases:
 - `password` o `contrasena`
 - `nombre` o `name`
 - `telefono`, `phone` o `celular`
+- `staff_password`
 
 Si dos aliases del mismo campo llegan con valores distintos, responde `400`.
+El alta solo se autoriza cuando `staff_password` coincide con
+`MASTERCRM_STAFF_LINK_PASSWORD`.
 
 Ejemplo:
 
@@ -69,7 +73,8 @@ Ejemplo:
   "usuario": "juan",
   "contrasena": "secret123",
   "nombre": "Juan Perez",
-  "telefono": "54911..."
+  "telefono": "54911...",
+  "staff_password": "clave-tecnica"
 }
 ```
 
@@ -105,6 +110,17 @@ Reglas:
 - responde `200` con JSON canonico;
 - responde `401` si las credenciales no son validas;
 - nunca devuelve `password` ni `contrasena`.
+- devuelve un token firmado con vigencia de 8 horas.
+
+Campos de sesion devueltos:
+
+```json
+{
+  "access_token": "token-firmado",
+  "token_type": "Bearer",
+  "expires_in": 28800
+}
+```
 
 ### `POST /mastercrm-clients`
 
@@ -134,6 +150,9 @@ Si el usuario existe y esta activo, responde un JSON con:
 
 Esta ruta ya lee datos reales persistidos en Supabase a partir de snapshots diarios y tablas owner-centric.
 
+Requiere `Authorization: Bearer <access_token>`. El `user_id` pedido debe
+coincidir con el usuario del token; de lo contrario responde `403`.
+
 La lista `clientes` es independiente entre meses. Para el `month` pedido solo
 devuelve clientes que tuvieron intake o reingreso en ese mes; no hereda clientes
 de meses anteriores por seguir `assigned` o `pending` en la cartera.
@@ -148,19 +167,28 @@ Payload esperado:
 {
   "user_id": 123,
   "owner_key": "owner_key_del_cajero",
-  "pagina": "ASN"
+  "pagina": "ASN",
+  "staff_password": "clave-tecnica"
 }
 ```
 
 Reglas:
 
 - `user_id` acepta string o number, pero debe resolver a entero positivo;
+- requiere `Authorization: Bearer <access_token>`;
+- el `user_id` debe coincidir con el usuario autenticado;
 - `owner_key` se normaliza a minuscula;
 - `pagina` acepta `ASN` o `RdA`; si no viene, el backend mantiene compatibilidad con `ASN`;
 - el usuario debe existir y estar activo en `mastercrm_users`;
 - el `owner_key` debe existir en `owners` con la `pagina` indicada;
 - si el vinculo exacto ya existe, responde `409`;
 - no crea owners nuevos ni devuelve todavia el listado de cajeros vinculados.
+
+### `POST /mastercrm-owner-financials`
+
+Guarda la inversion mensual y el porcentaje del cajero. Requiere
+`Authorization: Bearer <access_token>` y solo permite modificar el usuario
+incluido en el token.
 
 Respuesta exitosa `201`:
 
@@ -184,6 +212,10 @@ Se agrego CORS global con `@fastify/cors`.
 Variable nueva:
 
 - `MASTERCRM_CORS_ORIGINS`
+- `MASTERCRM_SESSION_SECRET`
+
+`MASTERCRM_SESSION_SECRET` debe tener al menos 32 caracteres y no debe
+reutilizar ninguna credencial de Supabase.
 
 Formato:
 
@@ -200,6 +232,6 @@ Default de desarrollo:
 
 - no se reutiliza `/login` porque ya existe para jobs de agentes;
 - los usuarios web viven en una tabla propia, separada del modelo `owners/clients`;
-- no hay JWT ni cookie en esta primera version;
+- la sesion usa un token HMAC firmado, enviado como Bearer y con TTL de 8 horas;
 - `mastercrm-clients` usa snapshots persistidos y no depende de Supabase Storage;
 - `mastercrm-link-cashier` ya soporta `pagina = ASN` y `pagina = RdA`.

@@ -76,12 +76,17 @@ function spawnProcess(command, args, cwd, env) {
   };
 }
 
-async function apiJson(path, payload) {
+async function apiJson(path, payload, accessToken = '') {
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`;
+  }
+
   const response = await fetch(`${backendUrl}${path}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers,
     body: JSON.stringify(payload)
   });
   const text = await response.text();
@@ -131,6 +136,7 @@ async function main() {
     await page.getByLabel('Contrasena').fill(password);
     await page.getByLabel('Nombre completo').fill(nombre);
     await page.getByLabel('Telefono').fill(telefono);
+    await page.getByLabel('Clave tecnica del staff').fill(staffPassword);
     await page.getByRole('button', { name: 'Crear usuario' }).click();
     await page.getByText('Usuario creado correctamente. Inicia sesion con tus nuevas credenciales.').waitFor({
       timeout: 15000
@@ -146,8 +152,10 @@ async function main() {
     });
     assert(loginResult.status === 200, 'Backend login failed after UI registration');
     userId = loginResult.json.id;
+    const accessToken = loginResult.json.access_token;
+    assert(accessToken, 'Backend login did not return an access token');
 
-    const initialClients = await apiJson('/mastercrm-clients', { user_id: userId });
+    const initialClients = await apiJson('/mastercrm-clients', { user_id: userId }, accessToken);
     assert(initialClients.status === 200, 'Initial clients request failed');
     assert(initialClients.json.linkedOwner === null, 'User should start without linked owner');
     assert(initialClients.json.summary === null, 'User without owner should have null summary');
@@ -160,7 +168,7 @@ async function main() {
     await page.getByText('Cajero vinculado correctamente.').waitFor({ timeout: 15000 });
     await page.getByText('Lucas10').waitFor({ timeout: 15000 });
 
-    const firstClients = await apiJson('/mastercrm-clients', { user_id: userId });
+    const firstClients = await apiJson('/mastercrm-clients', { user_id: userId }, accessToken);
     assert(firstClients.status === 200, 'Clients request after first link failed');
     assert(firstClients.json.linkedOwner?.ownerKey === ownerWithReport, 'Linked owner after first link is wrong');
     assert(firstClients.json.summary?.hasReport === true, 'Expected report data for Lucas10');
@@ -182,7 +190,7 @@ async function main() {
     await page.getByText('Vicky').waitFor({ timeout: 15000 });
     await page.getByText('Sin reporte').first().waitFor({ timeout: 15000 });
 
-    const secondClients = await apiJson('/mastercrm-clients', { user_id: userId });
+    const secondClients = await apiJson('/mastercrm-clients', { user_id: userId }, accessToken);
     assert(secondClients.status === 200, 'Clients request after relink failed');
     assert(secondClients.json.linkedOwner?.ownerKey === ownerWithoutReport, 'Linked owner after relink is wrong');
     assert(secondClients.json.summary?.hasReport === false, 'Expected no report data for Vicky');

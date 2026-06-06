@@ -9,6 +9,7 @@ import {
   type MastercrmUserCashierLinkRecord,
   type MastercrmUserStore
 } from '../src/mastercrm-user-store';
+import { issueMastercrmSessionToken, verifyMastercrmSessionToken } from '../src/mastercrm-session';
 import { normalizeLandingMessageKey, type LandingSessionRecord, type LandingSessionStore } from '../src/landing-session-store';
 import type { MetaConversionsDispatcher, MetaDispatchResult } from '../src/meta-conversions';
 import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conversions-store';
@@ -17,6 +18,28 @@ import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
 
 const allowAsnUserExists = async (): Promise<void> => undefined;
+const MASTERCRM_TEST_SESSION_SECRET = 'server-test-mastercrm-session-secret-32';
+const MASTERCRM_TEST_STAFF_PASSWORD = 'staff-secret';
+
+process.env.MASTERCRM_SESSION_SECRET = MASTERCRM_TEST_SESSION_SECRET;
+process.env.MASTERCRM_STAFF_LINK_PASSWORD = MASTERCRM_TEST_STAFF_PASSWORD;
+
+function mastercrmAuthorization(userId: number, username = 'juan'): { authorization: string } {
+  const session = issueMastercrmSessionToken(
+    {
+      id: userId,
+      username,
+      nombre: 'Test User',
+      telefono: null,
+      inversion: 0,
+      isActive: true,
+      createdAt: '2026-06-06T00:00:00.000Z'
+    },
+    MASTERCRM_TEST_SESSION_SECRET
+  );
+
+  return { authorization: `Bearer ${session.token}` };
+}
 
 async function withEnv<T>(values: Record<string, string | undefined>, callback: () => Promise<T>): Promise<T> {
   const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]));
@@ -721,7 +744,8 @@ describe('server routes', () => {
         password: 'secret123',
         contrasena: 'secret123',
         nombre: 'Juan Perez',
-        telefono: '54911'
+        telefono: '54911',
+        staff_password: MASTERCRM_TEST_STAFF_PASSWORD
       }
     });
 
@@ -799,11 +823,42 @@ describe('server routes', () => {
       payload: {
         usuario: 'juan',
         contrasena: 'secret123',
-        nombre: 'Juan Perez'
+        nombre: 'Juan Perez',
+        staff_password: MASTERCRM_TEST_STAFF_PASSWORD
       }
     });
 
     expect(response.statusCode).toBe(409);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-register rejects an invalid staff password', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-register',
+      payload: {
+        usuario: 'juan',
+        contrasena: 'secret123',
+        nombre: 'Juan Perez',
+        staff_password: 'wrong-secret'
+      }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(store.createInputs).toHaveLength(0);
 
     await server.close();
   });
@@ -839,14 +894,19 @@ describe('server routes', () => {
         password: 'secret123'
       }
     ]);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       id: 101,
       usuario: 'juan',
       nombre: 'Juan Perez',
       telefono: '54911',
       created_at: '2026-03-10T12:00:00.000Z',
-      inversion: 150000
+      inversion: 150000,
+      token_type: 'Bearer',
+      expires_in: 28800
     });
+    expect(
+      verifyMastercrmSessionToken(response.json().access_token, MASTERCRM_TEST_SESSION_SECRET)
+    ).toMatchObject({ userId: 101, username: 'juan' });
 
     await server.close();
   });
@@ -878,6 +938,57 @@ describe('server routes', () => {
 
     expect(response.statusCode).toBe(401);
     expect(response.json()).toEqual({ message: 'Invalid username or password' });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-clients requires a bearer token', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      payload: { user_id: 101 }
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(store.dashboardInputs).toHaveLength(0);
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-clients rejects access to another user id', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-clients',
+      headers: mastercrmAuthorization(101),
+      payload: { user_id: 202 }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(store.dashboardInputs).toHaveLength(0);
 
     await server.close();
   });
@@ -972,16 +1083,19 @@ describe('server routes', () => {
     const responseFromId = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
+      headers: mastercrmAuthorization(101),
       payload: { id: 101, month: '2026-03' }
     });
     const responseFromUserId = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
+      headers: mastercrmAuthorization(202),
       payload: { user_id: 202 }
     });
     const responseFromUsuarioId = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
+      headers: mastercrmAuthorization(303),
       payload: { usuario_id: '303' }
     });
 
@@ -1228,6 +1342,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-owner-financials',
+      headers: mastercrmAuthorization(101),
       payload: {
         user_id: 101,
         month: '2026-03',
@@ -1273,6 +1388,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-clients',
+      headers: mastercrmAuthorization(999),
       payload: { user_id: 999 }
     });
 
@@ -1299,6 +1415,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(123),
       payload: {
         user_id: '123',
         owner_key: '  OWNER_KEY_DEL_CAJERO  ',
@@ -1350,6 +1467,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(123),
       payload: {
         user_id: 123,
         owner_key: 'rda_owner',
@@ -1382,6 +1500,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(999),
       payload: {
         owner_key: ''
       }
@@ -1423,6 +1542,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(999),
       payload: {
         user_id: 999,
         owner_key: 'owner_1',
@@ -1461,6 +1581,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(123),
       payload: {
         user_id: 123,
         owner_key: 'owner_missing',
@@ -1496,6 +1617,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(123),
       payload: {
         user_id: 123,
         owner_key: 'owner_1',
@@ -1541,6 +1663,7 @@ describe('server routes', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/mastercrm-link-cashier',
+      headers: mastercrmAuthorization(123),
       payload: {
         user_id: 123,
         owner_key: 'owner_1',

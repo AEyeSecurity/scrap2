@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import cors from '@fastify/cors';
-import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Logger } from 'pino';
 import { AsnUserCheckError, assertAsnUserExists, type AssertAsnUserExistsInput } from './asn-user-check';
@@ -51,6 +51,15 @@ import {
   type MastercrmUserStore
 } from './mastercrm-user-store';
 import {
+  issueMastercrmSessionToken,
+  readBearerToken,
+  resolveMastercrmSessionSecret,
+  secretsEqual,
+  verifyMastercrmSessionToken,
+  type MastercrmSessionClaims,
+  MastercrmSessionError
+} from './mastercrm-session';
+import {
   createPlayerPhoneStoreFromEnv,
   normalizePhone,
   toHttpError,
@@ -93,6 +102,7 @@ interface JobQueue {
 
 interface ServerDependencies {
   mastercrmUserStore?: MastercrmUserStore;
+  mastercrmSessionSecret?: string;
   playerPhoneStore?: PlayerPhoneStore;
   landingSessionStore?: LandingSessionStore;
   reportRunStore?: ReportRunStore;
@@ -409,7 +419,8 @@ const mastercrmRegisterBodySchema = z
     name: z.string().optional(),
     telefono: z.string().optional(),
     phone: z.string().optional(),
-    celular: z.string().optional()
+    celular: z.string().optional(),
+    staff_password: z.string().optional()
   })
   .passthrough();
 
@@ -869,7 +880,7 @@ function parseMastercrmLoginPayload(body: unknown): { data?: { username: string;
 }
 
 function parseMastercrmRegisterPayload(body: unknown): {
-  data?: { username: string; password: string; nombre: string; telefono?: string };
+  data?: { username: string; password: string; nombre: string; telefono?: string; staffPassword: string };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmRegisterBodySchema.safeParse(body);
@@ -891,8 +902,15 @@ function parseMastercrmRegisterPayload(body: unknown): {
   const telefono = resolveAliasStringField(parsed.data, ['telefono', 'phone', 'celular'], 'telefono', issues, {
     required: false
   });
+  const staffPassword = resolveAliasStringField(
+    parsed.data,
+    ['staff_password'],
+    'staff_password',
+    issues,
+    { normalize: (value) => value, trim: false }
+  );
 
-  if (issues.length > 0 || !username || !password || !nombre) {
+  if (issues.length > 0 || !username || !password || !nombre || !staffPassword) {
     return { issues };
   }
 
@@ -901,7 +919,8 @@ function parseMastercrmRegisterPayload(body: unknown): {
       username,
       password,
       nombre,
-      ...(telefono ? { telefono } : {})
+      ...(telefono ? { telefono } : {}),
+      staffPassword
     },
     issues
   };
@@ -1049,6 +1068,7 @@ export function createServer(
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
   let cachedMastercrmUserStore: MastercrmUserStore | null = dependencies?.mastercrmUserStore ?? null;
+  let cachedMastercrmSessionSecret: string | null = dependencies?.mastercrmSessionSecret ?? null;
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
   let cachedLandingSessionStore: LandingSessionStore | null = dependencies?.landingSessionStore ?? null;
   let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
@@ -1121,6 +1141,59 @@ export function createServer(
 
     cachedPlayerPhoneStore = createPlayerPhoneStoreFromEnv();
     return cachedPlayerPhoneStore;
+  }
+
+  function getMastercrmSessionSecret(): string {
+    if (cachedMastercrmSessionSecret) {
+      return cachedMastercrmSessionSecret;
+    }
+
+    cachedMastercrmSessionSecret = resolveMastercrmSessionSecret();
+    return cachedMastercrmSessionSecret;
+  }
+
+  async function requireMastercrmSession(
+    request: FastifyRequest,
+    reply: FastifyReply
+  ): Promise<MastercrmSessionClaims | null> {
+    const token = readBearerToken(request.headers.authorization);
+    if (!token) {
+      reply.code(401).send({ message: 'MasterCRM authentication required' });
+      return null;
+    }
+
+    try {
+      const claims = verifyMastercrmSessionToken(token, getMastercrmSessionSecret());
+      const user = await getMastercrmUserStore().getActiveUserById(claims.userId);
+      if (user.username !== claims.username) {
+        reply.code(401).send({ message: 'Invalid or expired MasterCRM session' });
+        return null;
+      }
+
+      return claims;
+    } catch (error) {
+      if (error instanceof MastercrmSessionError && error.code === 'CONFIGURATION') {
+        logger.error({ error }, 'MasterCRM session configuration error');
+        reply.code(500).send({ message: 'MasterCRM session is not configured' });
+        return null;
+      }
+
+      reply.code(401).send({ message: 'Invalid or expired MasterCRM session' });
+      return null;
+    }
+  }
+
+  function requireMatchingMastercrmUser(
+    claims: MastercrmSessionClaims,
+    requestedUserId: number,
+    reply: FastifyReply
+  ): boolean {
+    if (claims.userId === requestedUserId) {
+      return true;
+    }
+
+    reply.code(403).send({ message: 'MasterCRM session cannot access another user' });
+    return false;
   }
 
   function getLandingSessionStore(): LandingSessionStore | null {
@@ -1647,6 +1720,11 @@ export function createServer(
     }
 
     try {
+      const configuredStaffPassword = resolveMastercrmStaffLinkPassword();
+      if (!secretsEqual(parsed.data.staffPassword, configuredStaffPassword)) {
+        return reply.code(403).send({ message: 'Clave tecnica invalida' });
+      }
+
       const createdUser = await getMastercrmUserStore().createUser({
         username: normalizeMastercrmUsername(parsed.data.username),
         password: parsed.data.password,
@@ -1656,6 +1734,10 @@ export function createServer(
 
       return reply.code(201).send(mastercrmUserToResponse(createdUser));
     } catch (error) {
+      if (error instanceof Error && error.message === 'MASTERCRM_STAFF_LINK_PASSWORD is not configured') {
+        return reply.code(500).send({ message: 'Clave tecnica no configurada en backend' });
+      }
+
       const mappedError = toMastercrmHttpError(error);
       if (mappedError) {
         return reply.code(mappedError.statusCode).send({ message: mappedError.message });
@@ -1680,8 +1762,14 @@ export function createServer(
         username: normalizeMastercrmUsername(parsed.data.username),
         password: parsed.data.password
       });
+      const session = issueMastercrmSessionToken(user, getMastercrmSessionSecret());
 
-      return reply.code(200).send(mastercrmUserToResponse(user));
+      return reply.code(200).send({
+        ...mastercrmUserToResponse(user),
+        access_token: session.token,
+        token_type: 'Bearer',
+        expires_in: session.expiresIn
+      });
     } catch (error) {
       const mappedError = toMastercrmHttpError(error);
       if (mappedError) {
@@ -1703,6 +1791,11 @@ export function createServer(
     }
 
     try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
       const dashboard = await getMastercrmUserStore().getClientsDashboard({
         userId: parsed.data.userId,
         month: parsed.data.month
@@ -1806,6 +1899,11 @@ export function createServer(
     }
 
     try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
       const financialInputs = await getMastercrmUserStore().upsertOwnerFinancials({
         userId: parsed.data.userId,
         month: parsed.data.month,
@@ -1840,8 +1938,13 @@ export function createServer(
     }
 
     try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
       const configuredStaffPassword = resolveMastercrmStaffLinkPassword();
-      if (parsed.data.staffPassword !== configuredStaffPassword) {
+      if (!secretsEqual(parsed.data.staffPassword, configuredStaffPassword)) {
         return reply.code(403).send({
           success: false,
           message: 'Clave tecnica invalida'

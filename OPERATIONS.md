@@ -56,6 +56,7 @@ Necesarias para el flujo CRM:
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `MASTERCRM_STAFF_LINK_PASSWORD`
+- `MASTERCRM_SESSION_SECRET` con al menos 32 caracteres
 
 Necesarias para Meta CAPI CTWA V3:
 
@@ -308,6 +309,14 @@ Endpoints usados por el frontend:
 - `POST /mastercrm-clients`
 - `POST /mastercrm-link-cashier`
 - `POST /mastercrm-owner-financials`
+
+Contrato de seguridad:
+
+- `mastercrm-register` exige `staff_password`;
+- `mastercrm-login` devuelve un token Bearer firmado con vigencia de 8 horas;
+- `mastercrm-clients`, `mastercrm-link-cashier` y
+  `mastercrm-owner-financials` exigen ese token;
+- el `user_id` del payload debe coincidir con el usuario autenticado.
 
 ## Errores ASN para usuario inexistente
 
