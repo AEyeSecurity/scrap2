@@ -12,6 +12,8 @@
     return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   }
 
+  const routingSeed = safeRandomId("routing");
+
   function readCookie(name) {
     const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=([^;]*)`));
     return match ? decodeURIComponent(match[1]) : null;
@@ -83,11 +85,11 @@
       : [config.whatsappPhone || "5493515747477"];
   }
 
-  function pickWhatsappPhone(landingSessionId) {
+  function pickWhatsappPhone(seed) {
     const phones = getWhatsappPhones();
     let hash = 0;
-    for (let index = 0; index < landingSessionId.length; index += 1) {
-      hash = (hash * 31 + landingSessionId.charCodeAt(index)) >>> 0;
+    for (let index = 0; index < seed.length; index += 1) {
+      hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
     }
     return phones[hash % phones.length];
   }
@@ -125,12 +127,13 @@
     const fbclid = getSearchParam("fbclid");
     const landingSessionId = getLandingSessionId();
     const fallbackWhatsappUrl = buildWhatsappUrl(
-      pickWhatsappPhone(landingSessionId),
+      pickWhatsappPhone(routingSeed),
       config.whatsappMessage || "Hola quiero mi usuario suertudo del Rey Dorado"
     );
     return {
       eventId,
       landingSessionId,
+      routingSeed,
       fbp: captureFbp(),
       fbc: getFbc(fbclid),
       fbclid,

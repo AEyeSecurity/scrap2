@@ -2089,6 +2089,7 @@ describe('server routes', () => {
           payload: {
             eventId: 'contact:test',
             landingSessionId: 'session_123',
+            routingSeed: 'routing_0',
             fbp: 'fb.1.1710000000000.111',
             fbc: 'fb.1.1710000000000.fbclid-123',
             fbclid: 'fbclid-123',
@@ -2203,7 +2204,8 @@ describe('server routes', () => {
         },
         payload: {
           eventId: 'contact:fallback',
-          landingSessionId: 'session_fallback'
+          landingSessionId: 'session_fallback',
+          routingSeed: 'routing_0'
         }
       });
 
@@ -2221,7 +2223,7 @@ describe('server routes', () => {
     });
   });
 
-  it('POST /landing/contact splits WhatsApp redirects deterministically across both bot numbers', async () => {
+  it('POST /landing/contact re-sorts WhatsApp redirects by routing seed while keeping the landing session stable', async () => {
     await withEnv({ LANDING_ENABLED: 'true' }, async () => {
       const queue = new FakeQueue();
       const landingSessionStore = new FakeLandingSessionStore();
@@ -2245,7 +2247,8 @@ describe('server routes', () => {
         url: '/landing/contact',
         payload: {
           eventId: 'contact:split-primary',
-          landingSessionId: 'session_1'
+          landingSessionId: 'session_stable',
+          routingSeed: 'routing_1'
         }
       });
       const secondary = await server.inject({
@@ -2253,7 +2256,8 @@ describe('server routes', () => {
         url: '/landing/contact',
         payload: {
           eventId: 'contact:split-secondary',
-          landingSessionId: 'session_0'
+          landingSessionId: 'session_stable',
+          routingSeed: 'routing_0'
         }
       });
 
@@ -2269,6 +2273,53 @@ describe('server routes', () => {
         '+5493515747477',
         '+5491124872583'
       ]);
+      expect(landingSessionStore.createInputs.map((input) => input.landingSessionId)).toEqual([
+        'session_stable',
+        'session_stable'
+      ]);
+
+      await server.close();
+    });
+  });
+
+  it('POST /landing/contact rejects payloads without a routing seed', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          metaEnabled: false,
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:missing-routing',
+          landingSessionId: 'session_stable'
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        message: 'Invalid payload',
+        code: 'INVALID_PAYLOAD',
+        attributionStatus: 'incomplete',
+        attributionError: 'invalid_payload'
+      });
+      expect(response.json().details.issues).toContainEqual(
+        expect.objectContaining({
+          path: 'routingSeed'
+        })
+      );
 
       await server.close();
     });
@@ -2688,6 +2739,7 @@ describe('server routes', () => {
       payload: {
         eventId: 'contact:landing-lead',
         landingSessionId: 'session_landing_lead',
+        routingSeed: 'routing_0',
         fbp: 'fb.1.1710000000000.111',
         fbc: 'fb.1.1710000000000.fbclid-123',
         fbclid: 'fbclid-123',
@@ -2824,6 +2876,7 @@ describe('server routes', () => {
       payload: {
         eventId: 'contact:landing-n8n-owner',
         landingSessionId: 'session_landing_n8n_owner',
+        routingSeed: 'routing_0',
         fbp: 'fb.1.1710000000000.111',
         eventSourceUrl: 'https://reydeases.imperial-support.com/landing?utm_source=meta',
         utmSource: 'meta'

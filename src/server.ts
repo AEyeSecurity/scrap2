@@ -349,6 +349,7 @@ const landingContactBodySchema = z
   .object({
     eventId: z.string().trim().min(1),
     landingSessionId: z.string().trim().min(1),
+    routingSeed: z.string().trim().min(1),
     fbp: z.string().trim().min(1).nullable().optional(),
     fbc: z.string().trim().min(1).nullable().optional(),
     fbclid: z.string().trim().min(1).nullable().optional(),
@@ -1273,7 +1274,7 @@ export function createServer(
       return null;
     }
 
-    const botPhone = resolveLandingBotWhatsappPhone(input.payload.landingSessionId);
+    const botPhone = resolveLandingBotWhatsappPhone(input.payload.routingSeed);
     for (let attempt = 0; attempt < LANDING_DESCRIPTOR_ATTEMPTS; attempt += 1) {
       const messageText = buildLandingWhatsappMessage(input.payload.landingSessionId, attempt);
       const messageKey = normalizeLandingMessageKey(messageText);
@@ -1609,7 +1610,7 @@ export function createServer(
     const clientUserAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader ?? null;
     const referrerHeader = request.headers.referer;
     const referrer = payload.referrer ?? (Array.isArray(referrerHeader) ? referrerHeader[0] : referrerHeader) ?? null;
-    const fallbackBotPhone = resolveLandingBotWhatsappPhone(payload.landingSessionId);
+    const fallbackBotPhone = resolveLandingBotWhatsappPhone(payload.routingSeed);
     const fallbackWhatsappUrl =
       payload.whatsappUrl ?? buildLandingWhatsappUrl(fallbackBotPhone, LANDING_WHATSAPP_MESSAGE);
     let landingSession: LandingSessionRecord | null = null;
