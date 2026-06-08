@@ -2004,7 +2004,7 @@ describe('server routes', () => {
         expect(response.body).toContain('/landing/terminos');
         expect(response.body).toContain('"pixelId":"1234567890"');
         expect(response.body).toContain('"whatsappPhone":"5493515747477"');
-        expect(response.body).toContain('"whatsappPhones":["5493515747477","5493516603205"]');
+        expect(response.body).toContain('"whatsappPhones":["5493515747477"]');
         expect(response.body).not.toContain('"cashierPhone"');
         expect(response.body).not.toContain('5493516549344');
         expect(response.body).toContain(
@@ -2113,7 +2113,7 @@ describe('server routes', () => {
           tracked: true,
           trackingStatus: 'sent',
           eventId: 'contact:test',
-          whatsappUrl: 'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+          whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
           whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
           attributionStatus: 'persisted',
           ownerContext: {
@@ -2128,7 +2128,7 @@ describe('server routes', () => {
           messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
           messageKey: 'hola quiero mi usuario suertudo del rey dorado',
           pagina: 'RdA',
-          botPhoneE164: '+5493516603205',
+          botPhoneE164: '+5493515747477',
           cashierPhoneE164: '+5493516549344',
           utmId: '6991129588056',
           utmCampaign: 'Mayo RDA',
@@ -2168,7 +2168,7 @@ describe('server routes', () => {
             AdsetId: '69911377388568',
             AdId: '699113773885680',
             Placement: 'facebook_feed',
-            WhatsappUrl: 'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            WhatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
             ClientIpAddress: '181.45.10.22',
             ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
           }
@@ -2214,7 +2214,7 @@ describe('server routes', () => {
         status: 'ok',
         tracked: false,
         trackingStatus: 'disabled',
-        whatsappUrl: 'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
         whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
         attributionStatus: 'incomplete'
       });
@@ -2223,7 +2223,7 @@ describe('server routes', () => {
     });
   });
 
-  it('POST /landing/contact re-sorts WhatsApp redirects by routing seed while keeping the landing session stable', async () => {
+  it('POST /landing/contact keeps the WhatsApp redirect fixed while preserving routing seed identity', async () => {
     await withEnv({ LANDING_ENABLED: 'true' }, async () => {
       const queue = new FakeQueue();
       const landingSessionStore = new FakeLandingSessionStore();
@@ -2251,27 +2251,27 @@ describe('server routes', () => {
           routingSeed: 'routing_1'
         }
       });
-      const secondary = await server.inject({
+      const repeated = await server.inject({
         method: 'POST',
         url: '/landing/contact',
         payload: {
-          eventId: 'contact:split-secondary',
+          eventId: 'contact:fixed-secondary',
           landingSessionId: 'session_stable',
           routingSeed: 'routing_0'
         }
       });
 
       expect(primary.statusCode).toBe(200);
-      expect(secondary.statusCode).toBe(200);
+      expect(repeated.statusCode).toBe(200);
       expect(primary.json().whatsappUrl).toBe(
         'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
       );
-      expect(secondary.json().whatsappUrl).toBe(
-        'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+      expect(repeated.json().whatsappUrl).toBe(
+        'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
       );
       expect(landingSessionStore.createInputs.map((input) => input.botPhoneE164)).toEqual([
         '+5493515747477',
-        '+5493516603205'
+        '+5493515747477'
       ]);
       expect(landingSessionStore.createInputs.map((input) => input.landingSessionId)).toEqual([
         'session_stable',
@@ -2810,7 +2810,7 @@ describe('server routes', () => {
         utmSource: 'meta',
         utmMedium: 'paid_social',
         utmCampaign: 'rda_landing',
-        whatsappUrl: 'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
         waId: '5493511112222',
         messageSid: 'SM-LANDING',
         accountSid: 'AC-LANDING',
@@ -2922,7 +2922,7 @@ describe('server routes', () => {
       sourceContext: {
         landingSessionId: 'session_landing_n8n_owner',
         ctaType: 'whatsapp_click',
-        whatsappUrl: 'https://wa.me/5493516603205?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
       }
     });
     expect(metaStore.landingLeadInputs[0]).toMatchObject({

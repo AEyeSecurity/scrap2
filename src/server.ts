@@ -134,7 +134,7 @@ interface ValidationIssue {
 }
 
 const LANDING_PUBLIC_DIR = join(process.cwd(), 'public', 'landing');
-const LANDING_BOT_WHATSAPP_PHONES = ['5493515747477', '5493516603205'] as const;
+const LANDING_BOT_WHATSAPP_PHONES = ['5493515747477'] as const;
 const LANDING_BOT_WHATSAPP_PHONE = LANDING_BOT_WHATSAPP_PHONES[0];
 const LANDING_CASHIER_WHATSAPP_PHONE = '5493516549344';
 const LANDING_WHATSAPP_MESSAGE = 'Hola quiero mi usuario suertudo del Rey Dorado';
