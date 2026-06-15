@@ -1,0 +1,635 @@
+:root {
+  --bg: #050806;
+  --panel: rgba(7, 18, 12, 0.78);
+  --panel-strong: rgba(6, 12, 9, 0.9);
+  --ink: #fff6d6;
+  --muted: #dfd4ad;
+  --gold: #ffd75a;
+  --gold-deep: #b88418;
+  --green: #22d76f;
+  --green-deep: #078342;
+  --violet: #7e46d7;
+  --red: #c53b37;
+  --blue: #226fcb;
+  --line: rgba(255, 229, 128, 0.34);
+  --shadow: rgba(0, 0, 0, 0.72);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  font-family: "Aptos Display", "Trebuchet MS", Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at 50% 14%, rgba(255, 216, 88, 0.16), transparent 18rem),
+    linear-gradient(180deg, #081009 0%, #120c22 44%, #050806 100%);
+  color: var(--ink);
+}
+
+a {
+  color: inherit;
+}
+
+.rdav2 {
+  min-height: 100vh;
+  min-height: 100svh;
+}
+
+.rdav2-hero {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto auto auto auto;
+  gap: 16px;
+  min-height: 100vh;
+  min-height: 100svh;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 14px 14px calc(16px + var(--safe-bottom));
+}
+
+.rdav2-hero__backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.38), rgba(0, 0, 0, 0.72)),
+    radial-gradient(circle at 48% 28%, rgba(126, 70, 215, 0.28), transparent 18rem),
+    radial-gradient(circle at 50% 48%, rgba(24, 170, 85, 0.18), transparent 20rem),
+    linear-gradient(135deg, #071108 0%, #1b0d34 45%, #050705 100%);
+}
+
+.rdav2-hero__backdrop::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  opacity: 0.24;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 42px 42px;
+  mask-image: linear-gradient(180deg, black, transparent 76%);
+}
+
+.rdav2-topbar {
+  display: grid;
+  grid-template-columns: 64px minmax(130px, 1fr) 64px;
+  align-items: center;
+  gap: 8px;
+  width: min(100%, 900px);
+  margin: 0 auto;
+}
+
+.rdav2-logo {
+  display: block;
+  justify-self: center;
+  width: 140px;
+  height: auto;
+  filter: drop-shadow(0 10px 24px rgba(0, 0, 0, 0.78));
+}
+
+.rdav2-pill,
+.rdav2-age {
+  display: inline-grid;
+  min-height: 42px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.42);
+  color: var(--gold);
+  font-weight: 900;
+  text-transform: uppercase;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
+}
+
+.rdav2-pill {
+  font-size: 0.82rem;
+}
+
+.rdav2-age {
+  font-size: 1.05rem;
+}
+
+.rdav2-stage {
+  display: grid;
+  gap: 11px;
+  width: min(100%, 720px);
+  margin: 0 auto;
+  text-align: center;
+}
+
+.rdav2-copy {
+  display: grid;
+  gap: 7px;
+}
+
+.rdav2-kicker,
+.rdav2-subtitle,
+.rdav2-action__label,
+.rdav2-note,
+.rdav2-legal {
+  margin: 0;
+}
+
+.rdav2-kicker {
+  color: var(--gold);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.rdav2 h1 {
+  margin: 0;
+  color: #fff;
+  font-family: Impact, "Aptos Display", Arial, sans-serif;
+  font-size: clamp(2.25rem, 12vw, 3.15rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-shadow:
+    0 0 18px rgba(255, 215, 90, 0.42),
+    0 5px 26px var(--shadow);
+}
+
+.rdav2-subtitle {
+  width: min(100%, 500px);
+  margin: 0 auto;
+  color: var(--muted);
+  font-size: 0.94rem;
+  line-height: 1.35;
+}
+
+.rdav2-proof-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  padding: 0;
+  margin: 2px 0 0;
+  list-style: none;
+}
+
+.rdav2-proof-row li {
+  border: 1px solid rgba(255, 215, 90, 0.28);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(0, 0, 0, 0.32);
+  color: rgba(255, 246, 214, 0.9);
+  font-size: 0.68rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.rdav2-visual {
+  position: relative;
+  width: min(54vw, 218px);
+  aspect-ratio: 1;
+  margin: 0 auto;
+}
+
+.rdav2-visual::before {
+  position: absolute;
+  inset: 13% 8% 9%;
+  content: "";
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 216, 88, 0.42), rgba(126, 70, 215, 0.08) 52%, transparent 68%);
+  filter: blur(12px);
+}
+
+.rdav2-visual img {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 42%;
+  clip-path: circle(42% at 50% 44%);
+  filter:
+    drop-shadow(0 18px 22px rgba(0, 0, 0, 0.58))
+    saturate(1.08);
+}
+
+.rdav2-action {
+  display: grid;
+  gap: 9px;
+  width: min(100%, 520px);
+  margin: 0 auto;
+  border: 1px solid rgba(126, 70, 215, 0.56);
+  border-radius: 8px;
+  padding: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.07), transparent 42%),
+    var(--panel);
+  box-shadow:
+    0 18px 44px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.rdav2-action__label {
+  color: #efe8d2;
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.rdav2-cta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  min-height: 60px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  padding: 12px 16px;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.26), transparent 34%),
+    linear-gradient(90deg, var(--green) 0%, #23c760 54%, var(--green-deep) 100%);
+  color: white;
+  font-size: clamp(1.05rem, 5.3vw, 1.35rem);
+  font-weight: 950;
+  text-decoration: none;
+  text-transform: uppercase;
+  box-shadow:
+    0 0 0 5px rgba(34, 215, 111, 0.12),
+    0 0 28px rgba(34, 215, 111, 0.58),
+    0 14px 26px rgba(0, 0, 0, 0.42);
+  animation: rdav2Pulse 1.8s ease-in-out infinite;
+  touch-action: manipulation;
+}
+
+.rdav2-cta::after {
+  position: absolute;
+  inset: -40% auto -40% -32%;
+  width: 26%;
+  content: "";
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.42), transparent);
+  transform: skewX(-18deg);
+  animation: rdav2Shine 2.4s ease-in-out infinite;
+}
+
+.rdav2-cta span,
+.rdav2-cta img {
+  position: relative;
+  z-index: 1;
+}
+
+.rdav2-cta img {
+  width: 34px;
+  height: 34px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+.rdav2-cta:focus-visible {
+  outline: 3px solid var(--gold);
+  outline-offset: 3px;
+}
+
+.rdav2-cta:active {
+  transform: translateY(1px) scale(0.98);
+}
+
+.rdav2-note {
+  color: rgba(255, 246, 214, 0.62);
+  font-size: 0.64rem;
+  line-height: 1.3;
+}
+
+.rdav2-online {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--green);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.rdav2-online__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 6px rgba(34, 215, 111, 0.7);
+  animation: rdav2DotPulse 1.6s ease-in-out infinite;
+}
+
+@keyframes rdav2DotPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.rdav2-flow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.rdav2-flow li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  min-height: 38px;
+  border: 1px solid rgba(255, 215, 90, 0.18);
+  border-radius: 8px;
+  padding: 7px 6px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff5d0;
+  text-align: left;
+}
+
+.rdav2-flow span {
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(180deg, var(--gold), var(--gold-deep));
+  color: #151006;
+  font-size: 0.72rem;
+  font-weight: 950;
+}
+
+.rdav2-flow strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.67rem;
+  font-weight: 850;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.rdav2-terms {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  width: min(100%, 560px);
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(255, 215, 90, 0.28);
+  border-radius: 8px;
+  background: rgba(255, 215, 90, 0.18);
+}
+
+.rdav2-terms div {
+  display: grid;
+  gap: 4px;
+  min-height: 68px;
+  place-items: center;
+  padding: 9px 6px;
+  background: var(--panel-strong);
+  text-align: center;
+}
+
+.rdav2-terms span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.rdav2-terms strong {
+  color: var(--gold);
+  font-size: 0.88rem;
+  text-transform: uppercase;
+}
+
+.rdav2-games {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  width: min(100%, 520px);
+  margin: 0 auto;
+}
+
+.game-tile {
+  position: relative;
+  min-height: 82px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 230, 150, 0.22);
+  border-radius: 8px;
+  background: #0a0d0d;
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.game-tile img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scale(1.02);
+  filter: saturate(1.12) contrast(1.06);
+  transition: transform 220ms ease, filter 220ms ease;
+}
+
+.game-tile::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.04), rgba(0, 0, 0, 0.34) 42%, rgba(0, 0, 0, 0.78)),
+    radial-gradient(circle at 85% 12%, rgba(255, 236, 154, 0.34), transparent 28%);
+}
+
+.game-tile span {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 2;
+  display: grid;
+  gap: 1px;
+  color: white;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.76);
+  text-transform: uppercase;
+}
+
+.game-tile small {
+  color: rgba(255, 231, 146, 0.9);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.game-tile strong {
+  color: #fff;
+  font-size: 0.9rem;
+  font-weight: 950;
+  letter-spacing: 0;
+}
+
+.rdav2-legal {
+  display: grid;
+  gap: 7px;
+  justify-items: center;
+  width: min(100%, 720px);
+  margin: 0 auto;
+  color: rgba(255, 246, 214, 0.86);
+  font-size: 0.72rem;
+  line-height: 1.3;
+  text-align: center;
+}
+
+.rdav2-legal nav {
+  display: flex;
+  gap: 14px;
+}
+
+.rdav2-legal a {
+  color: var(--gold);
+  font-weight: 800;
+  text-underline-offset: 3px;
+}
+
+@keyframes rdav2Pulse {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  50% {
+    filter: brightness(1.12);
+  }
+}
+
+@keyframes rdav2Shine {
+  0% {
+    left: -36%;
+  }
+  42%,
+  100% {
+    left: 112%;
+  }
+}
+
+@media (hover: hover) {
+  .rdav2-cta:hover {
+    filter: brightness(1.1);
+    box-shadow:
+      0 0 0 6px rgba(34, 215, 111, 0.16),
+      0 0 42px rgba(34, 215, 111, 0.72),
+      0 18px 34px rgba(0, 0, 0, 0.48);
+  }
+
+  .game-tile:hover img {
+    transform: scale(1.08);
+    filter: saturate(1.2) contrast(1.12) brightness(1.06);
+  }
+}
+
+@media (min-width: 760px) {
+  .rdav2-hero {
+    gap: 14px;
+    padding: 18px 24px calc(18px + var(--safe-bottom));
+  }
+
+  .rdav2-topbar {
+    grid-template-columns: 86px minmax(180px, 1fr) 86px;
+  }
+
+  .rdav2-logo {
+    width: 176px;
+  }
+
+  .rdav2-pill,
+  .rdav2-age {
+    min-height: 48px;
+  }
+
+  .rdav2-stage {
+    grid-template-columns: minmax(0, 1fr) 300px;
+    grid-template-areas:
+      "copy visual"
+      "action visual";
+    align-items: center;
+    width: min(100%, 860px);
+    text-align: left;
+  }
+
+  .rdav2-copy {
+    grid-area: copy;
+  }
+
+  .rdav2 h1 {
+    font-size: 4.1rem;
+  }
+
+  .rdav2-subtitle {
+    margin: 0;
+    font-size: 1.04rem;
+  }
+
+  .rdav2-proof-row {
+    justify-content: flex-start;
+  }
+
+  .rdav2-visual {
+    grid-area: visual;
+    width: 300px;
+    margin: 0;
+  }
+
+  .rdav2-action {
+    grid-area: action;
+    margin: 0;
+  }
+
+  .rdav2-flow strong {
+    font-size: 0.72rem;
+  }
+
+  .rdav2-terms {
+    width: min(100%, 640px);
+  }
+
+  .rdav2-games {
+    grid-template-columns: repeat(6, 1fr);
+    width: min(100%, 760px);
+  }
+
+  .game-tile {
+    min-height: 104px;
+  }
+
+  .game-tile strong {
+    font-size: 1rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .rdav2 h1 {
+    font-size: 2.25rem;
+  }
+
+  .rdav2-cta {
+    font-size: 1.08rem;
+  }
+
+  .rdav2-terms strong {
+    font-size: 0.76rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}

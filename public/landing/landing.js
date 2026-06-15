@@ -25,7 +25,8 @@
   }
 
   function getLandingSessionId() {
-    const key = "rda_landing_session_id";
+    const variant = config.landingVariant || "rda-luqui10-v1";
+    const key = `rda_landing_session_id_${variant}`;
     try {
       const existing = window.localStorage.getItem(key);
       if (existing) {
@@ -133,6 +134,7 @@
     return {
       eventId,
       landingSessionId,
+      landingVariant: config.landingVariant || "rda-luqui10-v1",
       routingSeed,
       fbp: captureFbp(),
       fbc: getFbc(fbclid),

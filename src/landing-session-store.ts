@@ -16,6 +16,7 @@ export interface CreateLandingSessionInput {
   messageKey: string;
   pagina: PaginaCode;
   ownerContext: Pick<OwnerContext, 'ownerKey' | 'ownerLabel'>;
+  landingVariant?: string | null;
   botPhoneE164: string;
   cashierPhoneE164: string;
   fbp?: string | null;
@@ -54,6 +55,7 @@ export interface LandingSessionRecord {
   pagina: PaginaCode;
   ownerKey: string;
   ownerLabel: string;
+  landingVariant: string | null;
   botPhoneE164: string;
   cashierPhoneE164: string;
   fbp: string | null;
@@ -105,6 +107,7 @@ interface LandingSessionRow {
   pagina: PaginaCode;
   owner_key: string;
   owner_label: string;
+  landing_variant: string | null;
   bot_phone_e164: string;
   cashier_phone_e164: string;
   fbp: string | null;
@@ -157,6 +160,7 @@ function mapRow(row: LandingSessionRow): LandingSessionRecord {
     pagina: row.pagina,
     ownerKey: row.owner_key,
     ownerLabel: row.owner_label,
+    landingVariant: row.landing_variant,
     botPhoneE164: row.bot_phone_e164,
     cashierPhoneE164: row.cashier_phone_e164,
     fbp: row.fbp,
@@ -207,7 +211,7 @@ function toMetaSourceContext(row: LandingSessionRecord): MetaSourceContext {
     eventSourceUrl: row.eventSourceUrl,
     referrer: row.referrer,
     landingSessionId: row.landingSessionId,
-    landingVariant: 'rda-luqui10-v1',
+    landingVariant: row.landingVariant ?? 'rda-luqui10-v1',
     ctaType: 'whatsapp_click',
     utmSource: row.utmSource,
     utmMedium: row.utmMedium,
@@ -243,6 +247,7 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
         pagina: input.pagina,
         owner_key: input.ownerContext.ownerKey,
         owner_label: input.ownerContext.ownerLabel,
+        landing_variant: input.landingVariant ?? null,
         bot_phone_e164: input.botPhoneE164,
         cashier_phone_e164: input.cashierPhoneE164,
         fbp: input.fbp ?? null,

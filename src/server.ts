@@ -166,6 +166,7 @@ const LANDING_DESCRIPTOR_SUFFIXES = ['del Rey', 'de Ases', 'del Mono', 'de la Co
 const LANDING_DESCRIPTOR_ATTEMPTS =
   1 + LANDING_DESCRIPTOR_BASES.length * LANDING_DESCRIPTOR_QUALIFIERS.length * LANDING_DESCRIPTOR_SUFFIXES.length;
 const LANDING_ASSET_VERSION = process.env.LANDING_ASSET_VERSION?.trim() || Date.now().toString(36);
+const LANDING_RDAV2_VARIANT = 'rda-luqui10-rdav2';
 
 interface LandingPublicConfig {
   pixelId: string | null;
@@ -349,6 +350,7 @@ const landingContactBodySchema = z
   .object({
     eventId: z.string().trim().min(1),
     landingSessionId: z.string().trim().min(1),
+    landingVariant: z.string().trim().min(1).nullable().optional(),
     routingSeed: z.string().trim().min(1),
     fbp: z.string().trim().min(1).nullable().optional(),
     fbc: z.string().trim().min(1).nullable().optional(),
@@ -763,7 +765,10 @@ function getLandingPixelId(env: NodeJS.ProcessEnv = process.env): string | null 
   return pixelId && /^\d+$/.test(pixelId) ? pixelId : null;
 }
 
-function buildLandingPublicConfig(env: NodeJS.ProcessEnv = process.env): LandingPublicConfig {
+function buildLandingPublicConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  options: { landingVariant?: string } = {}
+): LandingPublicConfig {
   return {
     pixelId: getLandingPixelId(env),
     contactEndpoint: '/landing/contact',
@@ -771,7 +776,7 @@ function buildLandingPublicConfig(env: NodeJS.ProcessEnv = process.env): Landing
     whatsappPhone: LANDING_BOT_WHATSAPP_PHONE,
     whatsappPhones: [...LANDING_BOT_WHATSAPP_PHONES],
     whatsappMessage: LANDING_WHATSAPP_MESSAGE,
-    landingVariant: LANDING_VARIANT,
+    landingVariant: options.landingVariant ?? LANDING_VARIANT,
     ownerKey: LANDING_OWNER_CONTEXT.ownerKey,
     ownerLabel: LANDING_OWNER_CONTEXT.ownerLabel
   };
@@ -1290,6 +1295,7 @@ export function createServer(
           messageKey,
           pagina: 'RdA',
           ownerContext: LANDING_OWNER_CONTEXT,
+          landingVariant: input.payload.landingVariant ?? LANDING_VARIANT,
           botPhoneE164: `+${botPhone}`,
           cashierPhoneE164: `+${LANDING_CASHIER_WHATSAPP_PHONE}`,
           fbp: input.payload.fbp ?? null,
@@ -1335,7 +1341,7 @@ export function createServer(
       eventSourceUrl: landingSourceContext.eventSourceUrl ?? whatsappSourceContext?.eventSourceUrl ?? null,
       referrer: landingSourceContext.referrer ?? whatsappSourceContext?.referrer ?? null,
       landingSessionId: landingSession.landingSessionId,
-      landingVariant: LANDING_VARIANT,
+      landingVariant: landingSourceContext.landingVariant ?? whatsappSourceContext?.landingVariant ?? LANDING_VARIANT,
       ctaType: 'whatsapp_click',
       utmSource: landingSourceContext.utmSource ?? whatsappSourceContext?.utmSource ?? null,
       utmMedium: landingSourceContext.utmMedium ?? whatsappSourceContext?.utmMedium ?? null,
@@ -1490,9 +1496,9 @@ export function createServer(
     metaWorker.start();
   }
 
-  async function sendLandingHtml(reply: FastifyReply, fileName: string) {
+  async function sendLandingHtml(reply: FastifyReply, fileName: string, landingVariant: string = LANDING_VARIANT) {
     const template = await readFile(join(LANDING_PUBLIC_DIR, fileName), 'utf8');
-    const config = buildLandingPublicConfig();
+    const config = buildLandingPublicConfig(process.env, { landingVariant });
     const html = template
       .replace('__LANDING_CONFIG_JSON__', escapeScriptJson(config))
       .replace('__META_PIXEL_NOSCRIPT__', buildMetaPixelNoscript(config.pixelId))
@@ -1528,6 +1534,22 @@ export function createServer(
     return sendLandingHtml(reply, 'index.html');
   });
 
+  fastify.get('/landing/rdav2', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'rdav2.html', LANDING_RDAV2_VARIANT);
+  });
+
+  fastify.get('/landing/rdav2/', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'rdav2.html', LANDING_RDAV2_VARIANT);
+  });
+
   fastify.get('/landing/privacidad', async (_request, reply) => {
     if (!landingEnabled) {
       return reply.code(404).send({ message: 'Landing disabled' });
@@ -1546,6 +1568,7 @@ export function createServer(
 
   const landingAssetRoutes = [
     { route: '/landing/styles.css', fileName: 'styles.css', cacheControl: 'public, max-age=300' },
+    { route: '/landing/styles-rdav2.css', fileName: 'styles-rdav2.css', cacheControl: 'public, max-age=300' },
     { route: '/landing/landing.js', fileName: 'landing.js', cacheControl: 'public, max-age=300' },
     {
       route: '/landing/assets/logo-rey-de-ases.webp',
@@ -1565,6 +1588,36 @@ export function createServer(
     {
       route: '/landing/assets/hero-monkey-king.webp',
       fileName: 'assets/hero-monkey-king.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-roulette.webp',
+      fileName: 'assets/rdav2-roulette.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-slots.webp',
+      fileName: 'assets/rdav2-slots.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-blackjack.webp',
+      fileName: 'assets/rdav2-blackjack.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-dice.webp',
+      fileName: 'assets/rdav2-dice.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-jackpot.webp',
+      fileName: 'assets/rdav2-jackpot.webp',
+      cacheControl: 'public, max-age=31536000, immutable'
+    },
+    {
+      route: '/landing/assets/rdav2-baccarat.webp',
+      fileName: 'assets/rdav2-baccarat.webp',
       cacheControl: 'public, max-age=31536000, immutable'
     }
   ];
@@ -1641,7 +1694,7 @@ export function createServer(
       eventSourceUrl: payload.eventSourceUrl ?? null,
       referrer,
       landingSessionId: payload.landingSessionId,
-      landingVariant: LANDING_VARIANT,
+      landingVariant: payload.landingVariant ?? LANDING_VARIANT,
       ctaType: 'whatsapp_click',
       utmSource: payload.utmSource ?? null,
       utmMedium: payload.utmMedium ?? null,

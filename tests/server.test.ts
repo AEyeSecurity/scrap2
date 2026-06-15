@@ -349,6 +349,7 @@ class FakeLandingSessionStore implements LandingSessionStore {
       pagina: input.pagina,
       ownerKey: input.ownerContext.ownerKey,
       ownerLabel: input.ownerContext.ownerLabel,
+      landingVariant: input.landingVariant ?? null,
       botPhoneE164: input.botPhoneE164,
       cashierPhoneE164: input.cashierPhoneE164,
       fbp: input.fbp ?? null,
@@ -2035,12 +2036,22 @@ describe('server routes', () => {
       const privacidad = await server.inject({ method: 'GET', url: '/landing/privacidad' });
       const terminos = await server.inject({ method: 'GET', url: '/landing/terminos' });
       const css = await server.inject({ method: 'GET', url: '/landing/styles.css' });
+      const rdav2 = await server.inject({ method: 'GET', url: '/landing/rdav2' });
+      const rdav2Css = await server.inject({ method: 'GET', url: '/landing/styles-rdav2.css' });
+      const rdav2Roulette = await server.inject({ method: 'GET', url: '/landing/assets/rdav2-roulette.webp' });
       const hero = await server.inject({ method: 'GET', url: '/landing/assets/hero-monkey-king.webp' });
 
       expect(privacidad.statusCode).toBe(200);
       expect(terminos.statusCode).toBe(200);
       expect(css.statusCode).toBe(200);
       expect(css.headers['cache-control']).toContain('max-age=300');
+      expect(rdav2.statusCode).toBe(200);
+      expect(rdav2.body).toContain('rda-luqui10-rdav2');
+      expect(rdav2Css.statusCode).toBe(200);
+      expect(rdav2Css.headers['content-type']).toContain('text/css');
+      expect(rdav2Roulette.statusCode).toBe(200);
+      expect(rdav2Roulette.headers['content-type']).toContain('image/webp');
+      expect(rdav2Roulette.headers['cache-control']).toContain('immutable');
       expect(hero.statusCode).toBe(200);
       expect(hero.headers['content-type']).toContain('image/webp');
       expect(hero.headers['cache-control']).toContain('immutable');
@@ -2089,6 +2100,7 @@ describe('server routes', () => {
           payload: {
             eventId: 'contact:test',
             landingSessionId: 'session_123',
+            landingVariant: 'rda-luqui10-rdav2',
             routingSeed: 'routing_0',
             fbp: 'fb.1.1710000000000.111',
             fbc: 'fb.1.1710000000000.fbclid-123',
@@ -2124,6 +2136,7 @@ describe('server routes', () => {
         expect(landingSessionStore.createInputs).toHaveLength(1);
         expect(landingSessionStore.createInputs[0]).toMatchObject({
           landingSessionId: 'session_123',
+          landingVariant: 'rda-luqui10-rdav2',
           contactEventId: 'contact:test',
           messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
           messageKey: 'hola quiero mi usuario suertudo del rey dorado',
@@ -2157,7 +2170,7 @@ describe('server routes', () => {
             EventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
             Referrer: 'https://facebook.com/',
             LandingSessionId: 'session_123',
-            LandingVariant: 'rda-luqui10-v1',
+            LandingVariant: 'rda-luqui10-rdav2',
             CtaType: 'whatsapp_click',
             UtmSource: 'meta',
             UtmMedium: 'paid_social',
