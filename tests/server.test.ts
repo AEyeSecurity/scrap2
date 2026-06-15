@@ -2035,6 +2035,8 @@ describe('server routes', () => {
 
       const privacidad = await server.inject({ method: 'GET', url: '/landing/privacidad' });
       const terminos = await server.inject({ method: 'GET', url: '/landing/terminos' });
+      const rdav2Privacidad = await server.inject({ method: 'GET', url: '/landing/rdav2/privacidad' });
+      const rdav2Terminos = await server.inject({ method: 'GET', url: '/landing/rdav2/terminos' });
       const css = await server.inject({ method: 'GET', url: '/landing/styles.css' });
       const rdav2 = await server.inject({ method: 'GET', url: '/landing/rdav2' });
       const rdav2Css = await server.inject({ method: 'GET', url: '/landing/styles-rdav2.css' });
@@ -2043,10 +2045,26 @@ describe('server routes', () => {
 
       expect(privacidad.statusCode).toBe(200);
       expect(terminos.statusCode).toBe(200);
+      expect(privacidad.body).not.toContain('landing.js');
+      expect(terminos.body).not.toContain('landing.js');
+      expect(rdav2Privacidad.statusCode).toBe(200);
+      expect(rdav2Privacidad.body).toContain('href="/landing/rdav2"');
+      expect(rdav2Privacidad.body).not.toContain('landing.js');
+      expect(rdav2Terminos.statusCode).toBe(200);
+      expect(rdav2Terminos.body).toContain('href="/landing/rdav2"');
+      expect(rdav2Terminos.body).not.toContain('landing.js');
       expect(css.statusCode).toBe(200);
       expect(css.headers['cache-control']).toContain('max-age=300');
       expect(rdav2.statusCode).toBe(200);
       expect(rdav2.body).toContain('rda-luqui10-rdav2');
+      expect(rdav2.body).toContain('"whatsappPhone":"5493516346253"');
+      expect(rdav2.body).toContain('"whatsappPhones":["5493516346253"]');
+      expect(rdav2.body).toContain('Hola quiero un usuario, el codigo de mi bono es: XXXXX');
+      expect(rdav2.body).toContain('/landing/rdav2/privacidad');
+      expect(rdav2.body).toContain('/landing/rdav2/terminos');
+      expect(rdav2.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+      expect(rdav2.headers['x-content-type-options']).toBe('nosniff');
+      expect(rdav2.headers['x-frame-options']).toBe('DENY');
       expect(rdav2Css.statusCode).toBe(200);
       expect(rdav2Css.headers['content-type']).toContain('text/css');
       expect(rdav2Roulette.statusCode).toBe(200);
@@ -2102,6 +2120,7 @@ describe('server routes', () => {
             landingSessionId: 'session_123',
             landingVariant: 'rda-luqui10-rdav2',
             routingSeed: 'routing_0',
+            bonusCode: 'ABCD2',
             fbp: 'fb.1.1710000000000.111',
             fbc: 'fb.1.1710000000000.fbclid-123',
             fbclid: 'fbclid-123',
@@ -2125,8 +2144,9 @@ describe('server routes', () => {
           tracked: true,
           trackingStatus: 'sent',
           eventId: 'contact:test',
-          whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
-          whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
+          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20ABCD2',
+          whatsappMessage: 'Hola quiero un usuario, el codigo de mi bono es: ABCD2',
+          bonusCode: 'ABCD2',
           attributionStatus: 'persisted',
           ownerContext: {
             ownerKey: 'luqui10:luqui10',
@@ -2138,10 +2158,10 @@ describe('server routes', () => {
           landingSessionId: 'session_123',
           landingVariant: 'rda-luqui10-rdav2',
           contactEventId: 'contact:test',
-          messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
-          messageKey: 'hola quiero mi usuario suertudo del rey dorado',
+          messageText: 'Hola quiero un usuario, el codigo de mi bono es: ABCD2',
+          messageKey: 'hola quiero un usuario el codigo de mi bono es abcd2',
           pagina: 'RdA',
-          botPhoneE164: '+5493515747477',
+          botPhoneE164: '+5493516346253',
           cashierPhoneE164: '+5493516549344',
           utmId: '6991129588056',
           utmCampaign: 'Mayo RDA',
@@ -2181,7 +2201,7 @@ describe('server routes', () => {
             AdsetId: '69911377388568',
             AdId: '699113773885680',
             Placement: 'facebook_feed',
-            WhatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+            WhatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20ABCD2',
             ClientIpAddress: '181.45.10.22',
             ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
           }
@@ -2230,6 +2250,85 @@ describe('server routes', () => {
         whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
         whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
         attributionStatus: 'incomplete'
+      });
+
+      await server.close();
+    });
+  });
+
+  it('POST /landing/contact keeps rdav2 on its fixed WhatsApp number even when the fallback URL is spoofed', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          metaEnabled: false,
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:rdav2-fallback',
+          landingSessionId: 'session_rdav2_fallback',
+          landingVariant: 'rda-luqui10-rdav2',
+          routingSeed: 'routing_0',
+          bonusCode: 'QWERT',
+          whatsappUrl: 'https://wa.me/1111111111?text=incorrecto'
+        }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20QWERT',
+        whatsappMessage: 'Hola quiero un usuario, el codigo de mi bono es: QWERT',
+        bonusCode: 'QWERT'
+      });
+
+      await server.close();
+    });
+  });
+
+  it('POST /landing/contact rejects invalid rdav2 bonus codes', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          metaEnabled: false,
+          reportWorkerEnabled: false,
+          metaWorkerEnabled: false
+        }
+      );
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: {
+          eventId: 'contact:invalid-bonus-code',
+          landingSessionId: 'session_invalid_bonus_code',
+          landingVariant: 'rda-luqui10-rdav2',
+          routingSeed: 'routing_0',
+          bonusCode: 'bad'
+        }
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        code: 'INVALID_PAYLOAD'
       });
 
       await server.close();

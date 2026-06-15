@@ -3,6 +3,10 @@
   const TRACKING_TIMEOUT_MS = 900;
   const FBP_POLL_INTERVAL_MS = 100;
   const FBP_POLL_TIMEOUT_MS = 5000;
+  const RDAV2_VARIANT = "rda-luqui10-rdav2";
+  const RDAV2_MESSAGE_PREFIX = "Hola quiero un usuario, el codigo de mi bono es:";
+  const BONUS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const BONUS_CODE_LENGTH = 5;
   let cachedFbp = null;
 
   function safeRandomId(prefix) {
@@ -99,6 +103,28 @@
     return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
   }
 
+  function buildBonusCode(seed) {
+    let hash = 1;
+    const input = `${seed}:0`;
+    for (let index = 0; index < input.length; index += 1) {
+      hash = Math.imul(hash ^ input.charCodeAt(index), 16777619) >>> 0;
+    }
+
+    let code = "";
+    for (let index = 0; index < BONUS_CODE_LENGTH; index += 1) {
+      hash = Math.imul(hash ^ (hash >>> 16), 2246822507) >>> 0;
+      code += BONUS_CODE_ALPHABET[hash % BONUS_CODE_ALPHABET.length];
+    }
+    return code;
+  }
+
+  function getWhatsappMessage(landingSessionId) {
+    if (config.landingVariant === RDAV2_VARIANT) {
+      return `${RDAV2_MESSAGE_PREFIX} ${buildBonusCode(landingSessionId)}`;
+    }
+    return config.whatsappMessage || "Hola quiero mi usuario suertudo del Rey Dorado";
+  }
+
   function initPixel() {
     if (!config.pixelId || window.fbq) {
       return;
@@ -127,9 +153,12 @@
   function buildContactPayload(eventId) {
     const fbclid = getSearchParam("fbclid");
     const landingSessionId = getLandingSessionId();
+    const whatsappMessage = getWhatsappMessage(landingSessionId);
+    const bonusCode =
+      config.landingVariant === RDAV2_VARIANT ? whatsappMessage.slice(-BONUS_CODE_LENGTH) : null;
     const fallbackWhatsappUrl = buildWhatsappUrl(
       pickWhatsappPhone(routingSeed),
-      config.whatsappMessage || "Hola quiero mi usuario suertudo del Rey Dorado"
+      whatsappMessage
     );
     return {
       eventId,
@@ -152,7 +181,8 @@
       placement: getSearchParam("placement"),
       consentMarketing: null,
       consentTimestamp: null,
-      whatsappUrl: fallbackWhatsappUrl
+      whatsappUrl: fallbackWhatsappUrl,
+      ...(bonusCode ? { bonusCode } : {})
     };
   }
 
@@ -198,10 +228,11 @@
   }
 
   function redirectToWhatsapp(whatsappUrl) {
+    const landingSessionId = getLandingSessionId();
     window.location.href =
       whatsappUrl ||
       config.whatsappUrl ||
-      "https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado";
+      buildWhatsappUrl(pickWhatsappPhone(routingSeed), getWhatsappMessage(landingSessionId));
   }
 
   function bindCta() {

@@ -167,6 +167,11 @@ const LANDING_DESCRIPTOR_ATTEMPTS =
   1 + LANDING_DESCRIPTOR_BASES.length * LANDING_DESCRIPTOR_QUALIFIERS.length * LANDING_DESCRIPTOR_SUFFIXES.length;
 const LANDING_ASSET_VERSION = process.env.LANDING_ASSET_VERSION?.trim() || Date.now().toString(36);
 const LANDING_RDAV2_VARIANT = 'rda-luqui10-rdav2';
+const LANDING_RDAV2_BOT_WHATSAPP_PHONE = '5493516346253';
+const LANDING_RDAV2_MESSAGE_PREFIX = 'Hola quiero un usuario, el codigo de mi bono es:';
+const LANDING_RDAV2_BONUS_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const LANDING_RDAV2_BONUS_CODE_LENGTH = 5;
+const LANDING_RDAV2_BONUS_CODE_ATTEMPTS = 64;
 
 interface LandingPublicConfig {
   pixelId: string | null;
@@ -368,7 +373,8 @@ const landingContactBodySchema = z
     placement: z.string().trim().min(1).nullable().optional(),
     consentMarketing: z.boolean().nullable().optional(),
     consentTimestamp: z.string().trim().min(1).nullable().optional(),
-    whatsappUrl: z.string().trim().min(1).nullable().optional()
+    whatsappUrl: z.string().trim().min(1).nullable().optional(),
+    bonusCode: z.string().trim().regex(/^[A-Z0-9]{5}$/).nullable().optional()
   })
   .passthrough();
 
@@ -744,8 +750,31 @@ function buildLandingWhatsappMessage(landingSessionId: string, attempt: number):
   return `Hola quiero mi usuario suertudo del ${descriptor}`;
 }
 
+function buildLandingRdav2BonusCode(seed: string, attempt: number): string {
+  let hash = attempt + 1;
+  const input = `${seed}:${attempt}`;
+  for (let index = 0; index < input.length; index += 1) {
+    hash = Math.imul(hash ^ input.charCodeAt(index), 16777619) >>> 0;
+  }
+
+  let code = '';
+  for (let index = 0; index < LANDING_RDAV2_BONUS_CODE_LENGTH; index += 1) {
+    hash = Math.imul(hash ^ (hash >>> 16), 2246822507) >>> 0;
+    code += LANDING_RDAV2_BONUS_CODE_ALPHABET[hash % LANDING_RDAV2_BONUS_CODE_ALPHABET.length];
+  }
+  return code;
+}
+
+function buildLandingRdav2WhatsappMessage(bonusCode: string): string {
+  return `${LANDING_RDAV2_MESSAGE_PREFIX} ${bonusCode}`;
+}
+
 function buildLandingWhatsappUrl(phone: string, message: string): string {
   return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+}
+
+function isLandingRdav2Variant(landingVariant: string | null | undefined): boolean {
+  return landingVariant === LANDING_RDAV2_VARIANT;
 }
 
 function resolveLandingAllowedOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -769,14 +798,21 @@ function buildLandingPublicConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: { landingVariant?: string } = {}
 ): LandingPublicConfig {
+  const landingVariant = options.landingVariant ?? LANDING_VARIANT;
+  const isRdav2 = isLandingRdav2Variant(landingVariant);
+  const whatsappPhone = isRdav2 ? LANDING_RDAV2_BOT_WHATSAPP_PHONE : LANDING_BOT_WHATSAPP_PHONE;
+  const whatsappMessage = isRdav2
+    ? buildLandingRdav2WhatsappMessage('XXXXX')
+    : LANDING_WHATSAPP_MESSAGE;
+
   return {
     pixelId: getLandingPixelId(env),
     contactEndpoint: '/landing/contact',
-    whatsappUrl: LANDING_WHATSAPP_URL,
-    whatsappPhone: LANDING_BOT_WHATSAPP_PHONE,
-    whatsappPhones: [...LANDING_BOT_WHATSAPP_PHONES],
-    whatsappMessage: LANDING_WHATSAPP_MESSAGE,
-    landingVariant: options.landingVariant ?? LANDING_VARIANT,
+    whatsappUrl: buildLandingWhatsappUrl(whatsappPhone, whatsappMessage),
+    whatsappPhone,
+    whatsappPhones: isRdav2 ? [LANDING_RDAV2_BOT_WHATSAPP_PHONE] : [...LANDING_BOT_WHATSAPP_PHONES],
+    whatsappMessage,
+    landingVariant,
     ownerKey: LANDING_OWNER_CONTEXT.ownerKey,
     ownerLabel: LANDING_OWNER_CONTEXT.ownerLabel
   };
@@ -1279,9 +1315,19 @@ export function createServer(
       return null;
     }
 
-    const botPhone = resolveLandingBotWhatsappPhone(input.payload.routingSeed);
-    for (let attempt = 0; attempt < LANDING_DESCRIPTOR_ATTEMPTS; attempt += 1) {
-      const messageText = buildLandingWhatsappMessage(input.payload.landingSessionId, attempt);
+    const isRdav2 = isLandingRdav2Variant(input.payload.landingVariant);
+    const botPhone = isRdav2
+      ? LANDING_RDAV2_BOT_WHATSAPP_PHONE
+      : resolveLandingBotWhatsappPhone(input.payload.routingSeed);
+    const attempts = isRdav2 ? LANDING_RDAV2_BONUS_CODE_ATTEMPTS : LANDING_DESCRIPTOR_ATTEMPTS;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const messageText = isRdav2
+        ? buildLandingRdav2WhatsappMessage(
+            attempt === 0 && input.payload.bonusCode
+              ? input.payload.bonusCode
+              : buildLandingRdav2BonusCode(input.payload.landingSessionId, attempt)
+          )
+        : buildLandingWhatsappMessage(input.payload.landingSessionId, attempt);
       const messageKey = normalizeLandingMessageKey(messageText);
       if (!messageKey) {
         continue;
@@ -1507,6 +1553,22 @@ export function createServer(
     return reply
       .header('content-type', 'text/html; charset=utf-8')
       .header('cache-control', 'no-store')
+      .header('content-security-policy', [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' https://connect.facebook.net https://static.cloudflareinsights.com",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: https://www.facebook.com https://*.facebook.com",
+        "connect-src 'self' https://connect.facebook.net https://www.facebook.com https://*.facebook.com https://cloudflareinsights.com",
+        "font-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'"
+      ].join('; '))
+      .header('permissions-policy', 'camera=(), microphone=(), geolocation=()')
+      .header('referrer-policy', 'strict-origin-when-cross-origin')
+      .header('strict-transport-security', 'max-age=31536000; includeSubDomains')
+      .header('x-content-type-options', 'nosniff')
+      .header('x-frame-options', 'DENY')
       .send(html);
   }
 
@@ -1515,6 +1577,9 @@ export function createServer(
     return reply
       .header('content-type', landingContentType(fileName))
       .header('cache-control', cacheControl)
+      .header('referrer-policy', 'strict-origin-when-cross-origin')
+      .header('strict-transport-security', 'max-age=31536000; includeSubDomains')
+      .header('x-content-type-options', 'nosniff')
       .send(body);
   }
 
@@ -1548,6 +1613,22 @@ export function createServer(
     }
 
     return sendLandingHtml(reply, 'rdav2.html', LANDING_RDAV2_VARIANT);
+  });
+
+  fastify.get('/landing/rdav2/privacidad', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'privacidad-rdav2.html', LANDING_RDAV2_VARIANT);
+  });
+
+  fastify.get('/landing/rdav2/terminos', async (_request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    return sendLandingHtml(reply, 'terminos-rdav2.html', LANDING_RDAV2_VARIANT);
   });
 
   fastify.get('/landing/privacidad', async (_request, reply) => {
@@ -1663,9 +1744,18 @@ export function createServer(
     const clientUserAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader ?? null;
     const referrerHeader = request.headers.referer;
     const referrer = payload.referrer ?? (Array.isArray(referrerHeader) ? referrerHeader[0] : referrerHeader) ?? null;
-    const fallbackBotPhone = resolveLandingBotWhatsappPhone(payload.routingSeed);
-    const fallbackWhatsappUrl =
-      payload.whatsappUrl ?? buildLandingWhatsappUrl(fallbackBotPhone, LANDING_WHATSAPP_MESSAGE);
+    const isRdav2 = isLandingRdav2Variant(payload.landingVariant);
+    const fallbackBotPhone = isRdav2
+      ? LANDING_RDAV2_BOT_WHATSAPP_PHONE
+      : resolveLandingBotWhatsappPhone(payload.routingSeed);
+    const fallbackBonusCode =
+      payload.bonusCode ?? buildLandingRdav2BonusCode(payload.landingSessionId, 0);
+    const fallbackWhatsappMessage = isRdav2
+      ? buildLandingRdav2WhatsappMessage(fallbackBonusCode)
+      : LANDING_WHATSAPP_MESSAGE;
+    const fallbackWhatsappUrl = isRdav2
+      ? buildLandingWhatsappUrl(fallbackBotPhone, fallbackWhatsappMessage)
+      : payload.whatsappUrl ?? buildLandingWhatsappUrl(fallbackBotPhone, fallbackWhatsappMessage);
     let landingSession: LandingSessionRecord | null = null;
     let attributionError: string | null = null;
     try {
@@ -1686,7 +1776,7 @@ export function createServer(
       );
     }
     const whatsappUrl = landingSession?.whatsappUrl ?? fallbackWhatsappUrl;
-    const whatsappMessage = landingSession?.messageText ?? LANDING_WHATSAPP_MESSAGE;
+    const whatsappMessage = landingSession?.messageText ?? fallbackWhatsappMessage;
     const sourceContext: MetaSourceContext = {
       fbp: payload.fbp ?? null,
       fbc: payload.fbc ?? null,
@@ -1763,6 +1853,7 @@ export function createServer(
       eventId: payload.eventId,
       whatsappUrl,
       whatsappMessage,
+      ...(isRdav2 ? { bonusCode: whatsappMessage.slice(-LANDING_RDAV2_BONUS_CODE_LENGTH) } : {}),
       attributionStatus: landingSession ? 'persisted' : 'incomplete',
       ...(attributionError ? { attributionError } : {}),
       ownerContext: {
