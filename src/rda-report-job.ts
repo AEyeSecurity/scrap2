@@ -11,6 +11,60 @@ import type { AppConfig, JobExecutionResult, JobStepResult, RdaReportJobRequest,
 
 const RDA_DEPOSITO_TOTAL_LABEL_REGEX = /dep[o\u00f3]sito\s+total/i;
 const RDA_MONEY_REGEX = /-?\$?\s*\d{1,3}(?:\.\d{3})*,\d{2}|-?\$?\s*\d+,\d{2}|-?\$?\s*\d+/;
+const RDA_CASH_REPORT_MIN_READY_MS = 2_200;
+const RDA_CASH_REPORT_VALUE_STABLE_MS = 1_200;
+const RDA_CASH_REPORT_POLL_MS = 150;
+const RDA_CASH_REPORT_NETWORK_IDLE_TIMEOUT_MS = 5_000;
+
+export type RdaCashReportSettleSample = {
+  ready: boolean;
+  depositoTotalTexto: string | null;
+  sample: string;
+};
+
+export type RdaCashReportSettleState = {
+  readySince: number | null;
+  valueStableSince: number | null;
+  lastValue: string | null;
+  lastSample: string;
+};
+
+export function advanceRdaCashReportSettleState(
+  state: RdaCashReportSettleState,
+  sample: RdaCashReportSettleSample,
+  now: number,
+  options: { minReadyMs?: number; valueStableMs?: number } = {}
+): { state: RdaCashReportSettleState; settled: boolean } {
+  const minReadyMs = options.minReadyMs ?? RDA_CASH_REPORT_MIN_READY_MS;
+  const valueStableMs = options.valueStableMs ?? RDA_CASH_REPORT_VALUE_STABLE_MS;
+  const depositoTotalTexto = sample.depositoTotalTexto ? normalizeSpaces(sample.depositoTotalTexto) : null;
+
+  if (!sample.ready || !depositoTotalTexto) {
+    return {
+      state: {
+        readySince: null,
+        valueStableSince: null,
+        lastValue: null,
+        lastSample: sample.sample
+      },
+      settled: false
+    };
+  }
+
+  const readySince = state.readySince ?? now;
+  const valueStableSince = state.lastValue === depositoTotalTexto ? state.valueStableSince ?? now : now;
+  const nextState = {
+    readySince,
+    valueStableSince,
+    lastValue: depositoTotalTexto,
+    lastSample: sample.sample
+  };
+
+  return {
+    state: nextState,
+    settled: now - readySince >= minReadyMs && now - valueStableSince >= valueStableMs
+  };
+}
 
 function sanitizeFileName(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
@@ -165,13 +219,12 @@ async function readRdaDepositoTotal(page: Page): Promise<string> {
   throw new Error(`Could not find visible "Deposito total" value. Text sample: ${normalizeSpaces(bodyText).slice(0, 240)}`);
 }
 
-async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
-  const startedAt = Date.now();
-  let readySince: number | null = null;
-  let lastSample = '';
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const state = await page.evaluate(() => {
+async function readRdaCashReportSettleSample(page: Page): Promise<RdaCashReportSettleSample> {
+  return page.evaluate(
+    ({ labelSource, moneySource }) => {
+      const labelRegex = new RegExp(labelSource, 'i');
+      const moneyRegex = new RegExp(moneySource);
+      const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
       const doc = (globalThis as any).document;
       const win = (globalThis as any).window;
       const isVisible = (element: any): boolean => {
@@ -179,7 +232,6 @@ async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise
         const style = win.getComputedStyle(element);
         return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
       };
-      const normalize = (value: string) => value.replace(/\s+/g, ' ').trim();
       const spinnerVisible = Array.from(
         doc.querySelectorAll('.spinner-desktop, [class*="spinner"], img[src*="spiner-reydeases"]')
       ).some((element) => isVisible(element));
@@ -190,29 +242,66 @@ async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise
       const tableShellVisible = Array.from(
         doc.querySelectorAll('.cash-report-table-desktop, .cash-report-table-mobile, [class*="cash-report-table"]')
       ).some((element) => isVisible(element));
+      const candidates: any[] = Array.from(
+        doc.querySelectorAll('.cash-report-total-desktop__item, .cash-report-total-mobile__item, [class*="cash-report-total"]')
+      );
+      let depositoTotalTexto: string | null = null;
+
+      for (const element of candidates) {
+        const text = normalize(element.innerText || element.textContent || '');
+        if (!labelRegex.test(text)) {
+          continue;
+        }
+
+        const valueElement = element.querySelector('[class*="value"], .ellipsis-text');
+        const valueText = normalize(valueElement?.innerText || valueElement?.textContent || '');
+        const valueMatch = valueText.match(moneyRegex);
+        const textMatch = text.match(moneyRegex);
+        depositoTotalTexto = (valueMatch?.[0] ?? textMatch?.[0] ?? '').trim() || null;
+        if (depositoTotalTexto) {
+          break;
+        }
+      }
+
+      const bodyText = normalize(doc.body?.innerText ?? '');
+      if (!depositoTotalTexto) {
+        const bodyMatch = bodyText.match(new RegExp(`dep[o\\u00f3]sito\\s+total\\s+(${moneySource})`, 'i'));
+        depositoTotalTexto = bodyMatch?.[1]?.trim() ?? null;
+      }
 
       return {
         ready: !spinnerVisible && totalText.length > 0 && tableShellVisible,
-        sample: normalize(doc.body?.innerText ?? '').slice(0, 240)
+        depositoTotalTexto,
+        sample: bodyText.slice(0, 240)
       };
-    });
+    },
+    { labelSource: RDA_DEPOSITO_TOTAL_LABEL_REGEX.source, moneySource: RDA_MONEY_REGEX.source }
+  );
+}
 
-    lastSample = state.sample;
-    if (state.ready) {
-      if (readySince == null) {
-        readySince = Date.now();
-      }
-      if (Date.now() - readySince >= 400) {
-        return;
-      }
-    } else {
-      readySince = null;
+async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
+  const startedAt = Date.now();
+  let state: RdaCashReportSettleState = {
+    readySince: null,
+    valueStableSince: null,
+    lastValue: null,
+    lastSample: ''
+  };
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const sample = await readRdaCashReportSettleSample(page);
+    const next = advanceRdaCashReportSettleState(state, sample, Date.now());
+    state = next.state;
+    if (next.settled) {
+      return;
     }
 
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(RDA_CASH_REPORT_POLL_MS);
   }
 
-  throw new Error(`RdA cash report did not finish loading before timeout. Text sample: ${lastSample}`);
+  throw new Error(
+    `RdA cash report did not finish loading before timeout. Last depositoTotal=${state.lastValue ?? 'none'}. Text sample: ${state.lastSample}`
+  );
 }
 
 export async function runRdaReportJob(
@@ -299,6 +388,11 @@ export async function runRdaReportJob(
       async () => {
         await page.goto(targetPath, { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
         await findFirstVisibleLocator(page, 'text=/Dep[o\\u00f3]sitos\\s+y\\s+retiros|Dep[o\\u00f3]sito\\s+total/i', runtimeConfig.timeoutMs);
+        await page
+          .waitForLoadState('networkidle', {
+            timeout: Math.min(runtimeConfig.timeoutMs, RDA_CASH_REPORT_NETWORK_IDLE_TIMEOUT_MS)
+          })
+          .catch(() => undefined);
         await waitForRdaCashReportReady(page, runtimeConfig.timeoutMs);
       },
       captureSuccessArtifacts
