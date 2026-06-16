@@ -239,9 +239,6 @@ async function readRdaCashReportSettleSample(page: Page): Promise<RdaCashReportS
         doc.querySelector('.cash-report-total-desktop, .cash-report-total-mobile, [class*="cash-report-total"]')
           ?.textContent ?? ''
       );
-      const tableShellVisible = Array.from(
-        doc.querySelectorAll('.cash-report-table-desktop, .cash-report-table-mobile, [class*="cash-report-table"]')
-      ).some((element) => isVisible(element));
       const candidates: any[] = Array.from(
         doc.querySelectorAll('.cash-report-total-desktop__item, .cash-report-total-mobile__item, [class*="cash-report-total"]')
       );
@@ -270,13 +267,21 @@ async function readRdaCashReportSettleSample(page: Page): Promise<RdaCashReportS
       }
 
       return {
-        ready: !spinnerVisible && totalText.length > 0 && tableShellVisible,
+        ready: !spinnerVisible && totalText.length > 0,
         depositoTotalTexto,
         sample: bodyText.slice(0, 240)
       };
     },
     { labelSource: RDA_DEPOSITO_TOTAL_LABEL_REGEX.source, moneySource: RDA_MONEY_REGEX.source }
   );
+}
+
+async function applyRdaCurrentMonthFilter(page: Page, timeoutMs: number): Promise<void> {
+  const currentMonth = await findFirstVisibleLocator(page, 'text="Este mes"', timeoutMs);
+  await currentMonth.click();
+
+  const acceptFilter = await findFirstVisibleLocator(page, 'button:has-text("Aceptar filtro")', timeoutMs);
+  await acceptFilter.click();
 }
 
 async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
@@ -388,6 +393,7 @@ export async function runRdaReportJob(
       async () => {
         await page.goto(targetPath, { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
         await findFirstVisibleLocator(page, 'text=/Dep[o\\u00f3]sitos\\s+y\\s+retiros|Dep[o\\u00f3]sito\\s+total/i', runtimeConfig.timeoutMs);
+        await applyRdaCurrentMonthFilter(page, runtimeConfig.timeoutMs);
         await page
           .waitForLoadState('networkidle', {
             timeout: Math.min(runtimeConfig.timeoutMs, RDA_CASH_REPORT_NETWORK_IDLE_TIMEOUT_MS)
