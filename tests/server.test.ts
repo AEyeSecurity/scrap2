@@ -5,9 +5,14 @@ import { createLogger } from '../src/logging';
 import { RdaUserCheckError } from '../src/rda-user-check';
 import {
   MastercrmUserStoreError,
+  type DeleteMastercrmMarketingBudgetInput,
+  type GetMastercrmAnalyticsInput,
   type MastercrmClientsDashboardRecord,
+  type MastercrmAnalyticsRecord,
+  type MastercrmMarketingBudgetRecord,
   type MastercrmUserCashierLinkRecord,
-  type MastercrmUserStore
+  type MastercrmUserStore,
+  type UpsertMastercrmMarketingBudgetInput
 } from '../src/mastercrm-user-store';
 import { issueMastercrmSessionToken, verifyMastercrmSessionToken } from '../src/mastercrm-session';
 import { normalizeLandingMessageKey, type LandingSessionRecord, type LandingSessionStore } from '../src/landing-session-store';
@@ -485,6 +490,9 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public readonly getByIdInputs: number[] = [];
   public readonly dashboardInputs: Array<{ userId: number; month?: string }> = [];
   public readonly financialInputs: Array<{ userId: number; month: string; adSpendArs: number; commissionPct: number }> = [];
+  public readonly analyticsInputs: GetMastercrmAnalyticsInput[] = [];
+  public readonly marketingBudgetInputs: UpsertMastercrmMarketingBudgetInput[] = [];
+  public readonly deleteMarketingBudgetInputs: DeleteMastercrmMarketingBudgetInput[] = [];
 
   public readonly linkInputs: Array<{
     userId: number;
@@ -619,6 +627,67 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     commissionPct: input.commissionPct
   });
 
+  public getMarketingAnalyticsBehavior: (input: GetMastercrmAnalyticsInput) => Promise<MastercrmAnalyticsRecord> = async (input) => ({
+    linkedOwner: null,
+    filters: {
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+      channel: input.channel ?? 'all',
+      campaignKey: input.campaignKey ?? null,
+      adKey: input.adKey ?? null
+    },
+    summary: {
+      investmentArs: 0,
+      revenueArs: 0,
+      estimatedProfitArs: null,
+      roiPct: null,
+      roas: null,
+      leads: 0,
+      assigned: 0,
+      depositors: 0,
+      cplArs: null,
+      costPerDepositorArs: null,
+      leadToAssignedPct: null,
+      leadToDepositorPct: null,
+      averageRevenueArs: null
+    },
+    channels: [],
+    campaigns: [],
+    ads: [],
+    clients: [],
+    budgets: [],
+    audit: {
+      unknownLeads: 0,
+      landingUnmatchedLeads: 0,
+      excludedLeads: 0,
+      reentryLeads: 0,
+      missingBudgetCampaigns: 0,
+      missingBudgetAds: 0,
+      negativeAdjustments: []
+    }
+  });
+
+  public upsertMarketingBudgetBehavior: (input: UpsertMastercrmMarketingBudgetInput) => Promise<MastercrmMarketingBudgetRecord> = async (input) => ({
+    id: input.id ?? 'budget-1',
+    channel: input.channel,
+    level: input.level,
+    campaignKey: input.campaignKey,
+    campaignName: input.campaignName,
+    adKey: input.level === 'ad' ? input.adKey ?? null : null,
+    adName: input.adName ?? null,
+    linkUrl: input.linkUrl ?? null,
+    dailyBudgetArs: input.dailyBudgetArs,
+    activeFrom: input.activeFrom,
+    activeTo: input.activeTo ?? null,
+    effectiveSpendArs: input.dailyBudgetArs,
+    updatedAt: '2026-06-18T12:00:00.000Z'
+  });
+
+  public deleteMarketingBudgetBehavior: (input: DeleteMastercrmMarketingBudgetInput) => Promise<{ deleted: true; id: string }> = async (input) => ({
+    deleted: true,
+    id: input.budgetId
+  });
+
   async createUser(input: {
     username: string;
     password: string;
@@ -692,6 +761,21 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   }> {
     this.financialInputs.push(input);
     return this.upsertOwnerFinancialsBehavior(input);
+  }
+
+  async getMarketingAnalytics(input: GetMastercrmAnalyticsInput): Promise<MastercrmAnalyticsRecord> {
+    this.analyticsInputs.push(input);
+    return this.getMarketingAnalyticsBehavior(input);
+  }
+
+  async upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord> {
+    this.marketingBudgetInputs.push(input);
+    return this.upsertMarketingBudgetBehavior(input);
+  }
+
+  async deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }> {
+    this.deleteMarketingBudgetInputs.push(input);
+    return this.deleteMarketingBudgetBehavior(input);
   }
 }
 
@@ -1370,6 +1454,141 @@ describe('server routes', () => {
       adSpendArs: 250000,
       commissionPct: 12.5
     });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-analytics returns marketing analytics for the authenticated user', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-analytics',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        date_from: '2026-06-01',
+        date_to: '2026-06-18',
+        channel: 'landing',
+        campaign_key: 'TESTEO V2'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.analyticsInputs).toEqual([
+      {
+        userId: 101,
+        dateFrom: '2026-06-01',
+        dateTo: '2026-06-18',
+        channel: 'landing',
+        campaignKey: 'TESTEO V2'
+      }
+    ]);
+    expect(response.json().filters).toEqual({
+      dateFrom: '2026-06-01',
+      dateTo: '2026-06-18',
+      channel: 'landing',
+      campaignKey: 'TESTEO V2',
+      adKey: null
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-marketing-budgets upserts a daily ad budget', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-marketing-budgets',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        channel: 'meta_ctwa',
+        level: 'ad',
+        campaign_key: 'Diamond play winner',
+        campaign_name: 'Diamond play winner',
+        ad_key: 'https://www.instagram.com/p/DZInI9YAF7y/',
+        ad_name: 'Diamond play winner',
+        link_url: 'https://www.instagram.com/p/DZInI9YAF7y/',
+        daily_budget_ars: 15000,
+        active_from: '2026-06-01',
+        active_to: '2026-06-18'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.marketingBudgetInputs).toEqual([
+      {
+        userId: 101,
+        channel: 'meta_ctwa',
+        level: 'ad',
+        campaignKey: 'Diamond play winner',
+        campaignName: 'Diamond play winner',
+        adKey: 'https://www.instagram.com/p/DZInI9YAF7y/',
+        adName: 'Diamond play winner',
+        linkUrl: 'https://www.instagram.com/p/DZInI9YAF7y/',
+        dailyBudgetArs: 15000,
+        activeFrom: '2026-06-01',
+        activeTo: '2026-06-18'
+      }
+    ]);
+    expect(response.json()).toMatchObject({
+      id: 'budget-1',
+      channel: 'meta_ctwa',
+      level: 'ad',
+      dailyBudgetArs: 15000
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-marketing-budgets/delete deletes a budget for the authenticated user', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-marketing-budgets/delete',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        budget_id: 'budget-1'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.deleteMarketingBudgetInputs).toEqual([{ userId: 101, budgetId: 'budget-1' }]);
+    expect(response.json()).toEqual({ deleted: true, id: 'budget-1' });
 
     await server.close();
   });

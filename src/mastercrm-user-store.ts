@@ -56,6 +56,38 @@ export interface UpsertMastercrmOwnerFinancialsInput {
   commissionPct: number;
 }
 
+export type MastercrmAnalyticsChannel = 'landing' | 'meta_ctwa';
+export type MastercrmMarketingBudgetLevel = 'campaign' | 'ad';
+
+export interface GetMastercrmAnalyticsInput {
+  userId: number;
+  dateFrom: string;
+  dateTo: string;
+  channel?: MastercrmAnalyticsChannel | 'all';
+  campaignKey?: string;
+  adKey?: string;
+}
+
+export interface UpsertMastercrmMarketingBudgetInput {
+  userId: number;
+  id?: string;
+  channel: MastercrmAnalyticsChannel;
+  level: MastercrmMarketingBudgetLevel;
+  campaignKey: string;
+  campaignName: string;
+  adKey?: string | null;
+  adName?: string | null;
+  linkUrl?: string | null;
+  dailyBudgetArs: number;
+  activeFrom: string;
+  activeTo?: string | null;
+}
+
+export interface DeleteMastercrmMarketingBudgetInput {
+  userId: number;
+  budgetId: string;
+}
+
 export interface MastercrmUserCashierLinkRecord {
   userId: number;
   ownerKey: string;
@@ -199,6 +231,112 @@ export interface MastercrmClientsDashboardRecord {
   clientes: MastercrmOwnerClientRecord[];
 }
 
+export interface MastercrmMarketingBudgetRecord {
+  id: string;
+  channel: MastercrmAnalyticsChannel;
+  level: MastercrmMarketingBudgetLevel;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string | null;
+  adName: string | null;
+  linkUrl: string | null;
+  dailyBudgetArs: number;
+  activeFrom: string;
+  activeTo: string | null;
+  effectiveSpendArs: number;
+  updatedAt: string | null;
+}
+
+export interface MastercrmAnalyticsMetricsRecord {
+  investmentArs: number;
+  revenueArs: number;
+  estimatedProfitArs: number | null;
+  roiPct: number | null;
+  roas: number | null;
+  leads: number;
+  assigned: number;
+  depositors: number;
+  cplArs: number | null;
+  costPerDepositorArs: number | null;
+  leadToAssignedPct: number | null;
+  leadToDepositorPct: number | null;
+  averageRevenueArs: number | null;
+}
+
+export interface MastercrmAnalyticsChannelRecord extends MastercrmAnalyticsMetricsRecord {
+  channel: MastercrmAnalyticsChannel;
+  label: string;
+}
+
+export interface MastercrmAnalyticsCampaignRecord extends MastercrmAnalyticsMetricsRecord {
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  linkUrl: string | null;
+  campaignBudgetArs: number;
+  adBudgetArs: number;
+  undistributedBudgetArs: number;
+}
+
+export interface MastercrmAnalyticsAdRecord extends MastercrmAnalyticsMetricsRecord {
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string;
+  adName: string;
+  linkUrl: string | null;
+  hasOwnBudget: boolean;
+}
+
+export interface MastercrmAnalyticsClientRecord {
+  clientId: string;
+  username: string | null;
+  telefono: string | null;
+  estado: 'assigned' | 'pending';
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string;
+  adName: string;
+  linkUrl: string | null;
+  acquiredAt: string;
+  revenueArs: number;
+}
+
+export interface MastercrmAnalyticsAuditRecord {
+  unknownLeads: number;
+  landingUnmatchedLeads: number;
+  excludedLeads: number;
+  reentryLeads: number;
+  missingBudgetCampaigns: number;
+  missingBudgetAds: number;
+  negativeAdjustments: Array<{
+    clientId: string;
+    username: string | null;
+    amountArs: number;
+    fromDate: string;
+    toDate: string;
+  }>;
+}
+
+export interface MastercrmAnalyticsRecord {
+  linkedOwner: MastercrmLinkedOwnerRecord | null;
+  filters: {
+    dateFrom: string;
+    dateTo: string;
+    channel: MastercrmAnalyticsChannel | 'all';
+    campaignKey: string | null;
+    adKey: string | null;
+  };
+  summary: MastercrmAnalyticsMetricsRecord;
+  channels: MastercrmAnalyticsChannelRecord[];
+  campaigns: MastercrmAnalyticsCampaignRecord[];
+  ads: MastercrmAnalyticsAdRecord[];
+  clients: MastercrmAnalyticsClientRecord[];
+  budgets: MastercrmMarketingBudgetRecord[];
+  audit: MastercrmAnalyticsAuditRecord;
+}
+
 export interface MastercrmUserStore {
   createUser(input: CreateMastercrmUserInput): Promise<MastercrmUserRecord>;
   authenticate(input: AuthenticateMastercrmUserInput): Promise<MastercrmUserRecord>;
@@ -206,6 +344,9 @@ export interface MastercrmUserStore {
   linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord>;
   getClientsDashboard(input: GetMastercrmClientsDashboardInput): Promise<MastercrmClientsDashboardRecord>;
   upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord>;
+  getMarketingAnalytics(input: GetMastercrmAnalyticsInput): Promise<MastercrmAnalyticsRecord>;
+  upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord>;
+  deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }>;
 }
 
 interface MastercrmUserRow {
@@ -262,6 +403,7 @@ interface OwnerClientMonthlyFactRow {
 interface ReportDailySnapshotRow {
   identity_id?: string;
   client_id?: string;
+  link_id?: string;
   report_date: string;
   username: string;
   cargado_hoy: number | string | null;
@@ -295,11 +437,27 @@ interface OwnerClientEventRow {
   occurred_at: string;
 }
 
+interface OwnerMarketingDailyBudgetRow {
+  id: string;
+  channel: MastercrmAnalyticsChannel;
+  level: MastercrmMarketingBudgetLevel;
+  campaign_key: string;
+  campaign_name: string;
+  ad_key: string | null;
+  ad_name: string | null;
+  link_url: string | null;
+  daily_budget_ars: number | string;
+  active_from: string;
+  active_to: string | null;
+  updated_at: string | null;
+}
+
 interface ReportRunFinishedAtRow {
   finished_at: string | null;
 }
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
+const DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export class MastercrmUserStoreError extends Error {
   constructor(
@@ -600,6 +758,184 @@ function pickFirstAttributionEvent(rows: OwnerClientEventRow[]): OwnerClientEven
   return [...candidates].sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at))[0] ?? null;
 }
 
+interface AnalyticsAttributionShape {
+  channel: MastercrmAnalyticsChannel;
+  label: string;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string;
+  adName: string;
+  linkUrl: string | null;
+}
+
+interface MutableAnalyticsMetrics {
+  investmentArs: number;
+  revenueArs: number;
+  leads: number;
+  assigned: number;
+  depositors: number;
+}
+
+interface MutableCampaignAnalytics extends MutableAnalyticsMetrics {
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  linkUrl: string | null;
+  campaignBudgetArs: number;
+  adBudgetArs: number;
+  undistributedBudgetArs: number;
+}
+
+interface MutableAdAnalytics extends MutableAnalyticsMetrics {
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string;
+  adName: string;
+  linkUrl: string | null;
+  hasOwnBudget: boolean;
+}
+
+function makeMutableMetrics(): MutableAnalyticsMetrics {
+  return {
+    investmentArs: 0,
+    revenueArs: 0,
+    leads: 0,
+    assigned: 0,
+    depositors: 0
+  };
+}
+
+function buildMetaAdsManagerAdUrl(adId: string | null): string | null {
+  if (!adId || !/^\d+$/.test(adId)) {
+    return null;
+  }
+
+  const params = new URLSearchParams({ selected_ad_ids: adId });
+  return `https://business.facebook.com/adsmanager/manage/ads?${params.toString()}`;
+}
+
+function buildAnalyticsAttribution(attribution: MastercrmClientAttribution): AnalyticsAttributionShape | null {
+  if (attribution.kind === 'landing') {
+    const landing = attribution.landing;
+    const campaignKey = landing.campaignId ?? landing.campaignName ?? attribution.campaign ?? '';
+    const campaignName = landing.campaignName ?? landing.campaignId ?? attribution.campaign ?? '';
+    const adKey = landing.adId ?? landing.adName ?? landing.utmContent ?? landing.fbclid ?? landing.eventSourceUrl ?? '';
+    const adName = landing.adName ?? landing.adId ?? landing.utmContent ?? adKey;
+    const linkUrl = buildMetaAdsManagerAdUrl(landing.adId) ?? landing.eventSourceUrl ?? landing.whatsappUrl;
+
+    if (!campaignKey || !adKey) {
+      return null;
+    }
+
+    return {
+      channel: 'landing',
+      label: 'Landing',
+      campaignKey,
+      campaignName,
+      adKey,
+      adName,
+      linkUrl
+    };
+  }
+
+  if (attribution.kind === 'meta_ctwa') {
+    const meta = attribution.meta;
+    const campaignKey = meta.referralHeadline ?? meta.referralSourceId ?? meta.referralSourceUrl ?? '';
+    const campaignName = meta.referralHeadline ?? meta.referralSourceId ?? meta.referralSourceUrl ?? '';
+    const adKey = meta.referralSourceId ?? meta.referralSourceUrl ?? meta.ctwaClid ?? campaignKey;
+    const adName = meta.referralHeadline ?? meta.referralSourceId ?? adKey;
+    const linkUrl = meta.referralSourceUrl ?? buildMetaAdsManagerAdUrl(meta.referralSourceId);
+
+    if (!campaignKey || !adKey) {
+      return null;
+    }
+
+    return {
+      channel: 'meta_ctwa',
+      label: 'Meta WhatsApp',
+      campaignKey,
+      campaignName,
+      adKey,
+      adName,
+      linkUrl
+    };
+  }
+
+  return null;
+}
+
+function analyticsChannelLabel(channel: MastercrmAnalyticsChannel): string {
+  return channel === 'landing' ? 'Landing' : 'Meta WhatsApp';
+}
+
+function analyticsGroupKey(...parts: Array<string | null | undefined>): string {
+  return parts.map((part) => part ?? '').join('\u001f');
+}
+
+function calculateBudgetOverlapSpend(
+  budget: Pick<OwnerMarketingDailyBudgetRow, 'daily_budget_ars' | 'active_from' | 'active_to'>,
+  dateFrom: string,
+  dateTo: string
+): number {
+  const overlapFrom = maxDateToken(budget.active_from, dateFrom);
+  const overlapTo = minDateToken(budget.active_to ?? dateTo, dateTo);
+  if (overlapFrom > overlapTo) {
+    return 0;
+  }
+
+  const dailyBudget = toFiniteNumber(budget.daily_budget_ars) ?? 0;
+  return roundTo(dailyBudget * countInclusiveDays(overlapFrom, overlapTo));
+}
+
+function normalizeBudgetRow(row: OwnerMarketingDailyBudgetRow, dateFrom: string, dateTo: string): MastercrmMarketingBudgetRecord {
+  const adKey = row.level === 'ad' ? nullableText(row.ad_key ?? '') : null;
+  return {
+    id: row.id,
+    channel: row.channel,
+    level: row.level,
+    campaignKey: row.campaign_key,
+    campaignName: row.campaign_name,
+    adKey,
+    adName: row.ad_name,
+    linkUrl: row.link_url,
+    dailyBudgetArs: toFiniteNumber(row.daily_budget_ars) ?? 0,
+    activeFrom: row.active_from,
+    activeTo: row.active_to,
+    effectiveSpendArs: calculateBudgetOverlapSpend(row, dateFrom, dateTo),
+    updatedAt: row.updated_at
+  };
+}
+
+function finalizeAnalyticsMetrics(
+  metrics: MutableAnalyticsMetrics,
+  commissionPct: number | null
+): MastercrmAnalyticsMetricsRecord {
+  const investmentArs = roundTo(metrics.investmentArs);
+  const revenueArs = roundTo(metrics.revenueArs);
+  const estimatedProfitArs = commissionPct !== null ? roundTo(revenueArs * (commissionPct / 100)) : null;
+
+  return {
+    investmentArs,
+    revenueArs,
+    estimatedProfitArs,
+    roiPct:
+      estimatedProfitArs !== null && investmentArs > 0
+        ? roundTo(((estimatedProfitArs - investmentArs) / investmentArs) * 100)
+        : null,
+    roas: investmentArs > 0 ? roundTo(revenueArs / investmentArs) : null,
+    leads: metrics.leads,
+    assigned: metrics.assigned,
+    depositors: metrics.depositors,
+    cplArs: metrics.leads > 0 && investmentArs > 0 ? roundTo(investmentArs / metrics.leads) : null,
+    costPerDepositorArs:
+      metrics.depositors > 0 && investmentArs > 0 ? roundTo(investmentArs / metrics.depositors) : null,
+    leadToAssignedPct: metrics.leads > 0 ? roundTo((metrics.assigned / metrics.leads) * 100) : null,
+    leadToDepositorPct: metrics.leads > 0 ? roundTo((metrics.depositors / metrics.leads) * 100) : null,
+    averageRevenueArs: metrics.depositors > 0 ? roundTo(revenueArs / metrics.depositors) : null
+  };
+}
+
 function pickPreferredAliasPhone(rows: OwnerAliasRow[]): string | null {
   const rowsWithPhone = rows.filter((row) => typeof row.alias_phone === 'string' && row.alias_phone.trim().length > 0);
   if (rowsWithPhone.length === 0) {
@@ -714,6 +1050,112 @@ function buildMonthTrail(month: string, count = 6): Array<{
   return trail;
 }
 
+function normalizeMastercrmDate(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!DATE_TOKEN_RE.test(normalized)) {
+    throw new MastercrmUserStoreError('VALIDATION', `${label} must use YYYY-MM-DD format`);
+  }
+
+  const [yearToken, monthToken, dayToken] = normalized.split('-');
+  const year = Number(yearToken);
+  const month = Number(monthToken);
+  const day = Number(dayToken);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    throw new MastercrmUserStoreError('VALIDATION', `${label} must be a real calendar date`);
+  }
+
+  return normalized;
+}
+
+function addDaysToDateToken(dateToken: string, days: number): string {
+  const [yearToken, monthToken, dayToken] = dateToken.split('-');
+  const date = new Date(Date.UTC(Number(yearToken), Number(monthToken) - 1, Number(dayToken) + days));
+  return date.toISOString().slice(0, 10);
+}
+
+function toBuenosAiresStartIso(dateToken: string): string {
+  const [yearToken, monthToken, dayToken] = dateToken.split('-');
+  return new Date(Date.UTC(Number(yearToken), Number(monthToken) - 1, Number(dayToken), 3, 0, 0, 0)).toISOString();
+}
+
+function maxDateToken(left: string, right: string): string {
+  return left >= right ? left : right;
+}
+
+function minDateToken(left: string, right: string): string {
+  return left <= right ? left : right;
+}
+
+function countInclusiveDays(fromDate: string, toDate: string): number {
+  const [fromYear, fromMonth, fromDay] = fromDate.split('-').map(Number);
+  const [toYear, toMonth, toDay] = toDate.split('-').map(Number);
+  const fromTime = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toTime = Date.UTC(toYear, toMonth - 1, toDay);
+  return Math.max(0, Math.floor((toTime - fromTime) / 86_400_000) + 1);
+}
+
+function buildDateRangeWindow(dateFrom: string, dateTo: string): {
+  dateFrom: string;
+  dateTo: string;
+  startedAtIso: string;
+  endedAtIso: string;
+  firstMonthStartDate: string;
+  afterLastMonthStartDate: string;
+  dayAfterDateTo: string;
+  segments: Array<{
+    month: string;
+    monthStartDate: string;
+    nextMonthStartDate: string;
+    fromDate: string;
+    toDate: string;
+  }>;
+} {
+  const normalizedFrom = normalizeMastercrmDate(dateFrom, 'date_from');
+  const normalizedTo = normalizeMastercrmDate(dateTo, 'date_to');
+
+  if (normalizedFrom > normalizedTo) {
+    throw new MastercrmUserStoreError('VALIDATION', 'date_from must be before or equal to date_to');
+  }
+
+  const firstMonth = normalizedFrom.slice(0, 7);
+  const lastMonth = normalizedTo.slice(0, 7);
+  const segments = [];
+  let cursorMonth = firstMonth;
+
+  while (cursorMonth <= lastMonth) {
+    const monthWindow = buildMonthWindow(cursorMonth);
+    const monthEndDate = addDaysToDateToken(monthWindow.nextMonthStartDate, -1);
+    segments.push({
+      month: cursorMonth,
+      monthStartDate: monthWindow.monthStartDate,
+      nextMonthStartDate: monthWindow.nextMonthStartDate,
+      fromDate: maxDateToken(normalizedFrom, monthWindow.monthStartDate),
+      toDate: minDateToken(normalizedTo, monthEndDate)
+    });
+    cursorMonth = monthWindow.nextMonthStartDate.slice(0, 7);
+  }
+
+  const afterLastMonthStartDate = buildMonthWindow(lastMonth).nextMonthStartDate;
+  const dayAfterDateTo = addDaysToDateToken(normalizedTo, 1);
+
+  return {
+    dateFrom: normalizedFrom,
+    dateTo: normalizedTo,
+    startedAtIso: toBuenosAiresStartIso(normalizedFrom),
+    endedAtIso: toBuenosAiresStartIso(dayAfterDateTo),
+    firstMonthStartDate: `${firstMonth}-01`,
+    afterLastMonthStartDate,
+    dayAfterDateTo,
+    segments
+  };
+}
+
 function isDashboardMonthFact(fact: OwnerClientMonthlyFactRow): boolean {
   return Boolean(
     fact.had_intake_in_month ||
@@ -763,6 +1205,42 @@ function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
       }))
     },
     clientes: []
+  };
+}
+
+function buildEmptyAnalytics(
+  window: ReturnType<typeof buildDateRangeWindow>,
+  linkedOwner: MastercrmLinkedOwnerRecord | null = null,
+  filters: Pick<MastercrmAnalyticsRecord['filters'], 'channel' | 'campaignKey' | 'adKey'> = {
+    channel: 'all',
+    campaignKey: null,
+    adKey: null
+  }
+): MastercrmAnalyticsRecord {
+  return {
+    linkedOwner,
+    filters: {
+      dateFrom: window.dateFrom,
+      dateTo: window.dateTo,
+      channel: filters.channel,
+      campaignKey: filters.campaignKey,
+      adKey: filters.adKey
+    },
+    summary: finalizeAnalyticsMetrics(makeMutableMetrics(), null),
+    channels: [],
+    campaigns: [],
+    ads: [],
+    clients: [],
+    budgets: [],
+    audit: {
+      unknownLeads: 0,
+      landingUnmatchedLeads: 0,
+      excludedLeads: 0,
+      reentryLeads: 0,
+      missingBudgetCampaigns: 0,
+      missingBudgetAds: 0,
+      negativeAdjustments: []
+    }
   };
 }
 
@@ -1321,6 +1799,473 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
   }
 
+  async getMarketingAnalytics(input: GetMastercrmAnalyticsInput): Promise<MastercrmAnalyticsRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'id must be a positive integer');
+    }
+
+    const window = buildDateRangeWindow(input.dateFrom, input.dateTo);
+    const requestedChannel = input.channel ?? 'all';
+    if (requestedChannel !== 'all' && requestedChannel !== 'landing' && requestedChannel !== 'meta_ctwa') {
+      throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing, meta_ctwa or all');
+    }
+
+    const campaignFilter = nullableText(input.campaignKey);
+    const adFilter = nullableText(input.adKey);
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      return buildEmptyAnalytics(window, null, {
+        channel: requestedChannel,
+        campaignKey: campaignFilter,
+        adKey: adFilter
+      });
+    }
+
+    const [
+      ownerPhone,
+      eventsResult,
+      factsResult,
+      snapshotsResult,
+      financialSettingsResult,
+      budgetsResult
+    ] = await Promise.all([
+      this.getOwnerPhone(owner.id),
+      this.client
+        .from('owner_client_events')
+        .select('client_id, event_type, payload, occurred_at')
+        .eq('owner_id', owner.id)
+        .eq('event_type', 'intake')
+        .lt('occurred_at', window.endedAtIso),
+      this.client
+        .from('owner_client_monthly_facts')
+        .select(
+          'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
+        )
+        .eq('owner_id', owner.id)
+        .gte('month_start', window.firstMonthStartDate)
+        .lt('month_start', window.afterLastMonthStartDate),
+      this.client
+        .from('report_daily_snapshots')
+        .select('identity_id, client_id, link_id, report_date, username, cargado_hoy, cargado_mes')
+        .eq('owner_id', owner.id)
+        .gte('report_date', window.firstMonthStartDate)
+        .lt('report_date', window.dayAfterDateTo),
+      this.client
+        .from('owner_financial_settings')
+        .select('commission_pct')
+        .eq('owner_id', owner.id)
+        .maybeSingle(),
+      this.client
+        .from('owner_marketing_daily_budgets')
+        .select(
+          'id, channel, level, campaign_key, campaign_name, ad_key, ad_name, link_url, daily_budget_ars, active_from, active_to, updated_at'
+        )
+        .eq('owner_id', owner.id)
+    ]);
+
+    if (eventsResult.error) {
+      throw mapPostgrestError(eventsResult.error, 'Could not read owner client acquisition events');
+    }
+    if (factsResult.error) {
+      throw mapPostgrestError(factsResult.error, 'Could not read owner client monthly facts');
+    }
+    if (snapshotsResult.error) {
+      throw mapPostgrestError(snapshotsResult.error, 'Could not read owner report snapshots');
+    }
+    if (financialSettingsResult.error) {
+      throw mapPostgrestError(financialSettingsResult.error, 'Could not read owner financial settings');
+    }
+    if (budgetsResult.error) {
+      throw mapPostgrestError(budgetsResult.error, 'Could not read owner marketing budgets');
+    }
+
+    const linkedOwner: MastercrmLinkedOwnerRecord = {
+      ownerId: owner.id,
+      ownerKey: owner.owner_key,
+      ownerLabel: owner.owner_label,
+      pagina: owner.pagina,
+      telefono: ownerPhone
+    };
+    const commissionPct = toFiniteNumber((financialSettingsResult.data as OwnerFinancialSettingsRow | null)?.commission_pct);
+    const events = ((eventsResult.data as OwnerClientEventRow[] | null) ?? [])
+      .filter((event) => event.client_id)
+      .sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at));
+    const eventsByClientId = new Map<string, OwnerClientEventRow[]>();
+    for (const event of events) {
+      if (!event.client_id) {
+        continue;
+      }
+      const list = eventsByClientId.get(event.client_id) ?? [];
+      list.push(event);
+      eventsByClientId.set(event.client_id, list);
+    }
+
+    const facts = (factsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
+    const factByClientId = new Map<string, OwnerClientMonthlyFactRow>();
+    for (const fact of facts) {
+      const existing = factByClientId.get(fact.client_id);
+      if (!existing || fact.month_start > existing.month_start) {
+        factByClientId.set(fact.client_id, fact);
+      }
+    }
+
+    const monthlySnapshotByClientId = new Map<string, Map<string, number>>();
+    const usernameByClientId = new Map<string, string | null>();
+    const snapshotRows = (snapshotsResult.data as ReportDailySnapshotRow[] | null) ?? [];
+    for (const snapshot of snapshotRows) {
+      const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
+      if (!clientId) {
+        continue;
+      }
+
+      const dateMap = monthlySnapshotByClientId.get(clientId) ?? new Map<string, number>();
+      const cargadoMes = toFiniteNumber(snapshot.cargado_mes) ?? 0;
+      dateMap.set(snapshot.report_date, roundTo((dateMap.get(snapshot.report_date) ?? 0) + cargadoMes));
+      monthlySnapshotByClientId.set(clientId, dateMap);
+      usernameByClientId.set(clientId, snapshot.username || null);
+    }
+
+    const revenueByClientId = new Map<string, number>();
+    const negativeAdjustments: MastercrmAnalyticsAuditRecord['negativeAdjustments'] = [];
+    for (const [clientId, dateMap] of monthlySnapshotByClientId.entries()) {
+      const sortedDates = [...dateMap.keys()].sort();
+      let clientRevenue = 0;
+
+      for (const segment of window.segments) {
+        const latestDateInRange = [...sortedDates]
+          .filter((date) => date >= segment.fromDate && date <= segment.toDate)
+          .pop();
+        if (!latestDateInRange) {
+          continue;
+        }
+
+        const baselineDate = [...sortedDates]
+          .filter((date) => date >= segment.monthStartDate && date < segment.fromDate)
+          .pop();
+        const latestValue = dateMap.get(latestDateInRange) ?? 0;
+        const baselineValue = baselineDate ? dateMap.get(baselineDate) ?? 0 : 0;
+        const delta = roundTo(latestValue - baselineValue);
+
+        if (delta < 0) {
+          negativeAdjustments.push({
+            clientId,
+            username: usernameByClientId.get(clientId) ?? null,
+            amountArs: delta,
+            fromDate: segment.fromDate,
+            toDate: latestDateInRange
+          });
+          continue;
+        }
+
+        clientRevenue += delta;
+      }
+
+      revenueByClientId.set(clientId, roundTo(clientRevenue));
+    }
+
+    const budgetRows = ((budgetsResult.data as OwnerMarketingDailyBudgetRow[] | null) ?? [])
+      .filter((row) => {
+        if (row.active_from > window.dateTo) {
+          return false;
+        }
+        if (row.active_to && row.active_to < window.dateFrom) {
+          return false;
+        }
+        if (requestedChannel !== 'all' && row.channel !== requestedChannel) {
+          return false;
+        }
+        if (campaignFilter && row.campaign_key !== campaignFilter) {
+          return false;
+        }
+        if (adFilter && row.ad_key !== adFilter) {
+          return false;
+        }
+        return true;
+      })
+      .map((row) => normalizeBudgetRow(row, window.dateFrom, window.dateTo));
+
+    const campaignBudgetByKey = new Map<string, number>();
+    const adBudgetByKey = new Map<string, number>();
+    for (const budget of budgetRows) {
+      if (budget.effectiveSpendArs <= 0) {
+        continue;
+      }
+
+      const campaignKey = analyticsGroupKey(budget.channel, budget.campaignKey);
+      if (budget.level === 'campaign') {
+        campaignBudgetByKey.set(campaignKey, roundTo((campaignBudgetByKey.get(campaignKey) ?? 0) + budget.effectiveSpendArs));
+      } else if (budget.adKey) {
+        const adKey = analyticsGroupKey(budget.channel, budget.campaignKey, budget.adKey);
+        adBudgetByKey.set(adKey, roundTo((adBudgetByKey.get(adKey) ?? 0) + budget.effectiveSpendArs));
+      }
+    }
+
+    const campaigns = new Map<string, MutableCampaignAnalytics>();
+    const ads = new Map<string, MutableAdAnalytics>();
+    const clients: MastercrmAnalyticsClientRecord[] = [];
+    const audit: MastercrmAnalyticsAuditRecord = {
+      unknownLeads: 0,
+      landingUnmatchedLeads: 0,
+      excludedLeads: 0,
+      reentryLeads: 0,
+      missingBudgetCampaigns: 0,
+      missingBudgetAds: 0,
+      negativeAdjustments
+    };
+
+    for (const [clientId, clientEvents] of eventsByClientId.entries()) {
+      const firstEvent = pickFirstAttributionEvent(clientEvents);
+      if (!firstEvent) {
+        continue;
+      }
+
+      const firstEventInRange =
+        firstEvent.occurred_at >= window.startedAtIso && firstEvent.occurred_at < window.endedAtIso;
+      const intakeInRangeCount = clientEvents.filter(
+        (event) => event.occurred_at >= window.startedAtIso && event.occurred_at < window.endedAtIso
+      ).length;
+
+      if (!firstEventInRange) {
+        if (intakeInRangeCount > 0) {
+          audit.reentryLeads += intakeInRangeCount;
+        }
+        continue;
+      }
+
+      const attribution = attributionFromSourceContext(extractMetaSourceContext(firstEvent.payload));
+      if (attribution.kind === 'unknown') {
+        audit.unknownLeads += 1;
+        audit.excludedLeads += 1;
+        continue;
+      }
+      if (attribution.kind === 'landing_unmatched') {
+        audit.landingUnmatchedLeads += 1;
+        audit.excludedLeads += 1;
+        continue;
+      }
+
+      const analyticsAttribution = buildAnalyticsAttribution(attribution);
+      if (!analyticsAttribution) {
+        audit.excludedLeads += 1;
+        continue;
+      }
+
+      if (requestedChannel !== 'all' && analyticsAttribution.channel !== requestedChannel) {
+        continue;
+      }
+      if (campaignFilter && analyticsAttribution.campaignKey !== campaignFilter) {
+        continue;
+      }
+      if (adFilter && analyticsAttribution.adKey !== adFilter) {
+        continue;
+      }
+
+      const fact = factByClientId.get(clientId);
+      const client = unwrapSingleRelation(fact?.clients);
+      const revenueArs = revenueByClientId.get(clientId) ?? 0;
+      const isAssigned = fact?.status_at_month_end === 'assigned';
+      const isDepositor = revenueArs > 0;
+      const campaignKey = analyticsGroupKey(analyticsAttribution.channel, analyticsAttribution.campaignKey);
+      const adKey = analyticsGroupKey(
+        analyticsAttribution.channel,
+        analyticsAttribution.campaignKey,
+        analyticsAttribution.adKey
+      );
+
+      const campaign =
+        campaigns.get(campaignKey) ??
+        {
+          ...makeMutableMetrics(),
+          channel: analyticsAttribution.channel,
+          campaignKey: analyticsAttribution.campaignKey,
+          campaignName: analyticsAttribution.campaignName,
+          linkUrl: analyticsAttribution.linkUrl,
+          campaignBudgetArs: 0,
+          adBudgetArs: 0,
+          undistributedBudgetArs: 0
+        };
+      campaign.leads += 1;
+      campaign.revenueArs = roundTo(campaign.revenueArs + revenueArs);
+      campaign.assigned += isAssigned ? 1 : 0;
+      campaign.depositors += isDepositor ? 1 : 0;
+      campaigns.set(campaignKey, campaign);
+
+      const ad =
+        ads.get(adKey) ??
+        {
+          ...makeMutableMetrics(),
+          channel: analyticsAttribution.channel,
+          campaignKey: analyticsAttribution.campaignKey,
+          campaignName: analyticsAttribution.campaignName,
+          adKey: analyticsAttribution.adKey,
+          adName: analyticsAttribution.adName,
+          linkUrl: analyticsAttribution.linkUrl,
+          hasOwnBudget: false
+        };
+      ad.leads += 1;
+      ad.revenueArs = roundTo(ad.revenueArs + revenueArs);
+      ad.assigned += isAssigned ? 1 : 0;
+      ad.depositors += isDepositor ? 1 : 0;
+      ads.set(adKey, ad);
+
+      clients.push({
+        clientId,
+        username: fact?.username_at_month_end ?? usernameByClientId.get(clientId) ?? null,
+        telefono: client?.phone_e164 ?? null,
+        estado: fact?.status_at_month_end ?? 'pending',
+        channel: analyticsAttribution.channel,
+        campaignKey: analyticsAttribution.campaignKey,
+        campaignName: analyticsAttribution.campaignName,
+        adKey: analyticsAttribution.adKey,
+        adName: analyticsAttribution.adName,
+        linkUrl: analyticsAttribution.linkUrl,
+        acquiredAt: firstEvent.occurred_at,
+        revenueArs
+      });
+    }
+
+    for (const budget of budgetRows) {
+      const campaignKey = analyticsGroupKey(budget.channel, budget.campaignKey);
+      if (!campaigns.has(campaignKey)) {
+        campaigns.set(campaignKey, {
+          ...makeMutableMetrics(),
+          channel: budget.channel,
+          campaignKey: budget.campaignKey,
+          campaignName: budget.campaignName,
+          linkUrl: budget.linkUrl,
+          campaignBudgetArs: 0,
+          adBudgetArs: 0,
+          undistributedBudgetArs: 0
+        });
+      }
+
+      if (budget.level === 'ad' && budget.adKey && !ads.has(analyticsGroupKey(budget.channel, budget.campaignKey, budget.adKey))) {
+        ads.set(analyticsGroupKey(budget.channel, budget.campaignKey, budget.adKey), {
+          ...makeMutableMetrics(),
+          channel: budget.channel,
+          campaignKey: budget.campaignKey,
+          campaignName: budget.campaignName,
+          adKey: budget.adKey,
+          adName: budget.adName ?? budget.adKey,
+          linkUrl: budget.linkUrl,
+          hasOwnBudget: false
+        });
+      }
+    }
+
+    for (const campaign of campaigns.values()) {
+      const campaignKey = analyticsGroupKey(campaign.channel, campaign.campaignKey);
+      const campaignBudget = campaignBudgetByKey.get(campaignKey) ?? 0;
+      const adBudget = [...adBudgetByKey.entries()]
+        .filter(([key]) => key.startsWith(`${campaignKey}\u001f`))
+        .reduce((total, [, spend]) => total + spend, 0);
+      campaign.campaignBudgetArs = roundTo(campaignBudget);
+      campaign.adBudgetArs = roundTo(adBudget);
+      campaign.undistributedBudgetArs = campaignBudget > 0 ? roundTo(Math.max(campaignBudget - adBudget, 0)) : 0;
+      campaign.investmentArs = campaignBudget > 0 ? roundTo(campaignBudget) : roundTo(adBudget);
+      if (campaign.leads > 0 && campaign.investmentArs <= 0) {
+        audit.missingBudgetCampaigns += 1;
+      }
+    }
+
+    for (const ad of ads.values()) {
+      const budget = adBudgetByKey.get(analyticsGroupKey(ad.channel, ad.campaignKey, ad.adKey)) ?? 0;
+      ad.investmentArs = roundTo(budget);
+      ad.hasOwnBudget = budget > 0;
+      if (ad.leads > 0 && budget <= 0) {
+        audit.missingBudgetAds += 1;
+      }
+    }
+
+    const finalizedCampaigns = [...campaigns.values()]
+      .map((campaign) => ({
+        ...finalizeAnalyticsMetrics(campaign, commissionPct),
+        channel: campaign.channel,
+        campaignKey: campaign.campaignKey,
+        campaignName: campaign.campaignName,
+        linkUrl: campaign.linkUrl,
+        campaignBudgetArs: campaign.campaignBudgetArs,
+        adBudgetArs: campaign.adBudgetArs,
+        undistributedBudgetArs: campaign.undistributedBudgetArs
+      }))
+      .sort((left, right) => {
+        if ((right.roiPct ?? -Infinity) !== (left.roiPct ?? -Infinity)) {
+          return (right.roiPct ?? -Infinity) - (left.roiPct ?? -Infinity);
+        }
+        return right.revenueArs - left.revenueArs;
+      });
+
+    const finalizedAds = [...ads.values()]
+      .map((ad) => ({
+        ...finalizeAnalyticsMetrics(ad, commissionPct),
+        channel: ad.channel,
+        campaignKey: ad.campaignKey,
+        campaignName: ad.campaignName,
+        adKey: ad.adKey,
+        adName: ad.adName,
+        linkUrl: ad.linkUrl,
+        hasOwnBudget: ad.hasOwnBudget
+      }))
+      .sort((left, right) => {
+        if ((right.roiPct ?? -Infinity) !== (left.roiPct ?? -Infinity)) {
+          return (right.roiPct ?? -Infinity) - (left.roiPct ?? -Infinity);
+        }
+        return right.revenueArs - left.revenueArs;
+      });
+
+    const channelsByKey = new Map<MastercrmAnalyticsChannel, MutableAnalyticsMetrics>();
+    for (const campaign of campaigns.values()) {
+      const channelMetrics = channelsByKey.get(campaign.channel) ?? makeMutableMetrics();
+      channelMetrics.investmentArs = roundTo(channelMetrics.investmentArs + campaign.investmentArs);
+      channelMetrics.revenueArs = roundTo(channelMetrics.revenueArs + campaign.revenueArs);
+      channelMetrics.leads += campaign.leads;
+      channelMetrics.assigned += campaign.assigned;
+      channelMetrics.depositors += campaign.depositors;
+      channelsByKey.set(campaign.channel, channelMetrics);
+    }
+
+    const finalizedChannels = [...channelsByKey.entries()]
+      .map(([channel, metrics]) => ({
+        ...finalizeAnalyticsMetrics(metrics, commissionPct),
+        channel,
+        label: analyticsChannelLabel(channel)
+      }))
+      .sort((left, right) => right.revenueArs - left.revenueArs);
+
+    const summaryMutable = makeMutableMetrics();
+    for (const channel of channelsByKey.values()) {
+      summaryMutable.investmentArs = roundTo(summaryMutable.investmentArs + channel.investmentArs);
+      summaryMutable.revenueArs = roundTo(summaryMutable.revenueArs + channel.revenueArs);
+      summaryMutable.leads += channel.leads;
+      summaryMutable.assigned += channel.assigned;
+      summaryMutable.depositors += channel.depositors;
+    }
+
+    return {
+      linkedOwner,
+      filters: {
+        dateFrom: window.dateFrom,
+        dateTo: window.dateTo,
+        channel: requestedChannel,
+        campaignKey: campaignFilter,
+        adKey: adFilter
+      },
+      summary: finalizeAnalyticsMetrics(summaryMutable, commissionPct),
+      channels: finalizedChannels,
+      campaigns: finalizedCampaigns,
+      ads: finalizedAds,
+      clients: clients.sort((left, right) => right.revenueArs - left.revenueArs),
+      budgets: budgetRows.sort((left, right) => {
+        if (left.channel !== right.channel) return left.channel.localeCompare(right.channel);
+        if (left.campaignName !== right.campaignName) return left.campaignName.localeCompare(right.campaignName);
+        return (left.adName ?? '').localeCompare(right.adName ?? '');
+      }),
+      audit
+    };
+  }
+
   async upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord> {
     if (!Number.isInteger(input.userId) || input.userId < 1) {
       throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
@@ -1375,6 +2320,114 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       adSpendArs: roundTo(adSpendArs),
       commissionPct: roundTo(commissionPct)
     };
+  }
+
+  async upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+    if (input.channel !== 'landing' && input.channel !== 'meta_ctwa') {
+      throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing or meta_ctwa');
+    }
+    if (input.level !== 'campaign' && input.level !== 'ad') {
+      throw new MastercrmUserStoreError('VALIDATION', 'level must be campaign or ad');
+    }
+
+    const campaignKey = nullableText(input.campaignKey);
+    const campaignName = nullableText(input.campaignName);
+    const adKey = input.level === 'ad' ? nullableText(input.adKey ?? undefined) : null;
+    const adName = input.level === 'ad' ? nullableText(input.adName ?? undefined) ?? adKey : nullableText(input.adName ?? undefined);
+    const activeFrom = normalizeMastercrmDate(input.activeFrom, 'active_from');
+    const activeTo = input.activeTo ? normalizeMastercrmDate(input.activeTo, 'active_to') : null;
+    const dailyBudgetArs = Number(input.dailyBudgetArs);
+
+    if (!campaignKey || !campaignName) {
+      throw new MastercrmUserStoreError('VALIDATION', 'campaign_key and campaign_name are required');
+    }
+    if (input.level === 'ad' && !adKey) {
+      throw new MastercrmUserStoreError('VALIDATION', 'ad_key is required for ad budgets');
+    }
+    if (activeTo && activeTo < activeFrom) {
+      throw new MastercrmUserStoreError('VALIDATION', 'active_to must be after active_from');
+    }
+    if (!Number.isFinite(dailyBudgetArs) || dailyBudgetArs < 0) {
+      throw new MastercrmUserStoreError('VALIDATION', 'daily_budget_ars must be a positive number or zero');
+    }
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const payload = {
+      owner_id: owner.id,
+      channel: input.channel,
+      level: input.level,
+      campaign_key: campaignKey,
+      campaign_name: campaignName,
+      ad_key: adKey ?? '',
+      ad_name: adName,
+      link_url: nullableText(input.linkUrl ?? undefined),
+      daily_budget_ars: roundTo(dailyBudgetArs),
+      active_from: activeFrom,
+      active_to: activeTo,
+      updated_by_mastercrm_user_id: input.userId
+    };
+
+    const query = input.id
+      ? this.client
+          .from('owner_marketing_daily_budgets')
+          .update(payload)
+          .eq('owner_id', owner.id)
+          .eq('id', input.id)
+          .select(
+            'id, channel, level, campaign_key, campaign_name, ad_key, ad_name, link_url, daily_budget_ars, active_from, active_to, updated_at'
+          )
+          .single()
+      : this.client
+          .from('owner_marketing_daily_budgets')
+          .upsert(payload, {
+            onConflict: 'owner_id,channel,level,campaign_key,ad_key,active_from'
+          })
+          .select(
+            'id, channel, level, campaign_key, campaign_name, ad_key, ad_name, link_url, daily_budget_ars, active_from, active_to, updated_at'
+          )
+          .single();
+
+    const { data, error } = await query;
+    if (error) {
+      throw mapPostgrestError(error, 'Could not persist owner marketing budget');
+    }
+
+    return normalizeBudgetRow(data as OwnerMarketingDailyBudgetRow, activeFrom, activeTo ?? activeFrom);
+  }
+
+  async deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+    if (!nullableText(input.budgetId)) {
+      throw new MastercrmUserStoreError('VALIDATION', 'budget_id is required');
+    }
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const { error } = await this.client
+      .from('owner_marketing_daily_budgets')
+      .delete()
+      .eq('owner_id', owner.id)
+      .eq('id', input.budgetId);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not delete owner marketing budget');
+    }
+
+    return { deleted: true, id: input.budgetId };
   }
 }
 

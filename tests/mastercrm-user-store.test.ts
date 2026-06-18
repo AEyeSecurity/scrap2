@@ -867,6 +867,255 @@ describe('mastercrm clients dashboard', () => {
     });
   });
 
+  it('builds marketing analytics from first acquisition, monthly snapshot deltas and daily budgets', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 999,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'luqui10:luqui10',
+          owner_label: 'Lucas10',
+          pagina: 'RdA'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', { data: [], error: null });
+    client.queue('owner_client_events', 'select', {
+      data: [
+        {
+          client_id: 'client-landing',
+          event_type: 'intake',
+          occurred_at: '2026-06-10T13:00:00.000Z',
+          payload: {
+            LandingSessionId: 'landing-session-1',
+            UtmCampaign: 'TESTEO V2',
+            UtmContent: 'Anuncio A',
+            UtmId: 'campaign-1',
+            AdId: 'ad-1',
+            EventSourceUrl: 'https://example.test/landing'
+          }
+        },
+        {
+          client_id: 'client-negative',
+          event_type: 'intake',
+          occurred_at: '2026-06-11T13:00:00.000Z',
+          payload: {
+            LandingSessionId: 'landing-session-2',
+            UtmCampaign: 'TESTEO V2',
+            UtmContent: 'Anuncio B',
+            UtmId: 'campaign-1',
+            AdId: 'ad-2'
+          }
+        },
+        {
+          client_id: 'client-unknown',
+          event_type: 'intake',
+          occurred_at: '2026-06-12T13:00:00.000Z',
+          payload: {}
+        },
+        {
+          client_id: 'client-unmatched',
+          event_type: 'intake',
+          occurred_at: '2026-06-13T13:00:00.000Z',
+          payload: {
+            UtmCampaign: 'Landing sin sesion',
+            UtmContent: 'Anuncio C'
+          }
+        },
+        {
+          client_id: 'client-reentry',
+          event_type: 'intake',
+          occurred_at: '2026-05-20T13:00:00.000Z',
+          payload: {
+            LandingSessionId: 'landing-session-old',
+            UtmCampaign: 'Mayo',
+            UtmContent: 'Anuncio viejo'
+          }
+        },
+        {
+          client_id: 'client-reentry',
+          event_type: 'intake',
+          occurred_at: '2026-06-14T13:00:00.000Z',
+          payload: {
+            LandingSessionId: 'landing-session-new',
+            UtmCampaign: 'Junio',
+            UtmContent: 'Anuncio nuevo'
+          }
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_client_monthly_facts', 'select', {
+      data: [
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-landing',
+          link_id: 'link-landing',
+          month_start: '2026-06-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-landing',
+          username_at_month_end: 'landinguser',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-landing', phone_e164: '+5493511112222', pagina: 'RdA' }
+        },
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-negative',
+          link_id: 'link-negative',
+          month_start: '2026-06-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-negative',
+          username_at_month_end: 'negativeuser',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-negative', phone_e164: '+5493513334444', pagina: 'RdA' }
+        }
+      ],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [
+        {
+          client_id: 'client-landing',
+          identity_id: 'identity-landing',
+          report_date: '2026-06-09',
+          username: 'landinguser',
+          cargado_hoy: 0,
+          cargado_mes: 500
+        },
+        {
+          client_id: 'client-landing',
+          identity_id: 'identity-landing',
+          report_date: '2026-06-18',
+          username: 'landinguser',
+          cargado_hoy: 0,
+          cargado_mes: 1500
+        },
+        {
+          client_id: 'client-negative',
+          identity_id: 'identity-negative',
+          report_date: '2026-06-09',
+          username: 'negativeuser',
+          cargado_hoy: 0,
+          cargado_mes: 1000
+        },
+        {
+          client_id: 'client-negative',
+          identity_id: 'identity-negative',
+          report_date: '2026-06-18',
+          username: 'negativeuser',
+          cargado_hoy: 0,
+          cargado_mes: 800
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: { commission_pct: 50 },
+      error: null
+    });
+    client.queue('owner_marketing_daily_budgets', 'select', {
+      data: [
+        {
+          id: 'budget-campaign',
+          channel: 'landing',
+          level: 'campaign',
+          campaign_key: 'campaign-1',
+          campaign_name: 'TESTEO V2',
+          ad_key: '',
+          ad_name: null,
+          link_url: null,
+          daily_budget_ars: 100,
+          active_from: '2026-06-10',
+          active_to: '2026-06-18',
+          updated_at: '2026-06-18T12:00:00.000Z'
+        },
+        {
+          id: 'budget-ad',
+          channel: 'landing',
+          level: 'ad',
+          campaign_key: 'campaign-1',
+          campaign_name: 'TESTEO V2',
+          ad_key: 'ad-1',
+          ad_name: 'Anuncio A',
+          link_url: 'https://example.test/landing',
+          daily_budget_ars: 10,
+          active_from: '2026-06-10',
+          active_to: '2026-06-18',
+          updated_at: '2026-06-18T12:00:00.000Z'
+        }
+      ],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const analytics = await store.getMarketingAnalytics({
+      userId: 999,
+      dateFrom: '2026-06-10',
+      dateTo: '2026-06-18'
+    });
+
+    expect(analytics.summary).toMatchObject({
+      investmentArs: 900,
+      revenueArs: 1000,
+      estimatedProfitArs: 500,
+      roiPct: -44.44,
+      roas: 1.11,
+      leads: 2,
+      depositors: 1
+    });
+    expect(analytics.campaigns[0]).toMatchObject({
+      campaignKey: 'campaign-1',
+      campaignName: 'TESTEO V2',
+      campaignBudgetArs: 900,
+      adBudgetArs: 90,
+      undistributedBudgetArs: 810
+    });
+    expect(analytics.ads.find((ad) => ad.adKey === 'ad-1')).toMatchObject({
+      investmentArs: 90,
+      revenueArs: 1000,
+      hasOwnBudget: true
+    });
+    expect(analytics.audit).toMatchObject({
+      unknownLeads: 1,
+      landingUnmatchedLeads: 1,
+      excludedLeads: 2,
+      reentryLeads: 1,
+      missingBudgetCampaigns: 0
+    });
+    expect(analytics.audit.negativeAdjustments).toEqual([
+      {
+        clientId: 'client-negative',
+        username: 'negativeuser',
+        amountArs: -200,
+        fromDate: '2026-06-10',
+        toDate: '2026-06-18'
+      }
+    ]);
+  });
+
   it('calculates intake to assignment rate from unique monthly leads that ended assigned', async () => {
     const client = new FakeSupabaseClient();
     client.queue('mastercrm_users', 'select', {

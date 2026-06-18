@@ -474,6 +474,58 @@ const mastercrmOwnerFinancialsBodySchema = z
   })
   .passthrough();
 
+const mastercrmAnalyticsBodySchema = z
+  .object({
+    id: z.union([z.string(), z.number().int()]).optional(),
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    usuario_id: z.union([z.string(), z.number().int()]).optional(),
+    date_from: z.string().optional(),
+    date_to: z.string().optional(),
+    fecha_desde: z.string().optional(),
+    fecha_hasta: z.string().optional(),
+    channel: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
+    canal: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
+    campaign_key: z.string().optional(),
+    campana_key: z.string().optional(),
+    ad_key: z.string().optional(),
+    anuncio_key: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmMarketingBudgetBodySchema = z
+  .object({
+    id: z.string().optional(),
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    channel: z.enum(['landing', 'meta_ctwa']).optional(),
+    canal: z.enum(['landing', 'meta_ctwa']).optional(),
+    level: z.enum(['campaign', 'ad']).optional(),
+    nivel: z.enum(['campaign', 'ad']).optional(),
+    campaign_key: z.string().optional(),
+    campaign_name: z.string().optional(),
+    campana_key: z.string().optional(),
+    campana_nombre: z.string().optional(),
+    ad_key: z.string().nullable().optional(),
+    ad_name: z.string().nullable().optional(),
+    anuncio_key: z.string().nullable().optional(),
+    anuncio_nombre: z.string().nullable().optional(),
+    link_url: z.string().nullable().optional(),
+    daily_budget_ars: z.union([z.string(), z.number()]).optional(),
+    presupuesto_diario_ars: z.union([z.string(), z.number()]).optional(),
+    active_from: z.string().optional(),
+    active_to: z.string().nullable().optional(),
+    vigente_desde: z.string().optional(),
+    vigente_hasta: z.string().nullable().optional()
+  })
+  .passthrough();
+
+const mastercrmMarketingBudgetDeleteBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    id: z.string().optional(),
+    budget_id: z.string().optional()
+  })
+  .passthrough();
+
 const DEPOSIT_TURBO_TIMEOUT_MS = 15_000;
 const DEPOSIT_AMOUNT_REQUIRED_OPERATIONS: FundsOperation[] = ['carga', 'descarga'];
 const DEFAULT_MASTERCRM_CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
@@ -1123,6 +1175,152 @@ function parseMastercrmOwnerFinancialsPayload(body: unknown): {
   }
 
   return { data: { userId, month, adSpendArs, commissionPct }, issues };
+}
+
+function parseMastercrmAnalyticsPayload(body: unknown): {
+  data?: {
+    userId: number;
+    dateFrom: string;
+    dateTo: string;
+    channel?: 'all' | 'landing' | 'meta_ctwa';
+    campaignKey?: string;
+    adKey?: string;
+  };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmAnalyticsBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['id', 'user_id', 'usuario_id'], 'id', issues);
+  const dateFrom = resolveAliasStringField(parsed.data, ['date_from', 'fecha_desde'], 'date_from', issues);
+  const dateTo = resolveAliasStringField(parsed.data, ['date_to', 'fecha_hasta'], 'date_to', issues);
+  const channel = parsed.data.channel ?? parsed.data.canal;
+  const campaignKey = resolveAliasStringField(parsed.data, ['campaign_key', 'campana_key'], 'campaign_key', issues, {
+    required: false
+  });
+  const adKey = resolveAliasStringField(parsed.data, ['ad_key', 'anuncio_key'], 'ad_key', issues, {
+    required: false
+  });
+
+  if (issues.length > 0 || !userId || !dateFrom || !dateTo) {
+    return { issues };
+  }
+
+  return {
+    data: {
+      userId,
+      dateFrom,
+      dateTo,
+      ...(channel ? { channel } : {}),
+      ...(campaignKey ? { campaignKey } : {}),
+      ...(adKey ? { adKey } : {})
+    },
+    issues
+  };
+}
+
+function parseMastercrmMarketingBudgetPayload(body: unknown): {
+  data?: {
+    id?: string;
+    userId: number;
+    channel: 'landing' | 'meta_ctwa';
+    level: 'campaign' | 'ad';
+    campaignKey: string;
+    campaignName: string;
+    adKey?: string | null;
+    adName?: string | null;
+    linkUrl?: string | null;
+    dailyBudgetArs: number;
+    activeFrom: string;
+    activeTo?: string | null;
+  };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmMarketingBudgetBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const channel = parsed.data.channel ?? parsed.data.canal;
+  const level = parsed.data.level ?? parsed.data.nivel;
+  const campaignKey = resolveAliasStringField(parsed.data, ['campaign_key', 'campana_key'], 'campaign_key', issues);
+  const campaignName = resolveAliasStringField(parsed.data, ['campaign_name', 'campana_nombre'], 'campaign_name', issues);
+  const adKey = resolveAliasStringField(parsed.data, ['ad_key', 'anuncio_key'], 'ad_key', issues, { required: false });
+  const adName = resolveAliasStringField(parsed.data, ['ad_name', 'anuncio_nombre'], 'ad_name', issues, { required: false });
+  const linkUrl = resolveAliasStringField(parsed.data, ['link_url'], 'link_url', issues, { required: false });
+  const activeFrom = resolveAliasStringField(parsed.data, ['active_from', 'vigente_desde'], 'active_from', issues);
+  const activeTo = resolveAliasStringField(parsed.data, ['active_to', 'vigente_hasta'], 'active_to', issues, {
+    required: false
+  });
+  const dailyBudgetArs = resolveAliasNumberField(
+    parsed.data,
+    ['daily_budget_ars', 'presupuesto_diario_ars'],
+    'daily_budget_ars',
+    issues,
+    { min: 0 }
+  );
+
+  if (
+    issues.length > 0 ||
+    !userId ||
+    !channel ||
+    !level ||
+    !campaignKey ||
+    !campaignName ||
+    !activeFrom ||
+    dailyBudgetArs == null
+  ) {
+    return { issues };
+  }
+
+  return {
+    data: {
+      ...(parsed.data.id ? { id: parsed.data.id } : {}),
+      userId,
+      channel,
+      level,
+      campaignKey,
+      campaignName,
+      ...(adKey ? { adKey } : {}),
+      ...(adName ? { adName } : {}),
+      ...(linkUrl ? { linkUrl } : {}),
+      dailyBudgetArs,
+      activeFrom,
+      ...(activeTo ? { activeTo } : {})
+    },
+    issues
+  };
+}
+
+function parseMastercrmMarketingBudgetDeletePayload(body: unknown): {
+  data?: { userId: number; budgetId: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmMarketingBudgetDeleteBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const budgetId = resolveAliasStringField(parsed.data, ['budget_id', 'id'], 'budget_id', issues);
+
+  if (issues.length > 0 || !userId || !budgetId) {
+    return { issues };
+  }
+
+  return { data: { userId, budgetId }, issues };
 }
 
 export function createServer(
@@ -2108,6 +2306,90 @@ export function createServer(
       }
 
       logger.error({ error }, 'Unexpected /mastercrm-owner-financials error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-analytics', async (request, reply) => {
+    const parsed = parseMastercrmAnalyticsPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const analytics = await getMastercrmUserStore().getMarketingAnalytics(parsed.data);
+      return reply.code(200).send(analytics);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-analytics error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-marketing-budgets', async (request, reply) => {
+    const parsed = parseMastercrmMarketingBudgetPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const budget = await getMastercrmUserStore().upsertMarketingBudget(parsed.data);
+      return reply.code(200).send(budget);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-marketing-budgets error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-marketing-budgets/delete', async (request, reply) => {
+    const parsed = parseMastercrmMarketingBudgetDeletePayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const result = await getMastercrmUserStore().deleteMarketingBudget(parsed.data);
+      return reply.code(200).send(result);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-marketing-budgets/delete error');
       return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
     }
   });
