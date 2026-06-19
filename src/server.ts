@@ -2754,6 +2754,13 @@ export function createServer(
             details: { usuario: parsed.data.usuario }
           });
         }
+        if (error.code === 'UNAVAILABLE') {
+          return reply.code(503).send({
+            message: error.message,
+            code: 'RDA_UNAVAILABLE',
+            details: { usuario: parsed.data.usuario }
+          });
+        }
         logger.error({ error }, 'Unexpected RdA user existence checker error');
         return reply.code(500).send({
           message: 'No se pudo verificar el usuario en RdA',

@@ -1,24 +1,16 @@
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
-import type { BrowserContext, Locator, Page } from 'playwright';
+import type { BrowserContext, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { runAsnBalanceJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
-import { selectDepositRowIndex, type DepositRowCandidate } from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
+import { formatRdaMoney, resolveRdaUserByApi, roundRdaMoney } from './rda-user-api';
 import { translateRdaJobError } from './rda-user-error';
 import type { AppConfig, BalanceJobRequest, BalanceJobResult, JobExecutionResult, JobStepResult } from './types';
 
-const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
-const USERS_APPLY_FILTER_SELECTOR =
-  'button:has-text("Aceptar filtro"), button:has-text("Aplicar"), button:has-text("Filtrar"), button:has-text("Buscar")';
-const USERS_ROW_SELECTOR = '.users-table-item';
-const USERS_USERNAME_SELECTOR = '.role-bar__user-block11, .ellipsis-text, .role-bar__user-block1, .users-table-item__user-info';
-const USER_FUNDS_ACTION_LINK_SELECTOR =
-  'a[href*="/users/deposit/"], a[href*="/users/withdrawal/"], a[href*="/users/withdraw/"]';
 const NON_RETRYABLE_LOGIN_ERROR_REGEX =
   /usuario no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas|password/i;
-const BALANCE_TOKEN_REGEX = /-?\d{1,3}(?:\.\d{3})*(?:,\d{2})|-?\d+(?:,\d{2})|-?\d{1,3}(?:\.\d{3})+/g;
 
 function sanitizeFileName(input: string): string {
   return input.toLowerCase().replace(/[^a-z0-9-_]+/g, '-').replace(/^-+|-+$/g, '');
@@ -99,46 +91,6 @@ async function waitBeforeCloseIfHeaded(page: Page, headless: boolean, debug: boo
   await page.waitForTimeout(delayMs);
 }
 
-async function findFirstVisibleLocator(page: Page, selector: string, timeoutMs: number): Promise<Locator> {
-  const startedAt = Date.now();
-  const locator = page.locator(selector);
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const count = await locator.count();
-    for (let i = 0; i < count; i += 1) {
-      const candidate = locator.nth(i);
-      if (await candidate.isVisible().catch(() => false)) {
-        return candidate;
-      }
-    }
-
-    await page.waitForTimeout(100);
-  }
-
-  throw new Error(`No visible element found for selector: ${selector}`);
-}
-
-async function clickLocator(locator: Locator, timeoutMs: number): Promise<void> {
-  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
-  try {
-    await locator.click({ timeout: timeoutMs });
-  } catch {
-    await locator.click({ timeout: timeoutMs, force: true });
-  }
-}
-
-async function findUsersFilterInput(page: Page, timeoutMs: number): Promise<Locator> {
-  try {
-    return await findFirstVisibleLocator(page, USERS_FILTER_INPUT_SELECTOR, timeoutMs);
-  } catch {
-    return findFirstVisibleLocator(
-      page,
-      'xpath=//*[contains(translate(normalize-space(.), "JUGADOR/AGENTE", "jugador/agente"), "jugador/agente")]/following::input[1]',
-      timeoutMs
-    );
-  }
-}
-
 async function executeActionStep(
   page: Page,
   artifactDir: string,
@@ -208,142 +160,6 @@ async function authenticateWithRetry(
   throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Unknown authentication error')));
 }
 
-async function collectBalanceRowCandidates(page: Page): Promise<DepositRowCandidate[]> {
-  const rows = page.locator(USERS_ROW_SELECTOR);
-  const count = await rows.count();
-  const candidates: DepositRowCandidate[] = [];
-
-  for (let i = 0; i < count; i += 1) {
-    const row = rows.nth(i);
-    const isVisible = await row.isVisible().catch(() => false);
-    if (!isVisible) {
-      continue;
-    }
-
-    const usernamesRaw = await row.locator(USERS_USERNAME_SELECTOR).allInnerTexts().catch(() => []);
-    const usernames = usernamesRaw.map((value) => value.trim()).filter(Boolean);
-    const rowTextRaw = await row.innerText().catch(() => '');
-
-    candidates.push({
-      index: i,
-      hasAction: true,
-      usernames,
-      normalizedText: rowTextRaw
-    });
-  }
-
-  return candidates;
-}
-
-async function findUniqueUserRow(page: Page, username: string, timeoutMs: number, pollingMs: number): Promise<Locator> {
-  const startedAt = Date.now();
-  let lastError = `Could not find a unique row for user "${username}"`;
-  const rows = page.locator(USERS_ROW_SELECTOR);
-
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const candidates = await collectBalanceRowCandidates(page);
-      const selectedIndex = selectDepositRowIndex(candidates, username);
-      return rows.nth(selectedIndex);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-
-    await page.waitForTimeout(pollingMs);
-  }
-
-  throw new Error(lastError);
-}
-
-function extractBalanceTextFromRowText(rowText: string): string {
-  const matches = rowText.match(BALANCE_TOKEN_REGEX) ?? [];
-  if (matches.length === 0) {
-    throw new Error('Could not extract balance token from user row');
-  }
-
-  return (matches.find((value) => value.includes(',')) ?? matches[0] ?? '').trim();
-}
-
-function extractUserIdFromHref(href: string | null): string | null {
-  if (!href) {
-    return null;
-  }
-
-  const match = href.match(/\/users\/(?:deposit|withdraw(?:al)?)\/(\d+)(?:$|[/?#])/i);
-  return match?.[1] ?? null;
-}
-
-async function getUniqueVisibleFundsActionUserId(page: Page): Promise<string | null> {
-  const hrefs = await page.locator(USER_FUNDS_ACTION_LINK_SELECTOR).evaluateAll((elements) =>
-    elements.flatMap((element) => {
-      const htmlElement = element as any;
-      const style = (globalThis as any).getComputedStyle(htmlElement);
-      const box = htmlElement.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
-        return [];
-      }
-
-      return [htmlElement.getAttribute('href') ?? ''];
-    })
-  );
-  const ids = new Set(hrefs.flatMap((href) => extractUserIdFromHref(href) ?? []));
-
-  if (ids.size === 1) {
-    return [...ids][0] ?? null;
-  }
-
-  return null;
-}
-
-async function extractBalanceTextFromUniqueFilteredResult(page: Page): Promise<string | null> {
-  const userId = await getUniqueVisibleFundsActionUserId(page);
-  if (!userId) {
-    return null;
-  }
-
-  const rowTexts = await page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
-    elements.flatMap((element) => {
-      const htmlElement = element as any;
-      const style = (globalThis as any).getComputedStyle(htmlElement);
-      const box = htmlElement.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
-        return [];
-      }
-
-      const text = htmlElement.innerText.trim();
-      return text ? [text] : [];
-    })
-  );
-
-  if (rowTexts.length === 0) {
-    return null;
-  }
-
-  return extractBalanceTextFromRowText(rowTexts.join('\n'));
-}
-
-async function extractUniqueVisibleDecimalBalanceText(page: Page): Promise<string | null> {
-  const rowTexts = await page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
-    elements.flatMap((element) => {
-      const htmlElement = element as any;
-      const style = (globalThis as any).getComputedStyle(htmlElement);
-      const box = htmlElement.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
-        return [];
-      }
-
-      const text = htmlElement.innerText.trim();
-      return text ? [text] : [];
-    })
-  );
-  const matches = rowTexts.join('\n').match(/-?\d{1,3}(?:\.\d{3})*,\d{2}/g) ?? [];
-  if (matches.length === 1) {
-    return matches[0]?.trim() ?? null;
-  }
-
-  return null;
-}
-
 export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
   if (request.payload.pagina === 'ASN') {
     return runAsnBalanceJob(request, appConfig, logger);
@@ -356,12 +172,10 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
     headless: request.options.headless,
     debug: request.options.debug,
     slowMo: request.options.slowMo,
-    timeoutMs: request.options.timeoutMs
+    timeoutMs: request.options.timeoutMs,
+    postLoginWarmupPath: undefined
   };
-  const isTurbo = !runtimeConfig.debug && runtimeConfig.slowMo === 0;
   const captureSuccessArtifacts = parseEnvBoolean(process.env.BALANCE_CAPTURE_SUCCESS_ARTIFACTS) ?? false;
-  const pollingMs = isTurbo ? 100 : 250;
-  const userSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
 
   await fs.mkdir(artifactDir, { recursive: true });
   const lease = await acquireFundsSessionLease(request.payload.agente, runtimeConfig, jobLogger, {
@@ -374,9 +188,6 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
   const tracePath = path.join(artifactDir, 'trace.zip');
   const traceFailurePath = path.join(artifactDir, 'trace-failure.zip');
   const screenshotFailurePath = path.join(artifactDir, 'error.png');
-  let usersFilterInput: Locator | undefined;
-  let targetRow: Locator | undefined;
-  let fallbackBalanceText: string | undefined;
 
   let tracingStarted = false;
 
@@ -396,7 +207,7 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
         password: request.payload.contrasena_agente
       },
       jobLogger,
-      2
+      1
     );
     const loginArtifact = captureSuccessArtifacts ? await captureStepScreenshot(page, artifactDir, '00-login') : undefined;
     if (loginArtifact) {
@@ -410,136 +221,31 @@ export async function runBalanceJob(request: BalanceJobRequest, appConfig: AppCo
       ...(loginArtifact ? { artifactPath: loginArtifact } : {})
     });
 
-    const gotoUsersStep = await executeActionStep(
-      page,
-      artifactDir,
-      '01-goto-users-all',
-      async () => {
-        await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
-        usersFilterInput = await findUsersFilterInput(page, Math.min(runtimeConfig.timeoutMs, isTurbo ? 4_000 : 10_000));
-      },
-      captureSuccessArtifacts
-    );
-    if (gotoUsersStep.artifactPath) {
-      artifactPaths.push(gotoUsersStep.artifactPath);
-    }
-    steps.push(gotoUsersStep);
-    if (gotoUsersStep.status === 'failed') {
-      throw new Error(`Step failed: ${gotoUsersStep.name} (${gotoUsersStep.error ?? 'unknown error'})`);
-    }
-
-    const filterValue = request.payload.usuario.trim().toLowerCase();
-    const fillFilterStep = await executeActionStep(
-      page,
-      artifactDir,
-      '02-fill-user-filter',
-      async () => {
-        const filterInput = usersFilterInput ?? (await findUsersFilterInput(page, runtimeConfig.timeoutMs));
-        usersFilterInput = filterInput;
-        await filterInput.fill('', { timeout: runtimeConfig.timeoutMs });
-        await filterInput.fill(filterValue, { timeout: runtimeConfig.timeoutMs });
-      },
-      captureSuccessArtifacts
-    );
-    if (fillFilterStep.artifactPath) {
-      artifactPaths.push(fillFilterStep.artifactPath);
-    }
-    steps.push(fillFilterStep);
-    if (fillFilterStep.status === 'failed') {
-      throw new Error(`Step failed: ${fillFilterStep.name} (${fillFilterStep.error ?? 'unknown error'})`);
-    }
-
-    const applyFilterStep = await executeActionStep(
-      page,
-      artifactDir,
-      '03-apply-user-filter',
-      async () => {
-        const applyFilterButton = await findFirstVisibleLocator(
-          page,
-          USERS_APPLY_FILTER_SELECTOR,
-          isTurbo ? Math.min(runtimeConfig.timeoutMs, 2_000) : runtimeConfig.timeoutMs
-        ).catch(() => undefined);
-        if (applyFilterButton) {
-          await clickLocator(applyFilterButton, runtimeConfig.timeoutMs);
-        } else {
-          const filterInput = usersFilterInput ?? (await findUsersFilterInput(page, runtimeConfig.timeoutMs));
-          await filterInput.press('Enter', { timeout: runtimeConfig.timeoutMs }).catch(() => undefined);
-        }
-      },
-      captureSuccessArtifacts
-    );
-    if (applyFilterStep.artifactPath) {
-      artifactPaths.push(applyFilterStep.artifactPath);
-    }
-    steps.push(applyFilterStep);
-    if (applyFilterStep.status === 'failed') {
-      throw new Error(`Step failed: ${applyFilterStep.name} (${applyFilterStep.error ?? 'unknown error'})`);
-    }
-
-    const findRowStep = await executeActionStep(
-      page,
-      artifactDir,
-      '04-find-user-row',
-      async () => {
-        fallbackBalanceText =
-          (await extractUniqueVisibleDecimalBalanceText(page).catch(() => null)) ??
-          (await extractBalanceTextFromUniqueFilteredResult(page).catch(() => null)) ??
-          undefined;
-        if (fallbackBalanceText) {
-          return;
-        }
-
-        targetRow = await findUniqueUserRow(page, request.payload.usuario, userSearchTimeoutMs, pollingMs).catch(
-          async (error) => {
-            const balanceText = await extractBalanceTextFromUniqueFilteredResult(page).catch(() => null);
-            if (balanceText) {
-              fallbackBalanceText = balanceText;
-              return undefined;
-            }
-
-            throw error;
-          }
-        );
-      },
-      captureSuccessArtifacts
-    );
-    if (findRowStep.artifactPath) {
-      artifactPaths.push(findRowStep.artifactPath);
-    }
-    steps.push(findRowStep);
-    if (findRowStep.status === 'failed') {
-      throw new Error(`Step failed: ${findRowStep.name} (${findRowStep.error ?? 'unknown error'})`);
-    }
-
     let balanceResult: BalanceJobResult | undefined;
-    const readBalanceStep = await executeActionStep(
+    const resolveUserStep = await executeActionStep(
       page,
       artifactDir,
-      '05-read-balance',
+      '01-resolve-rda-user',
       async () => {
-        if (!targetRow && !fallbackBalanceText) {
-          throw new Error('Target user row was not resolved');
-        }
-        const saldoTexto =
-          fallbackBalanceText ?? extractBalanceTextFromRowText(await targetRow!.innerText({ timeout: runtimeConfig.timeoutMs }));
-        const saldoNumero = parseBalanceNumber(saldoTexto);
+        const resolved = await resolveRdaUserByApi(page, request.payload.usuario, runtimeConfig.timeoutMs);
+        const saldoNumero = roundRdaMoney(resolved.user.balance);
         balanceResult = {
           kind: 'balance',
           pagina: 'RdA',
           operacion: 'consultar_saldo',
           usuario: request.payload.usuario,
-          saldoTexto,
+          saldoTexto: formatRdaMoney(saldoNumero),
           saldoNumero
         };
       },
       captureSuccessArtifacts
     );
-    if (readBalanceStep.artifactPath) {
-      artifactPaths.push(readBalanceStep.artifactPath);
+    if (resolveUserStep.artifactPath) {
+      artifactPaths.push(resolveUserStep.artifactPath);
     }
-    steps.push(readBalanceStep);
-    if (readBalanceStep.status === 'failed') {
-      throw new Error(`Step failed: ${readBalanceStep.name} (${readBalanceStep.error ?? 'unknown error'})`);
+    steps.push(resolveUserStep);
+    if (resolveUserStep.status === 'failed') {
+      throw new Error(`Step failed: ${resolveUserStep.name} (${resolveUserStep.error ?? 'unknown error'})`);
     }
 
     steps.push({

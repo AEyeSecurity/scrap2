@@ -4,14 +4,13 @@ import type { BrowserContext, Locator, Page } from 'playwright';
 import type { Logger } from 'pino';
 import { runAsnDepositJob } from './asn-funds-job';
 import { ensureAuthenticated } from './auth';
-import {
-  hasCompactUsernameMatch,
-  hasExactUsernameMatch,
-  normalizeDepositText,
-  selectDepositRowIndex,
-  type DepositRowCandidate
-} from './deposit-match';
 import { acquireFundsSessionLease } from './funds-session-pool';
+import {
+  fetchRdaPaymentAgents,
+  resolveRdaUserByApi,
+  submitRdaPayment,
+  type ResolvedRdaUser
+} from './rda-user-api';
 import { translateRdaJobError } from './rda-user-error';
 import type {
   AppConfig,
@@ -22,33 +21,10 @@ import type {
   RdaFundsOperationResult
 } from './types';
 
-const USERS_FILTER_INPUT_SELECTOR = 'input[placeholder*="Jugador/Agente" i]';
-const USERS_ROW_SELECTOR = '.users-table-item';
-const USERS_USERNAME_SELECTOR = '.role-bar__user-block11, .ellipsis-text, .role-bar__user-block1, .users-table-item__user-info';
-const USERS_APPLY_FILTER_SELECTOR =
-  'button:has-text("Aceptar filtro"), button:has-text("Aplicar"), button:has-text("Filtrar"), button:has-text("Buscar")';
-const USER_ACTION_SELECTOR = 'div.users-table-item__button, a.button-desktop, a, button, [role="button"]';
-const USER_ACTION_CLICKABLE_SELECTOR = 'a.button-desktop, a, button, [role="button"]';
 const NON_RETRYABLE_LOGIN_ERROR_REGEX =
   /usuario no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas|password/i;
 const FUNDS_AMOUNT_INPUT_SELECTOR =
   'input[name="amount"], input[type="number"], input[placeholder*="cantidad" i], input[aria-label*="cantidad" i]';
-const TOTAL_AMOUNT_TEXT_REGEX = /\btoda\b/i;
-const ACTION_LINK_BY_OPERATION: Record<FundsTransactionOperation, string> = {
-  carga: 'a[href*="/users/deposit/"]',
-  descarga: 'a[href*="/users/withdrawal/"], a[href*="/users/withdraw/"]',
-  descarga_total: 'a[href*="/users/withdrawal/"], a[href*="/users/withdraw/"]'
-};
-const ACTION_TEXT_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
-  carga: /dep[oó]sito/i,
-  descarga: /retiro/i,
-  descarga_total: /retiro/i
-};
-const SUBMIT_TEXT_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
-  carga: /dep[oó]sito/i,
-  descarga: /retiro/i,
-  descarga_total: /retiro/i
-};
 const TARGET_PATH_BY_OPERATION: Record<FundsTransactionOperation, string> = {
   carga: '/users/deposit',
   descarga: '/users/withdraw',
@@ -59,13 +35,6 @@ const TARGET_HEADING_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
   descarga: /retiro/i,
   descarga_total: /retiro/i
 };
-const SUCCESS_MESSAGE_BY_OPERATION: Record<FundsTransactionOperation, RegExp> = {
-  carga: /depositad[oa]|acreditad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
-  descarga: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i,
-  descarga_total: /retirad[oa]|debitad[oa]|transferencia realizada|correctamente|exito|success|completad[oa]/i
-};
-const ERROR_MESSAGE_REGEX =
-  /saldo insuficiente|error|fall[oó]|fallid[oa]|invalido|invalid|no se pudo|incorrect[oa]|rechazad[oa]/i;
 
 interface OperationStepNames {
   openAction: string;
@@ -100,7 +69,7 @@ function getOperationStepNames(operation: FundsTransactionOperation): OperationS
     return {
       openAction: '04-open-user-withdraw',
       waitOperationPage: '05-wait-withdraw-page',
-      amountAction: '06-click-total-amount',
+      amountAction: '06-fill-total-amount',
       clickSubmit: '07-click-withdraw-submit',
       verifyResult: '08-verify-withdraw-result'
     };
@@ -133,60 +102,6 @@ function parseEnvBoolean(input: string | undefined): boolean | undefined {
   }
 
   return undefined;
-}
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function parseLocalizedMoney(rawValue: string): number {
-  const compact = rawValue.trim().replace(/\s+/g, '').replace(/[^0-9,.-]/g, '');
-  if (!/[0-9]/.test(compact)) {
-    throw new Error(`Could not parse money value "${rawValue}"`);
-  }
-
-  const sign = compact.startsWith('-') ? '-' : '';
-  const unsigned = compact.replace(/-/g, '');
-  let normalized: string;
-
-  if (unsigned.includes(',') && unsigned.includes('.')) {
-    if (unsigned.lastIndexOf(',') > unsigned.lastIndexOf('.')) {
-      normalized = unsigned.replace(/\./g, '').replace(/,/g, '.');
-    } else {
-      normalized = unsigned.replace(/,/g, '');
-    }
-  } else if (unsigned.includes(',')) {
-    const parts = unsigned.split(',');
-    const decimalPart = parts.pop() ?? '';
-    const integerPart = parts.join('') || '0';
-    normalized = `${integerPart}.${decimalPart}`;
-  } else {
-    normalized = unsigned;
-  }
-
-  const parsed = Number(`${sign}${normalized}`);
-  if (!Number.isFinite(parsed)) {
-    throw new Error(`Could not parse money value "${rawValue}"`);
-  }
-
-  return parsed;
-}
-
-function extractUserListBalanceSnapshotFromRowText(rowText: string): UserBalanceSnapshot {
-  const matches = rowText.match(/-?\d{1,3}(?:\.\d{3})*,\d{2}/g) ?? [];
-  if (matches.length === 0) {
-    throw new Error('Could not extract user balance from users row');
-  }
-
-  const saldoTexto = matches[0] ?? '';
-  return {
-    saldoTexto,
-    saldoNumero: parseLocalizedMoney(saldoTexto)
-  };
-}
-
-function extractUserListBalanceFromRowText(rowText: string): number {
-  return extractUserListBalanceSnapshotFromRowText(rowText).saldoNumero;
 }
 
 function roundMoney(value: number): number {
@@ -247,75 +162,6 @@ async function findFirstVisibleLocator(page: Page, selector: string, timeoutMs: 
   throw new Error(`No visible element found for selector: ${selector}`);
 }
 
-async function findFirstEnabledVisibleInLocator(locator: Locator, timeoutMs: number, pollingMs: number): Promise<Locator> {
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const count = await locator.count();
-    for (let i = 0; i < count; i += 1) {
-      const candidate = locator.nth(i);
-      const isVisible = await candidate.isVisible().catch(() => false);
-      if (!isVisible) {
-        continue;
-      }
-
-      const isDisabled = await candidate.isDisabled().catch(() => false);
-      if (!isDisabled) {
-        return candidate;
-      }
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, pollingMs));
-  }
-
-  throw new Error('No enabled visible element found in locator');
-}
-
-async function clickLocator(locator: Locator, timeoutMs: number): Promise<void> {
-  await locator.scrollIntoViewIfNeeded({ timeout: timeoutMs }).catch(() => undefined);
-  try {
-    await locator.click({ timeout: timeoutMs });
-  } catch {
-    await locator.click({ timeout: timeoutMs, force: true });
-  }
-}
-
-async function clickRowActionFast(locator: Locator, timeoutMs: number): Promise<void> {
-  const effective = Math.min(timeoutMs, 1_200);
-  try {
-    await locator.evaluate((el: any) => {
-      if (el && typeof el.click === 'function') {
-        el.click();
-      } else {
-        throw new Error('Element is not clickable');
-      }
-    });
-    return;
-  } catch {
-    // Fall back to Playwright click paths if DOM click did not work.
-  }
-
-  try {
-    await locator.scrollIntoViewIfNeeded({ timeout: effective }).catch(() => undefined);
-    await locator.click({ timeout: effective, force: true });
-    return;
-  } catch {
-    await locator.click({ timeout: effective });
-  }
-}
-
-async function findUsersFilterInput(page: Page, timeoutMs: number): Promise<Locator> {
-  try {
-    return await findFirstVisibleLocator(page, USERS_FILTER_INPUT_SELECTOR, timeoutMs);
-  } catch {
-    return findFirstVisibleLocator(
-      page,
-      'xpath=//*[contains(translate(normalize-space(.), "JUGADOR/AGENTE", "jugador/agente"), "jugador/agente")]/following::input[1]',
-      timeoutMs
-    );
-  }
-}
-
 async function findDepositAmountInput(page: Page, timeoutMs: number): Promise<Locator> {
   try {
     return await findFirstVisibleLocator(page, FUNDS_AMOUNT_INPUT_SELECTOR, timeoutMs);
@@ -326,290 +172,6 @@ async function findDepositAmountInput(page: Page, timeoutMs: number): Promise<Lo
       timeoutMs
     );
   }
-}
-
-async function waitForUsersFilterOutcome(
-  page: Page,
-  operation: FundsTransactionOperation,
-  username: string,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<void> {
-  const startedAt = Date.now();
-  const userPattern = new RegExp(escapeRegex(username), 'i');
-  const noResults = page
-    .locator('text=/sin resultados|no se encontraron|sin coincidencias|ningun resultado|no records|no data/i')
-    .first();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const visibleActions = await countVisibleInLocator(getOperationActions(page, operation));
-    if (visibleActions > 0) {
-      return;
-    }
-
-    const userVisible = await page
-      .getByText(userPattern)
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (userVisible) {
-      return;
-    }
-
-    const hasNoResults = await noResults.isVisible().catch(() => false);
-    if (hasNoResults) {
-      return;
-    }
-
-    await page.waitForTimeout(pollingMs);
-  }
-
-  throw new Error('Users table did not refresh after applying filter');
-}
-
-function getOperationActions(
-  scope: { locator: (selector: string) => Locator },
-  operation: FundsTransactionOperation
-): Locator {
-  return scope.locator(USER_ACTION_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
-}
-
-async function countVisibleInLocator(locator: Locator): Promise<number> {
-  const count = await locator.count();
-  let visible = 0;
-  for (let i = 0; i < count; i += 1) {
-    const candidate = locator.nth(i);
-    if (await candidate.isVisible().catch(() => false)) {
-      visible += 1;
-    }
-  }
-
-  return visible;
-}
-
-async function findFirstVisibleInLocator(locator: Locator, timeoutMs: number, pollingMs: number): Promise<Locator> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const count = await locator.count();
-    for (let i = 0; i < count; i += 1) {
-      const candidate = locator.nth(i);
-      if (await candidate.isVisible().catch(() => false)) {
-        return candidate;
-      }
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, pollingMs));
-  }
-
-  throw new Error('No visible candidate found in locator');
-}
-
-async function collectDepositRowCandidates(
-  page: Page,
-  operation: FundsTransactionOperation
-): Promise<DepositRowCandidate[]> {
-  const rows = page.locator(USERS_ROW_SELECTOR);
-  const count = await rows.count();
-  const candidates: DepositRowCandidate[] = [];
-
-  for (let i = 0; i < count; i += 1) {
-    const row = rows.nth(i);
-    const isVisible = await row.isVisible().catch(() => false);
-    if (!isVisible) {
-      continue;
-    }
-
-    const usernamesRaw = await row.locator(USERS_USERNAME_SELECTOR).allInnerTexts().catch(() => []);
-    const usernames = usernamesRaw.map((value) => value.trim()).filter(Boolean);
-    const rowTextRaw = await row.innerText().catch(() => '');
-    const hasAction = (await countVisibleInLocator(getOperationActions(row, operation))) > 0;
-
-    candidates.push({
-      index: i,
-      hasAction,
-      usernames,
-      normalizedText: normalizeDepositText(rowTextRaw)
-    });
-  }
-
-  return candidates;
-}
-
-async function collectVisibleUserRowTexts(page: Page): Promise<string[]> {
-  return page.locator(USERS_ROW_SELECTOR).evaluateAll((elements) =>
-    elements.flatMap((element) => {
-      const htmlElement = element as any;
-      const style = (globalThis as any).getComputedStyle(htmlElement);
-      const box = htmlElement.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
-        return [];
-      }
-
-      const text = htmlElement.innerText.trim();
-      return text ? [text] : [];
-    })
-  );
-}
-
-function visibleRowsContainUsername(rowTexts: string[], username: string): boolean {
-  return rowTexts.some((text) => hasExactUsernameMatch(text, username) || hasCompactUsernameMatch(text, username));
-}
-
-async function readVisibleUserBalanceSnapshot(page: Page): Promise<UserBalanceSnapshot | null> {
-  const rowTexts = await collectVisibleUserRowTexts(page);
-  const firstRowWithBalance = rowTexts.find((text) => /-?\d{1,3}(?:\.\d{3})*,\d{2}/.test(text));
-  const balanceText = firstRowWithBalance ?? rowTexts.join('\n');
-  return extractUserListBalanceSnapshotFromRowText(balanceText);
-}
-
-async function readFilteredUserBalanceSnapshot(page: Page, username: string): Promise<UserBalanceSnapshot | null> {
-  const rowTexts = await collectVisibleUserRowTexts(page);
-  if (!visibleRowsContainUsername(rowTexts, username)) {
-    return null;
-  }
-
-  const firstRowWithBalance = rowTexts.find((text) => /-?\d{1,3}(?:\.\d{3})*,\d{2}/.test(text));
-  const balanceText = firstRowWithBalance ?? rowTexts.join('\n');
-  return extractUserListBalanceSnapshotFromRowText(balanceText);
-}
-
-async function tryOpenFilteredUniqueAction(
-  page: Page,
-  operation: FundsTransactionOperation,
-  username: string,
-  timeoutMs: number
-): Promise<{ userId: string; balance: UserBalanceSnapshot } | null> {
-  const userId = await tryGetUserIdFromVisibleTableAction(page, operation);
-  if (!userId) {
-    return null;
-  }
-
-  const rowTexts = await collectVisibleUserRowTexts(page);
-  const balance = visibleRowsContainUsername(rowTexts, username)
-    ? await readFilteredUserBalanceSnapshot(page, username).catch(() => null)
-    : await readVisibleUserBalanceSnapshot(page).catch(() => null);
-  if (!balance) {
-    return null;
-  }
-
-  await openFundsOperationPageDirect(page, operation, userId, timeoutMs);
-  return { userId, balance };
-}
-
-async function findDepositActionInRow(
-  row: Locator,
-  operation: FundsTransactionOperation,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<Locator> {
-  const preferred = row.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
-  const preferredVisible = await findFirstVisibleInLocator(preferred, timeoutMs, pollingMs).catch(() => undefined);
-  if (preferredVisible) {
-    return preferredVisible;
-  }
-
-  const byHref = row.locator(ACTION_LINK_BY_OPERATION[operation]);
-  const hrefVisible = await findFirstVisibleInLocator(byHref, timeoutMs, pollingMs).catch(() => undefined);
-  if (hrefVisible) {
-    return hrefVisible;
-  }
-
-  const fallback = row.locator('div.users-table-item__button').filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
-  return findFirstVisibleInLocator(fallback, timeoutMs, pollingMs);
-}
-
-async function findSubmitDepositAction(
-  page: Page,
-  operation: FundsTransactionOperation,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<Locator> {
-  if (operation === 'descarga' || operation === 'descarga_total') {
-    const structuredSubmit = page.locator('.withdrawal__buttons button[type="submit"]').filter({ hasText: /retiro/i });
-    const structuredVisible = await findFirstEnabledVisibleInLocator(
-      structuredSubmit,
-      Math.min(timeoutMs, 2_000),
-      pollingMs
-    ).catch(() => undefined);
-    if (structuredVisible) {
-      return structuredVisible;
-    }
-  }
-
-  const candidates = page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: SUBMIT_TEXT_BY_OPERATION[operation] });
-  const startedAt = Date.now();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const count = await candidates.count();
-    const ranked: Array<{ locator: Locator; score: number }> = [];
-
-    for (let i = 0; i < count; i += 1) {
-      const candidate = candidates.nth(i);
-      const isVisible = await candidate.isVisible().catch(() => false);
-      if (!isVisible) {
-        continue;
-      }
-
-      const isDisabled = await candidate.isDisabled().catch(() => false);
-      if (isDisabled) {
-        continue;
-      }
-
-      const box = await candidate.boundingBox().catch(() => null);
-      const tag = await candidate.evaluate((el) => el.tagName.toLowerCase()).catch(() => '');
-      const score = (box?.y ?? 0) + (tag === 'button' ? 10_000 : 0);
-      ranked.push({ locator: candidate, score });
-    }
-
-    if (ranked.length > 0) {
-      ranked.sort((a, b) => b.score - a.score);
-      return ranked[0].locator;
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, pollingMs));
-  }
-
-  throw new Error(`No enabled visible submit action found for operation "${operation}"`);
-}
-
-function extractUserIdFromHref(href: string | null): string | null {
-  if (!href) {
-    return null;
-  }
-
-  const match = href.match(/\/users\/(?:deposit|withdraw(?:al)?)\/(\d+)(?:$|[/?#])/i);
-  return match?.[1] ?? null;
-}
-
-async function tryGetUserIdFromRowAction(row: Locator, operation: FundsTransactionOperation): Promise<string | null> {
-  const link = row.locator(ACTION_LINK_BY_OPERATION[operation]).first();
-  const href = await link.getAttribute('href').catch(() => null);
-  return extractUserIdFromHref(href);
-}
-
-async function tryGetUserIdFromVisibleTableAction(
-  page: Page,
-  operation: FundsTransactionOperation
-): Promise<string | null> {
-  const hrefs = await page.locator(ACTION_LINK_BY_OPERATION[operation]).evaluateAll((elements) =>
-    elements.flatMap((element) => {
-      const htmlElement = element as any;
-      const style = (globalThis as any).getComputedStyle(htmlElement);
-      const box = htmlElement.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || box.width <= 0 || box.height <= 0) {
-        return [];
-      }
-
-      return [htmlElement.getAttribute('href') ?? ''];
-    })
-  );
-  const ids = new Set(hrefs.flatMap((href) => extractUserIdFromHref(href) ?? []));
-
-  if (ids.size === 1) {
-    return [...ids][0] ?? null;
-  }
-
-  return null;
 }
 
 function getFundsOperationPath(operation: FundsTransactionOperation, userId: string): string {
@@ -627,34 +189,6 @@ async function openFundsOperationPageDirect(
   timeoutMs: number
 ): Promise<void> {
   await page.goto(getFundsOperationPath(operation, userId), { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-}
-
-async function clickTotalAmountAction(page: Page, timeoutMs: number, pollingMs: number): Promise<void> {
-  const structuredButton = await findFirstEnabledVisibleInLocator(
-    page.locator('.withdrawal__all-button button[type="button"]'),
-    Math.min(timeoutMs, 2_000),
-    pollingMs
-  ).catch(() => undefined);
-  const totalButton =
-    structuredButton ??
-    (await findFirstEnabledVisibleInLocator(
-      page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: TOTAL_AMOUNT_TEXT_REGEX }),
-      timeoutMs,
-      pollingMs
-    ).catch(() => undefined));
-  if (!totalButton) {
-    throw new Error('Could not find enabled "Toda" button for total withdraw');
-  }
-
-  await clickLocator(totalButton, timeoutMs);
-
-  const amountInput = await findDepositAmountInput(page, Math.min(timeoutMs, 2_000)).catch(() => undefined);
-  if (amountInput) {
-    const value = (await amountInput.inputValue().catch(() => '')).trim();
-    if (!/[1-9]/.test(value)) {
-      throw new Error('Total withdraw did not populate a non-zero amount after clicking "Toda"');
-    }
-  }
 }
 
 async function executeActionStep(
@@ -726,66 +260,6 @@ async function authenticateWithRetry(
   throw (lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Unknown authentication error')));
 }
 
-async function findUniqueVisibleActionAcrossTable(
-  page: Page,
-  operation: FundsTransactionOperation,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<Locator> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
-    const candidates = page.locator(USER_ACTION_CLICKABLE_SELECTOR).filter({ hasText: ACTION_TEXT_BY_OPERATION[operation] });
-    const count = await candidates.count();
-    const visible: Locator[] = [];
-    for (let i = 0; i < count; i += 1) {
-      const candidate = candidates.nth(i);
-      if (await candidate.isVisible().catch(() => false)) {
-        visible.push(candidate);
-      }
-    }
-
-    if (visible.length === 1) {
-      return visible[0];
-    }
-
-    if (visible.length > 1) {
-      throw new Error(
-        `Multiple visible "${operation === 'carga' ? 'deposito' : 'retiro'}" actions found after filter (${visible.length})`
-      );
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, pollingMs));
-  }
-
-  throw new Error('No visible candidate found in locator');
-}
-
-async function findUniqueUserRow(
-  page: Page,
-  operation: FundsTransactionOperation,
-  username: string,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<Locator> {
-  const startedAt = Date.now();
-  let lastError = `Could not find an actionable row for user "${username}"`;
-  const rows = page.locator(USERS_ROW_SELECTOR);
-
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const candidates = await collectDepositRowCandidates(page, operation);
-      const selectedIndex = selectDepositRowIndex(candidates, username);
-      return rows.nth(selectedIndex);
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-
-    await page.waitForTimeout(pollingMs);
-  }
-
-  throw new Error(lastError);
-}
-
 async function waitForDepositPage(
   page: Page,
   operation: FundsTransactionOperation,
@@ -819,65 +293,6 @@ async function waitForDepositPage(
   throw new Error(`Operation page did not open for "${operation}" within timeout`);
 }
 
-async function waitForUserVisibleInDepositPage(
-  page: Page,
-  username: string,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<boolean> {
-  const startedAt = Date.now();
-  const pattern = new RegExp(escapeRegex(username), 'i');
-
-  while (Date.now() - startedAt < timeoutMs) {
-    const visible = await page
-      .getByText(pattern)
-      .first()
-      .isVisible()
-      .catch(() => false);
-    if (visible) {
-      return true;
-    }
-
-    await page.waitForTimeout(pollingMs);
-  }
-
-  return false;
-}
-
-async function waitForDepositResult(
-  page: Page,
-  operation: FundsTransactionOperation,
-  submittedUrl: string,
-  timeoutMs: number,
-  pollingMs: number
-): Promise<{ state: 'success' | 'error' | 'unknown'; reason: string }> {
-  const startedAt = Date.now();
-  const targetPath = TARGET_PATH_BY_OPERATION[operation];
-  const successMessage = page.locator('body').getByText(SUCCESS_MESSAGE_BY_OPERATION[operation]).first();
-  const errorMessage = page.locator('body').getByText(ERROR_MESSAGE_REGEX).first();
-
-  while (Date.now() - startedAt < timeoutMs) {
-    if (await errorMessage.first().isVisible().catch(() => false)) {
-      const text = (await errorMessage.first().innerText().catch(() => '')).trim();
-      return { state: 'error', reason: text || `Error message detected after ${operation} submit` };
-    }
-
-    if (await successMessage.first().isVisible().catch(() => false)) {
-      const text = (await successMessage.first().innerText().catch(() => '')).trim();
-      return { state: 'success', reason: text || `Success message detected after ${operation} submit` };
-    }
-
-    const currentUrl = page.url();
-    if (currentUrl !== submittedUrl && !currentUrl.includes(targetPath)) {
-      return { state: 'success', reason: `URL changed after submit: ${currentUrl}` };
-    }
-
-    await page.waitForTimeout(pollingMs);
-  }
-
-  return { state: 'unknown', reason: `No clear success signal detected after ${operation} submit` };
-}
-
 function computeExpectedUserBalance(
   operation: FundsTransactionOperation,
   amount: number | undefined,
@@ -908,191 +323,92 @@ function computeExpectedUserBalance(
   return null;
 }
 
-async function checkUserBalanceInUsersList(
+function createBalanceSnapshot(balance: number): UserBalanceSnapshot {
+  const saldoNumero = roundMoney(balance);
+  return {
+    saldoNumero,
+    saldoTexto: formatMoney(saldoNumero)
+  };
+}
+
+function resolveRequestedRdaAmount(
+  operation: FundsTransactionOperation,
+  requestAmount: number | undefined,
+  beforeBalance: number | null
+): number {
+  if (operation === 'descarga_total') {
+    if (beforeBalance == null) {
+      throw new Error('Could not resolve total withdrawal amount before submit');
+    }
+    return roundMoney(beforeBalance);
+  }
+
+  if (typeof requestAmount !== 'number') {
+    throw new Error(`cantidad is required for "${operation}" operation`);
+  }
+
+  return roundMoney(requestAmount);
+}
+
+async function fillAmountInputIfVisible(page: Page, amount: number, timeoutMs: number): Promise<void> {
+  const amountInput = await findDepositAmountInput(page, Math.min(timeoutMs, 2_000)).catch(() => undefined);
+  if (!amountInput) {
+    return;
+  }
+
+  await amountInput.fill('', { timeout: Math.min(timeoutMs, 2_000) }).catch(() => undefined);
+  await amountInput.fill(String(amount), { timeout: Math.min(timeoutMs, 2_000) }).catch(() => undefined);
+  await amountInput.press('Tab', { timeout: Math.min(timeoutMs, 2_000) }).catch(() => undefined);
+}
+
+async function submitFundsOperationByApi(
   page: Page,
   operation: FundsTransactionOperation,
+  userId: string,
+  amount: number,
+  timeoutMs: number
+): Promise<void> {
+  const paymentAgents = await fetchRdaPaymentAgents(page, userId, timeoutMs);
+  await submitRdaPayment(
+    page,
+    {
+      userId,
+      amount,
+      operation: operation === 'carga' ? 0 : 1,
+      paymentAgentId: paymentAgents.defaultAgentId
+    },
+    timeoutMs
+  );
+}
+
+async function waitForRdaExpectedBalance(
+  page: Page,
   username: string,
-  userId: string | null,
+  agentId: string,
+  expectedBalance: number,
   timeoutMs: number,
   pollingMs: number
 ): Promise<UserBalanceSnapshot> {
-  await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: timeoutMs });
-  const filterInput = await findUsersFilterInput(page, Math.min(timeoutMs, 10_000));
-  await filterInput.fill('', { timeout: timeoutMs });
-  await filterInput.fill(username.trim().toLowerCase(), { timeout: timeoutMs });
+  const startedAt = Date.now();
+  const expected = roundMoney(expectedBalance);
+  let lastBalance: number | null = null;
 
-  const applyFilterButton = await findFirstVisibleLocator(
-    page,
-    USERS_APPLY_FILTER_SELECTOR,
-    Math.min(timeoutMs, 4_000)
-  ).catch(() => undefined);
-  if (applyFilterButton) {
-    await clickLocator(applyFilterButton, timeoutMs);
-  } else {
-    await filterInput.press('Enter', { timeout: timeoutMs }).catch(() => undefined);
-  }
+  while (Date.now() - startedAt < timeoutMs) {
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    const resolved = await resolveRdaUserByApi(page, username, Math.max(1_000, Math.min(remainingMs, 5_000)), agentId);
+    lastBalance = roundMoney(resolved.user.balance);
 
-  await waitForUsersFilterOutcome(page, operation, username, Math.min(timeoutMs, 8_000), pollingMs);
-  let row: Locator | undefined;
-  if (userId) {
-    const rowByIdCandidates = page.locator(USERS_ROW_SELECTOR).filter({
-      has: page.locator(`a[href*="/users/deposit/${userId}"], a[href*="/users/withdraw/${userId}"]`)
-    });
-    row = await findFirstVisibleInLocator(rowByIdCandidates, Math.min(timeoutMs, 5_000), pollingMs).catch(() => undefined);
-  }
-
-  if (!row) {
-    row = await findUniqueUserRow(page, operation, username, Math.min(timeoutMs, 8_000), pollingMs).catch(
-      () => undefined
-    );
-  }
-
-  if (!row) {
-    const fallbackBalance = await readFilteredUserBalanceSnapshot(page, username);
-    if (fallbackBalance) {
-      return fallbackBalance;
+    if (Math.abs(lastBalance - expected) < 0.005) {
+      return createBalanceSnapshot(lastBalance);
     }
 
-    row = await findUniqueUserRow(page, operation, username, Math.min(timeoutMs, 8_000), pollingMs);
+    await page.waitForTimeout(Math.min(pollingMs, Math.max(100, timeoutMs - (Date.now() - startedAt))));
   }
 
-  const rowText = await row.innerText({ timeout: timeoutMs }).catch(() => '');
-  return extractUserListBalanceSnapshotFromRowText(rowText);
-}
-
-async function verifyDepositResultStep(
-  page: Page,
-  operation: FundsTransactionOperation,
-  artifactDir: string,
-  stepName: string,
-  submittedUrl: string,
-  timeoutMs: number,
-  pollingMs: number,
-  captureOnSuccess: boolean
-): Promise<JobStepResult> {
-  const startedAt = new Date().toISOString();
-
-  try {
-    const outcome = await waitForDepositResult(page, operation, submittedUrl, timeoutMs, pollingMs);
-    const artifactPath = captureOnSuccess ? await captureStepScreenshot(page, artifactDir, stepName) : undefined;
-
-    if (outcome.state === 'success') {
-      return {
-        name: stepName,
-        status: 'ok',
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        artifactPath
-      };
-    }
-
-    return {
-      name: stepName,
-      status: 'failed',
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      artifactPath,
-      error: outcome.reason
-    };
-  } catch (error) {
-    return {
-      name: stepName,
-      status: 'failed',
-      startedAt,
-      finishedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
-}
-
-async function verifyWithRetryAndBalanceFallback(
-  page: Page,
-  operation: FundsTransactionOperation,
-  username: string,
-  amount: number | undefined,
-  beforeBalance: number | null,
-  userId: string | null,
-  artifactDir: string,
-  stepName: string,
-  submittedUrl: string,
-  timeoutMs: number,
-  pollingMs: number,
-  captureOnSuccess: boolean,
-  submitTimeoutMs: number
-): Promise<JobStepResult> {
-  const expectedBalance = computeExpectedUserBalance(operation, amount, beforeBalance);
-
-  let verifyStep = await verifyDepositResultStep(
-    page,
-    operation,
-    artifactDir,
-    stepName,
-    submittedUrl,
-    timeoutMs,
-    pollingMs,
-    captureOnSuccess
+  const lastBalanceText = lastBalance == null ? 'sin lectura final' : formatMoney(lastBalance);
+  throw new Error(
+    `RdA API balance did not reach expected value for user "${username}" (expected ${formatMoney(expected)}, last ${lastBalanceText})`
   );
-
-  const isNoSignal = verifyStep.status === 'failed' && (verifyStep.error ?? '').includes('No clear success signal detected');
-  if (!isNoSignal) {
-    return verifyStep;
-  }
-
-  const stillInOperationPage = page.url().includes(TARGET_PATH_BY_OPERATION[operation]);
-  if (stillInOperationPage) {
-    try {
-      const submitButton = await findSubmitDepositAction(page, operation, Math.min(submitTimeoutMs, 5_000), pollingMs);
-      await clickLocator(submitButton, submitTimeoutMs);
-      const retriedVerify = await verifyDepositResultStep(
-        page,
-        operation,
-        artifactDir,
-        stepName,
-        page.url(),
-        timeoutMs,
-        pollingMs,
-        false
-      );
-      if (retriedVerify.status === 'ok') {
-        return {
-          ...retriedVerify,
-          error: undefined
-        };
-      }
-      verifyStep = retriedVerify;
-    } catch {
-      // fall through to balance fallback
-    }
-  }
-
-  if (expectedBalance == null) {
-    return verifyStep;
-  }
-
-  try {
-    const currentBalance = await checkUserBalanceInUsersList(
-      page,
-      operation,
-      username,
-      userId,
-      Math.max(timeoutMs, 10_000),
-      pollingMs
-    );
-    const delta = Math.abs(currentBalance.saldoNumero - expectedBalance);
-    if (delta < 0.005) {
-      return {
-        name: stepName,
-        status: 'ok',
-        startedAt: verifyStep.startedAt,
-        finishedAt: new Date().toISOString(),
-        ...(verifyStep.artifactPath ? { artifactPath: verifyStep.artifactPath } : {})
-      };
-    }
-  } catch {
-    // keep original verify failure if fallback check also fails
-  }
-
-  return verifyStep;
 }
 
 export async function runDepositJob(request: DepositJobRequest, appConfig: AppConfig, logger: Logger): Promise<JobExecutionResult> {
@@ -1109,13 +425,12 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     headless: request.options.headless,
     debug: request.options.debug,
     slowMo: request.options.slowMo,
-    timeoutMs: request.options.timeoutMs
+    timeoutMs: request.options.timeoutMs,
+    postLoginWarmupPath: undefined
   };
   const isTurbo = !runtimeConfig.debug && runtimeConfig.slowMo === 0;
   const captureSuccessArtifacts = parseEnvBoolean(process.env.DEPOSIT_CAPTURE_SUCCESS_ARTIFACTS) ?? false;
   const pollingMs = isTurbo ? 100 : 250;
-  const filterOutcomeTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 4_000) : Math.min(runtimeConfig.timeoutMs, 10_000);
-  const depositSearchTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
   const depositPageTimeoutMs = isTurbo ? Math.min(runtimeConfig.timeoutMs, 5_000) : runtimeConfig.timeoutMs;
   // RDA withdrawals can redirect back to the authenticated shell a few seconds after submit in Docker.
   // A slightly longer turbo verify window avoids false negatives while keeping the job fast.
@@ -1134,7 +449,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
   const tracePath = path.join(artifactDir, 'trace.zip');
   const traceFailurePath = path.join(artifactDir, 'trace-failure.zip');
   const screenshotFailurePath = path.join(artifactDir, 'error.png');
-  let usersFilterInput: Locator | undefined;
+  let resolvedRdaUser: ResolvedRdaUser | null = null;
   const fundsSnapshot: FundsOutcomeSnapshot = {
     userBalanceBefore: null,
     userId: null
@@ -1158,7 +473,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
         password: request.payload.contrasena_agente
       },
       jobLogger,
-      2
+      1
     );
     const loginArtifact = captureSuccessArtifacts ? await captureStepScreenshot(page, artifactDir, '00-login') : undefined;
     if (loginArtifact) {
@@ -1172,110 +487,25 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       ...(loginArtifact ? { artifactPath: loginArtifact } : {})
     });
 
-    const gotoUsersStep = await executeActionStep(page, artifactDir, '01-goto-users-all', async () => {
-      await page.goto('/users/all', { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
-      usersFilterInput = await findUsersFilterInput(page, Math.min(runtimeConfig.timeoutMs, isTurbo ? 4_000 : 10_000));
+    const resolveUserStep = await executeActionStep(page, artifactDir, '01-resolve-rda-user', async () => {
+      resolvedRdaUser = await resolveRdaUserByApi(page, request.payload.usuario, runtimeConfig.timeoutMs);
+      fundsSnapshot.userBalanceBefore = createBalanceSnapshot(resolvedRdaUser.user.balance);
+      fundsSnapshot.userId = resolvedRdaUser.user.id;
     }, captureSuccessArtifacts);
-    if (gotoUsersStep.artifactPath) {
-      artifactPaths.push(gotoUsersStep.artifactPath);
+    if (resolveUserStep.artifactPath) {
+      artifactPaths.push(resolveUserStep.artifactPath);
     }
-    steps.push(gotoUsersStep);
-    if (gotoUsersStep.status === 'failed') {
-      throw new Error(`Step failed: ${gotoUsersStep.name} (${gotoUsersStep.error ?? 'unknown error'})`);
-    }
-
-    const filterValue = request.payload.usuario.trim().toLowerCase();
-    const fillFilterStep = await executeActionStep(page, artifactDir, '02-fill-user-filter', async () => {
-      const filterInput = usersFilterInput ?? (await findUsersFilterInput(page, runtimeConfig.timeoutMs));
-      usersFilterInput = filterInput;
-      await filterInput.fill('', { timeout: runtimeConfig.timeoutMs });
-      await filterInput.fill(filterValue, { timeout: runtimeConfig.timeoutMs });
-    }, captureSuccessArtifacts);
-    if (fillFilterStep.artifactPath) {
-      artifactPaths.push(fillFilterStep.artifactPath);
-    }
-    steps.push(fillFilterStep);
-    if (fillFilterStep.status === 'failed') {
-      throw new Error(`Step failed: ${fillFilterStep.name} (${fillFilterStep.error ?? 'unknown error'})`);
-    }
-
-    const applyFilterStep = await executeActionStep(page, artifactDir, '03-apply-user-filter', async () => {
-      const applyFilterButton = await findFirstVisibleLocator(
-        page,
-        USERS_APPLY_FILTER_SELECTOR,
-        isTurbo ? Math.min(runtimeConfig.timeoutMs, 2_000) : runtimeConfig.timeoutMs
-      ).catch(() => undefined);
-      if (applyFilterButton) {
-        await clickLocator(applyFilterButton, runtimeConfig.timeoutMs);
-      } else {
-        const filterInput = usersFilterInput ?? (await findUsersFilterInput(page, runtimeConfig.timeoutMs));
-        await filterInput.press('Enter', { timeout: runtimeConfig.timeoutMs }).catch(() => undefined);
-      }
-      await waitForUsersFilterOutcome(page, operation, request.payload.usuario, filterOutcomeTimeoutMs, pollingMs);
-    }, captureSuccessArtifacts);
-    if (applyFilterStep.artifactPath) {
-      artifactPaths.push(applyFilterStep.artifactPath);
-    }
-    steps.push(applyFilterStep);
-    if (applyFilterStep.status === 'failed') {
-      throw new Error(`Step failed: ${applyFilterStep.name} (${applyFilterStep.error ?? 'unknown error'})`);
+    steps.push(resolveUserStep);
+    if (resolveUserStep.status === 'failed') {
+      throw new Error(`Step failed: ${resolveUserStep.name} (${resolveUserStep.error ?? 'unknown error'})`);
     }
 
     const openDepositStep = await executeActionStep(page, artifactDir, stepNames.openAction, async () => {
-      const fastPath = isTurbo
-        ? await tryOpenFilteredUniqueAction(page, operation, request.payload.usuario, runtimeConfig.timeoutMs)
-        : null;
-      if (fastPath) {
-        fundsSnapshot.userBalanceBefore = fastPath.balance;
-        fundsSnapshot.userId = fastPath.userId;
-        return;
+      if (!resolvedRdaUser) {
+        throw new Error(`RdA user "${request.payload.usuario}" was not resolved before opening operation page`);
       }
 
-      const selectedRow = await findUniqueUserRow(
-        page,
-        operation,
-        request.payload.usuario,
-        depositSearchTimeoutMs,
-        pollingMs
-      ).catch(async (error) => {
-        const fallback = await tryOpenFilteredUniqueAction(
-          page,
-          operation,
-          request.payload.usuario,
-          runtimeConfig.timeoutMs
-        );
-        if (fallback) {
-          fundsSnapshot.userBalanceBefore = fallback.balance;
-          fundsSnapshot.userId = fallback.userId;
-          return undefined;
-        }
-
-        throw error;
-      });
-      if (!selectedRow) {
-        return;
-      }
-
-      const rowText = await selectedRow.innerText({ timeout: runtimeConfig.timeoutMs }).catch(() => '');
-      fundsSnapshot.userBalanceBefore = extractUserListBalanceSnapshotFromRowText(rowText);
-      fundsSnapshot.userId = await tryGetUserIdFromRowAction(selectedRow, operation);
-      if (!fundsSnapshot.userId) {
-        fundsSnapshot.userId = await tryGetUserIdFromVisibleTableAction(page, operation);
-      }
-      if (fundsSnapshot.userId) {
-        await openFundsOperationPageDirect(page, operation, fundsSnapshot.userId, runtimeConfig.timeoutMs);
-        return;
-      }
-
-      const rowActionSearchTimeoutMs = isTurbo ? 3_000 : Math.max(runtimeConfig.timeoutMs, 3_000);
-      const depositButton =
-        (await findDepositActionInRow(selectedRow, operation, rowActionSearchTimeoutMs, pollingMs).catch(() => undefined)) ??
-        (await findUniqueVisibleActionAcrossTable(page, operation, rowActionSearchTimeoutMs, pollingMs));
-      if (isTurbo) {
-        await clickRowActionFast(depositButton, runtimeConfig.timeoutMs);
-      } else {
-        await clickLocator(depositButton, runtimeConfig.timeoutMs);
-      }
+      await openFundsOperationPageDirect(page, operation, resolvedRdaUser.user.id, runtimeConfig.timeoutMs);
     }, captureSuccessArtifacts);
     if (openDepositStep.artifactPath) {
       artifactPaths.push(openDepositStep.artifactPath);
@@ -1287,15 +517,6 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
 
     const waitDepositPageStep = await executeActionStep(page, artifactDir, stepNames.waitOperationPage, async () => {
       await waitForDepositPage(page, operation, depositPageTimeoutMs, pollingMs);
-      const userVisible = await waitForUserVisibleInDepositPage(
-        page,
-        request.payload.usuario,
-        depositPageTimeoutMs,
-        pollingMs
-      );
-      if (!userVisible) {
-        throw new Error(`User "${request.payload.usuario}" is not visible in ${operation} target panel`);
-      }
     }, captureSuccessArtifacts);
     if (waitDepositPageStep.artifactPath) {
       artifactPaths.push(waitDepositPageStep.artifactPath);
@@ -1306,18 +527,19 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     }
 
     const amountStep = await executeActionStep(page, artifactDir, stepNames.amountAction, async () => {
+      const resolvedAmount = resolveRequestedRdaAmount(
+        operation,
+        request.payload.cantidad,
+        fundsSnapshot.userBalanceBefore?.saldoNumero ?? null
+      );
       if (operation === 'descarga_total') {
-        await clickTotalAmountAction(page, runtimeConfig.timeoutMs, pollingMs);
+        await fillAmountInputIfVisible(page, resolvedAmount, runtimeConfig.timeoutMs);
         return;
-      }
-
-      if (typeof request.payload.cantidad !== 'number') {
-        throw new Error(`cantidad is required for "${operation}" operation`);
       }
 
       const amountInput = await findDepositAmountInput(page, runtimeConfig.timeoutMs);
       await amountInput.fill('', { timeout: runtimeConfig.timeoutMs });
-      await amountInput.fill(String(request.payload.cantidad), { timeout: runtimeConfig.timeoutMs });
+      await amountInput.fill(String(resolvedAmount), { timeout: runtimeConfig.timeoutMs });
       await amountInput.press('Tab', { timeout: Math.min(runtimeConfig.timeoutMs, 2_000) }).catch(() => undefined);
     }, captureSuccessArtifacts);
     if (amountStep.artifactPath) {
@@ -1328,10 +550,17 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       throw new Error(`Step failed: ${amountStep.name} (${amountStep.error ?? 'unknown error'})`);
     }
 
-    const submittedUrl = page.url();
     const clickDepositStep = await executeActionStep(page, artifactDir, stepNames.clickSubmit, async () => {
-      const submitButton = await findSubmitDepositAction(page, operation, runtimeConfig.timeoutMs, pollingMs);
-      await clickLocator(submitButton, runtimeConfig.timeoutMs);
+      if (!resolvedRdaUser) {
+        throw new Error(`RdA user "${request.payload.usuario}" was not resolved before submitting operation`);
+      }
+
+      const resolvedAmount = resolveRequestedRdaAmount(
+        operation,
+        request.payload.cantidad,
+        fundsSnapshot.userBalanceBefore?.saldoNumero ?? null
+      );
+      await submitFundsOperationByApi(page, operation, resolvedRdaUser.user.id, resolvedAmount, runtimeConfig.timeoutMs);
     }, captureSuccessArtifacts);
     if (clickDepositStep.artifactPath) {
       artifactPaths.push(clickDepositStep.artifactPath);
@@ -1341,53 +570,36 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
       throw new Error(`Step failed: ${clickDepositStep.name} (${clickDepositStep.error ?? 'unknown error'})`);
     }
 
-    const verifyStep = await verifyWithRetryAndBalanceFallback(
-      page,
-      operation,
-      request.payload.usuario,
-      request.payload.cantidad,
-      fundsSnapshot.userBalanceBefore?.saldoNumero ?? null,
-      fundsSnapshot.userId,
-      artifactDir,
-      stepNames.verifyResult,
-      submittedUrl,
-      verifyTimeoutMs,
-      pollingMs,
-      captureSuccessArtifacts,
-      runtimeConfig.timeoutMs
-    );
+    const balanceAfterSnapshotRef: { value: UserBalanceSnapshot | null } = { value: null };
+    const verifyStep = await executeActionStep(page, artifactDir, stepNames.verifyResult, async () => {
+      if (!resolvedRdaUser) {
+        throw new Error(`RdA user "${request.payload.usuario}" was not resolved before verifying balance`);
+      }
+
+      const expectedBalance = computeExpectedUserBalance(
+        operation,
+        request.payload.operacion === 'descarga_total' ? undefined : request.payload.cantidad,
+        fundsSnapshot.userBalanceBefore?.saldoNumero ?? null
+      );
+      if (expectedBalance == null) {
+        throw new Error(`Could not compute expected balance for "${operation}" operation`);
+      }
+
+      balanceAfterSnapshotRef.value = await waitForRdaExpectedBalance(
+        page,
+        request.payload.usuario,
+        resolvedRdaUser.agentId,
+        expectedBalance,
+        verifyTimeoutMs,
+        pollingMs
+      );
+    }, captureSuccessArtifacts);
     if (verifyStep.artifactPath) {
       artifactPaths.push(verifyStep.artifactPath);
     }
     steps.push(verifyStep);
     if (verifyStep.status === 'failed') {
       throw new Error(`Step failed: ${verifyStep.name} (${verifyStep.error ?? 'unknown error'})`);
-    }
-
-    let balanceAfterSnapshot: UserBalanceSnapshot | null = null;
-    if (fundsSnapshot.userBalanceBefore) {
-      try {
-        balanceAfterSnapshot = await checkUserBalanceInUsersList(
-          page,
-          operation,
-          request.payload.usuario,
-          fundsSnapshot.userId,
-          Math.max(runtimeConfig.timeoutMs, 10_000),
-          pollingMs
-        );
-      } catch {
-        const expectedBalance = computeExpectedUserBalance(
-          operation,
-          request.payload.operacion === 'descarga_total' ? undefined : request.payload.cantidad,
-          fundsSnapshot.userBalanceBefore.saldoNumero
-        );
-        if (expectedBalance != null) {
-          balanceAfterSnapshot = {
-            saldoNumero: roundMoney(expectedBalance),
-            saldoTexto: formatMoney(expectedBalance)
-          };
-        }
-      }
     }
 
     if (captureSuccessArtifacts) {
@@ -1419,6 +631,7 @@ export async function runDepositJob(request: DepositJobRequest, appConfig: AppCo
     await lease.release();
 
     let result: RdaFundsOperationResult | undefined;
+    const balanceAfterSnapshot = balanceAfterSnapshotRef.value;
     if (fundsSnapshot.userBalanceBefore && balanceAfterSnapshot) {
       const montoAplicado = computeAppliedAmount(
         operation,

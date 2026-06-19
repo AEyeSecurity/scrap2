@@ -6,6 +6,23 @@ export function formatRdaUserNotFoundMessage(usuario: string): string {
   return `No se ha encontrado el usuario ${usuario}`;
 }
 
+export function formatRdaUnavailableMessage(): string {
+  return 'RdA no disponible temporalmente';
+}
+
+export function isRdaUnavailableErrorMessage(message: string): boolean {
+  return (
+    /\bRDA_UNAVAILABLE\b/i.test(message) ||
+    /cloudflare/i.test(message) ||
+    /bad gateway/i.test(message) ||
+    /error code\s*502/i.test(message) ||
+    /\bHTTP\s+50[0-9]\b/i.test(message) ||
+    /Remote login returned an unavailable page/i.test(message) ||
+    /Could not locate login form selectors/i.test(message) ||
+    /Authentication did not complete before timeout/i.test(message)
+  );
+}
+
 function matchQuotedUsername(message: string, pattern: RegExp): string | null {
   const match = message.match(pattern);
   return match?.[1]?.trim() || null;
@@ -42,6 +59,10 @@ export function translateRdaJobError(
   } = {}
 ): string {
   const usuario = context.usuario ?? extractRdaUsernameFromError(message) ?? undefined;
+
+  if (isRdaUnavailableErrorMessage(message)) {
+    return formatRdaUnavailableMessage();
+  }
 
   if (isRdaUserNotFoundError(message) && usuario) {
     return formatRdaUserNotFoundMessage(usuario);

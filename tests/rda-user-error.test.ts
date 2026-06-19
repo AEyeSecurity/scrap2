@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   extractRdaUsernameFromError,
+  formatRdaUnavailableMessage,
   formatRdaUserNotFoundMessage,
   translateRdaJobError
 } from '../src/rda-user-error';
@@ -8,6 +9,10 @@ import {
 describe('rda-user-error', () => {
   it('formats user-not-found message', () => {
     expect(formatRdaUserNotFoundMessage('player_1')).toBe('No se ha encontrado el usuario player_1');
+  });
+
+  it('formats unavailable message', () => {
+    expect(formatRdaUnavailableMessage()).toBe('RdA no disponible temporalmente');
   });
 
   it('extracts username from actionable-row errors', () => {
@@ -48,5 +53,12 @@ describe('rda-user-error', () => {
         operacion: 'descarga'
       })
     ).toBe('No se pudo confirmar la operacion descarga para el usuario player_1');
+  });
+
+  it('translates Cloudflare and empty shell login failures to an unavailable message', () => {
+    expect(translateRdaJobError('Remote login returned HTTP 502 Bad Gateway')).toBe('RdA no disponible temporalmente');
+    expect(translateRdaJobError('Could not locate login form selectors. Override selector env vars.')).toBe(
+      'RdA no disponible temporalmente'
+    );
   });
 });

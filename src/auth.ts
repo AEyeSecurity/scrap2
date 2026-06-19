@@ -16,6 +16,8 @@ interface VisibleControl {
 const FALLBACK_AUTH_ERROR_TEXT =
   /usuario no autorizado|no autorizado|contrase(?:n|\u00f1)a\s+no\s+corregida|credenciales incorrectas/i;
 const AUTHENTICATED_UI_TEXT = /mis estad[i\u00ed]sticas|usuarios|reportes financieros|informes de jugadores|finanzas/i;
+const UNAVAILABLE_PAGE_TEXT =
+  /cloudflare|bad gateway|error code\s*502|http error\s+50[0-9]|esta p[aá]gina no funciona|no puede procesar esta solicitud/i;
 const LOGIN_SUBMIT_DELAY_MS = 1_500;
 
 function isLoginPath(page: Page): boolean {
@@ -141,7 +143,24 @@ export async function ensureAuthenticated(
   const storageStatePath = sessionOptions.storageStatePath ?? cfg.storageStatePath;
   const loginUrl = new URL(cfg.loginPath, `${cfg.baseUrl}/`).toString();
 
-  await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+  let loginResponse;
+  try {
+    loginResponse = await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: cfg.timeoutMs });
+  } catch (error) {
+    const bodyTextAfterNavigationError = await page.locator('body').innerText({ timeout: 500 }).catch(() => '');
+    if (UNAVAILABLE_PAGE_TEXT.test(bodyTextAfterNavigationError)) {
+      throw new Error('Remote login returned an unavailable page');
+    }
+
+    throw error;
+  }
+  if (loginResponse && loginResponse.status() >= 500) {
+    throw new Error(`Remote login returned HTTP ${loginResponse.status()} ${loginResponse.statusText()}`);
+  }
+  const initialBodyText = await page.locator('body').innerText({ timeout: 500 }).catch(() => '');
+  if (UNAVAILABLE_PAGE_TEXT.test(initialBodyText)) {
+    throw new Error('Remote login returned an unavailable page');
+  }
 
   const loginFormVisible = await hasLoginForm(page, cfg);
   const authenticatedShellVisible = await hasAuthenticatedShell(page);
