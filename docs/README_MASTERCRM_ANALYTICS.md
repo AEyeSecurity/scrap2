@@ -18,6 +18,7 @@ Migration:
 
 - `db/migrations/20260618_mastercrm_marketing_daily_budgets.sql`
 - `db/migrations/20260619_mastercrm_technical_retention.sql`
+- `db/migrations/20260619_mastercrm_ad_budget_distribution.sql`
 
 New table:
 
@@ -27,10 +28,10 @@ Main columns:
 
 - `owner_id`: linked cashier owner.
 - `channel`: `landing` or `meta_ctwa`.
-- `level`: `campaign` or `ad`.
+- `level`: always `ad`.
 - `campaign_key`, `campaign_name`: exact values received from the acquisition source.
-- `ad_key`, `ad_name`: exact values received for ad-level rows.
-- `link_url`: ad or campaign link when available.
+- `ad_key`, `ad_name`: exact values received for the ad.
+- `link_url`: ad link when available.
 - `daily_budget_ars`: manual daily budget.
 - `active_from`, `active_to`: inclusive validity window.
 - `updated_by_mastercrm_user_id`: CRM user that edited the budget.
@@ -41,7 +42,7 @@ Budget spend for a query range is:
 daily_budget_ars * inclusive_days(overlap(active_from/active_to, date_from/date_to))
 ```
 
-Campaign budgets count toward campaign and total ROI/ROAS. Ad budgets are used for ad ranking and ad ROI/ROAS. When a campaign has budget that is not distributed to ads, the UI shows it as undistributed budget.
+Campaign investment is calculated as the sum of the campaign's ad budgets. Campaign-level budget rows are not supported and are deleted by `20260619_mastercrm_ad_budget_distribution.sql`.
 
 ## Backend endpoints
 
@@ -66,7 +67,7 @@ Response includes:
 
 - `summary`: ROI, ROAS, investment, revenue, estimated profit, leads, assigned, depositors, CPL, cost per depositor and conversion rates.
 - `channels`: channel-level metrics.
-- `campaigns`: campaign ranking and budget distribution.
+- `campaigns`: campaign ranking; investment is summed from ad budgets.
 - `ads`: ad ranking and available ad links.
 - `clients`: attributable first-acquisition clients.
 - `budgets`: active daily budget rows in range.
@@ -80,19 +81,59 @@ Required fields:
 
 - `user_id`
 - `channel`
-- `level`
+- `level` as `ad`
 - `campaign_key`
 - `campaign_name`
+- `ad_key`
 - `daily_budget_ars`
 - `active_from`
 
 Optional fields:
 
 - `id`
-- `ad_key`
 - `ad_name`
 - `link_url`
 - `active_to`
+
+`POST /mastercrm-marketing-budgets/distribute`
+
+Atomically splits one total daily budget across multiple ads from one channel. The operation saves individual ad-level budget rows and fails if any selected ad has an overlapping validity window.
+
+Payload:
+
+```json
+{
+  "user_id": 16,
+  "total_daily_budget_ars": 1000,
+  "active_from": "2026-06-01",
+  "active_to": "2026-06-19",
+  "ads": [
+    {
+      "channel": "meta_ctwa",
+      "campaign_key": "Reino Dorado",
+      "campaign_name": "Reino Dorado",
+      "ad_key": "120250708847350471",
+      "ad_name": "120250708847350471",
+      "link_url": "https://..."
+    },
+    {
+      "channel": "meta_ctwa",
+      "campaign_key": "Reino Dorado",
+      "campaign_name": "Reino Dorado",
+      "ad_key": "120250708847350472",
+      "ad_name": "120250708847350472"
+    }
+  ]
+}
+```
+
+Rules:
+
+- minimum 2 ads;
+- exactly one channel per operation;
+- no duplicate ad keys inside the same campaign/channel;
+- no overlaps with existing ad budget validity windows;
+- cents are distributed deterministically so the saved rows sum exactly to `total_daily_budget_ars`.
 
 `POST /mastercrm-marketing-budgets/delete`
 
@@ -191,6 +232,7 @@ Before pushing a CRM analytics change:
    - `Pagina Principal` loads the executive dashboard.
    - `Clientes` keeps the operational client view.
    - `Estadisticas` loads range/channel/campaign/ad filters.
-   - Budget save changes ROI/ROAS and deleting the test budget returns investment to zero.
+   - Individual ad budget save changes ROI/ROAS and deleting the test budget returns investment to zero.
+   - Selecting 2+ ads from one channel and saving a distributed budget creates individual ad budget rows whose daily sum matches the entered total.
    - `Sin dato`, `Landing sin match`, reentries, missing budgets and negative adjustments appear in audit.
    - No unnecessary Docker images or generated image assets are created.

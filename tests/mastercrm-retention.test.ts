@@ -98,4 +98,22 @@ describe('mastercrm retention', () => {
       expect(migration).not.toMatch(new RegExp(`delete\\s+from\\s+public\\.${businessTable}\\b`));
     }
   });
+
+  it('keeps marketing budget migration ad-only and distributed in cents', () => {
+    const migration = readFileSync(
+      join(__dirname, '..', 'db', 'migrations', '20260619_mastercrm_ad_budget_distribution.sql'),
+      'utf8'
+    ).toLowerCase();
+
+    expect(migration).toMatch(/delete\s+from\s+public\.owner_marketing_daily_budgets\s+where\s+level\s*=\s*'campaign'/);
+    expect(migration).toMatch(/check\s*\(\s*level\s*=\s*'ad'\s*\)/);
+    expect(migration).toMatch(/check\s*\(\s*ad_key\s*<>\s*''\s*\)/);
+    expect(migration).toContain('distribute_owner_marketing_ad_budgets_v1');
+    expect(migration).toMatch(/v_total_cents\s*:=\s*round\(p_total_daily_budget_ars\s*\*\s*100\)::bigint/);
+    expect(migration).toContain('v_remainder');
+    expect(migration).toMatch(/case\s+when\s+ads\.ordinal\s+<=\s+v_remainder\s+then\s+1\s+else\s+0\s+end/);
+    expect(migration).toMatch(/from\s+pg_temp\.mastercrm_distributed_ads\s+ads\s+where\s+ads\.channel/);
+    expect(migration).toMatch(/group\s+by\s+ads\.channel,\s+ads\.campaign_name,\s+ads\.ad_key/);
+    expect(migration).toContain('Budget overlaps existing ads:'.toLowerCase());
+  });
 });

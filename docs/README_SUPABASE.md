@@ -163,6 +163,13 @@ La purga elimina solo historial tecnico anterior al mes actual:
 
 No elimina clientes, eventos de negocio, facts mensuales, identidades, presupuestos ni financial settings.
 
+La distribucion de presupuesto por anuncios se define en:
+
+- `db/migrations/20260619_mastercrm_ad_budget_distribution.sql`
+- RPC `public.distribute_owner_marketing_ad_budgets_v1(...)`
+
+Esta migracion elimina presupuestos de campana, restringe `owner_marketing_daily_budgets.level` a `ad` y reparte presupuestos masivos como filas individuales por anuncio.
+
 Si la conexion esta mal, lo esperable es ver errores de configuracion o errores de PostgREST/RPC al invocar endpoints que dependen de Supabase.
 
 ## Errores tipicos

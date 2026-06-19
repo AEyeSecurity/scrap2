@@ -47,6 +47,7 @@ import {
   normalizeMastercrmTelefono,
   normalizeMastercrmUsername,
   toMastercrmHttpError,
+  type DistributeMastercrmMarketingBudgetsInput,
   type MastercrmUserRecord,
   type MastercrmUserStore
 } from './mastercrm-user-store';
@@ -534,6 +535,37 @@ const mastercrmMarketingBudgetBodySchema = z
     active_to: z.string().nullable().optional(),
     vigente_desde: z.string().optional(),
     vigente_hasta: z.string().nullable().optional()
+  })
+  .passthrough();
+
+const mastercrmMarketingBudgetDistributeBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    total_daily_budget_ars: z.union([z.string(), z.number()]).optional(),
+    presupuesto_diario_total_ars: z.union([z.string(), z.number()]).optional(),
+    active_from: z.string().optional(),
+    active_to: z.string().nullable().optional(),
+    vigente_desde: z.string().optional(),
+    vigente_hasta: z.string().nullable().optional(),
+    ads: z
+      .array(
+        z
+          .object({
+            channel: z.enum(['landing', 'meta_ctwa']).optional(),
+            canal: z.enum(['landing', 'meta_ctwa']).optional(),
+            campaign_key: z.string().optional(),
+            campaign_name: z.string().optional(),
+            campana_key: z.string().optional(),
+            campana_nombre: z.string().optional(),
+            ad_key: z.string().optional(),
+            ad_name: z.string().nullable().optional(),
+            anuncio_key: z.string().optional(),
+            anuncio_nombre: z.string().nullable().optional(),
+            link_url: z.string().nullable().optional()
+          })
+          .passthrough()
+      )
+      .optional()
   })
   .passthrough();
 
@@ -1248,7 +1280,7 @@ function parseMastercrmMarketingBudgetPayload(body: unknown): {
     id?: string;
     userId: number;
     channel: 'landing' | 'meta_ctwa';
-    level: 'campaign' | 'ad';
+    level: 'ad';
     campaignKey: string;
     campaignName: string;
     adKey?: string | null;
@@ -1300,6 +1332,9 @@ function parseMastercrmMarketingBudgetPayload(body: unknown): {
   ) {
     return { issues };
   }
+  if (level !== 'ad') {
+    return { issues: [{ path: 'level', message: 'level must be ad' }] };
+  }
 
   return {
     data: {
@@ -1315,6 +1350,81 @@ function parseMastercrmMarketingBudgetPayload(body: unknown): {
       dailyBudgetArs,
       activeFrom,
       ...(activeTo ? { activeTo } : {})
+    },
+    issues
+  };
+}
+
+function parseMastercrmMarketingBudgetDistributePayload(body: unknown): {
+  data?: DistributeMastercrmMarketingBudgetsInput;
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmMarketingBudgetDistributeBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const totalDailyBudgetArs = resolveAliasNumberField(
+    parsed.data,
+    ['total_daily_budget_ars', 'presupuesto_diario_total_ars'],
+    'total_daily_budget_ars',
+    issues,
+    { min: 0 }
+  );
+  const activeFrom = resolveAliasStringField(parsed.data, ['active_from', 'vigente_desde'], 'active_from', issues);
+  const activeTo = resolveAliasStringField(parsed.data, ['active_to', 'vigente_hasta'], 'active_to', issues, {
+    required: false
+  });
+  const ads = parsed.data.ads ?? [];
+
+  if (!Array.isArray(ads) || ads.length < 2) {
+    issues.push({ path: 'ads', message: 'ads must include at least two ads' });
+  }
+
+  const parsedAds = ads.map((ad, index) => {
+    const channel = ad.channel ?? ad.canal;
+    const campaignKey = resolveAliasStringField(ad, ['campaign_key', 'campana_key'], `ads.${index}.campaign_key`, issues);
+    const campaignName = resolveAliasStringField(
+      ad,
+      ['campaign_name', 'campana_nombre'],
+      `ads.${index}.campaign_name`,
+      issues
+    );
+    const adKey = resolveAliasStringField(ad, ['ad_key', 'anuncio_key'], `ads.${index}.ad_key`, issues);
+    const adName = resolveAliasStringField(ad, ['ad_name', 'anuncio_nombre'], `ads.${index}.ad_name`, issues, {
+      required: false
+    });
+    const linkUrl = resolveAliasStringField(ad, ['link_url'], `ads.${index}.link_url`, issues, { required: false });
+
+    if (!channel) {
+      issues.push({ path: `ads.${index}.channel`, message: 'channel is required' });
+    }
+
+    return {
+      channel,
+      campaignKey,
+      campaignName,
+      adKey,
+      ...(adName ? { adName } : {}),
+      ...(linkUrl ? { linkUrl } : {})
+    };
+  });
+
+  if (issues.length > 0 || !userId || totalDailyBudgetArs == null || !activeFrom) {
+    return { issues };
+  }
+
+  return {
+    data: {
+      userId,
+      totalDailyBudgetArs,
+      activeFrom,
+      ...(activeTo ? { activeTo } : {}),
+      ads: parsedAds as DistributeMastercrmMarketingBudgetsInput['ads']
     },
     issues
   };
@@ -2412,6 +2522,34 @@ export function createServer(
       }
 
       logger.error({ error }, 'Unexpected /mastercrm-marketing-budgets error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-marketing-budgets/distribute', async (request, reply) => {
+    const parsed = parseMastercrmMarketingBudgetDistributePayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const budgets = await getMastercrmUserStore().distributeMarketingBudgets(parsed.data);
+      return reply.code(200).send({ budgets });
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-marketing-budgets/distribute error');
       return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
     }
   });

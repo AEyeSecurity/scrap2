@@ -57,7 +57,7 @@ export interface UpsertMastercrmOwnerFinancialsInput {
 }
 
 export type MastercrmAnalyticsChannel = 'landing' | 'meta_ctwa';
-export type MastercrmMarketingBudgetLevel = 'campaign' | 'ad';
+export type MastercrmMarketingBudgetLevel = 'ad';
 
 export interface GetMastercrmAnalyticsInput {
   userId: number;
@@ -81,6 +81,23 @@ export interface UpsertMastercrmMarketingBudgetInput {
   dailyBudgetArs: number;
   activeFrom: string;
   activeTo?: string | null;
+}
+
+export interface DistributeMastercrmMarketingBudgetAdInput {
+  channel: MastercrmAnalyticsChannel;
+  campaignKey: string;
+  campaignName: string;
+  adKey: string;
+  adName?: string | null;
+  linkUrl?: string | null;
+}
+
+export interface DistributeMastercrmMarketingBudgetsInput {
+  userId: number;
+  totalDailyBudgetArs: number;
+  activeFrom: string;
+  activeTo?: string | null;
+  ads: DistributeMastercrmMarketingBudgetAdInput[];
 }
 
 export interface DeleteMastercrmMarketingBudgetInput {
@@ -346,6 +363,7 @@ export interface MastercrmUserStore {
   upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord>;
   getMarketingAnalytics(input: GetMastercrmAnalyticsInput): Promise<MastercrmAnalyticsRecord>;
   upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord>;
+  distributeMarketingBudgets(input: DistributeMastercrmMarketingBudgetsInput): Promise<MastercrmMarketingBudgetRecord[]>;
   deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }>;
 }
 
@@ -948,7 +966,7 @@ function calculateBudgetOverlapSpend(
 }
 
 function normalizeBudgetRow(row: OwnerMarketingDailyBudgetRow, dateFrom: string, dateTo: string): MastercrmMarketingBudgetRecord {
-  const adKey = row.level === 'ad' ? nullableText(row.ad_key ?? '') : null;
+  const adKey = nullableText(row.ad_key ?? '');
   return {
     id: row.id,
     channel: row.channel,
@@ -964,6 +982,68 @@ function normalizeBudgetRow(row: OwnerMarketingDailyBudgetRow, dateFrom: string,
     effectiveSpendArs: calculateBudgetOverlapSpend(row, dateFrom, dateTo),
     updatedAt: row.updated_at
   };
+}
+
+function normalizeDistributedBudgetAds(
+  ads: DistributeMastercrmMarketingBudgetAdInput[]
+): DistributeMastercrmMarketingBudgetAdInput[] {
+  if (!Array.isArray(ads) || ads.length < 2) {
+    throw new MastercrmUserStoreError('VALIDATION', 'ads must include at least two ads');
+  }
+
+  const normalized = ads.map((ad) => {
+    if (ad.channel !== 'landing' && ad.channel !== 'meta_ctwa') {
+      throw new MastercrmUserStoreError('VALIDATION', 'all ads must use channel landing or meta_ctwa');
+    }
+
+    const campaignKey = nullableText(ad.campaignKey);
+    const campaignName = nullableText(ad.campaignName);
+    const adKey = nullableText(ad.adKey);
+    const adName = nullableText(ad.adName ?? undefined) ?? adKey;
+
+    if (!campaignKey || !campaignName || !adKey) {
+      throw new MastercrmUserStoreError('VALIDATION', 'each ad must include campaign_key, campaign_name and ad_key');
+    }
+
+    return {
+      channel: ad.channel,
+      campaignKey,
+      campaignName,
+      adKey,
+      adName,
+      linkUrl: nullableText(ad.linkUrl ?? undefined)
+    };
+  });
+
+  const channels = new Set(normalized.map((ad) => ad.channel));
+  if (channels.size !== 1) {
+    throw new MastercrmUserStoreError('VALIDATION', 'all ads must use the same channel');
+  }
+
+  const seen = new Set<string>();
+  for (const ad of normalized) {
+    const key = analyticsGroupKey(ad.channel, ad.campaignKey, ad.adKey);
+    if (seen.has(key)) {
+      throw new MastercrmUserStoreError('VALIDATION', 'ads must not include duplicates');
+    }
+    seen.add(key);
+  }
+
+  return normalized;
+}
+
+function mapDistributedBudgetRpcError(error: PostgrestError): MastercrmUserStoreError {
+  if (error.code === '23505') {
+    return new MastercrmUserStoreError(
+      'CONFLICT',
+      error.message || 'Marketing budget overlaps existing ads'
+    );
+  }
+  if (error.code === '22023' || error.code === '23514') {
+    return new MastercrmUserStoreError('VALIDATION', error.message || 'Invalid distributed marketing budget payload');
+  }
+
+  return mapPostgrestError(error, 'Could not distribute owner marketing budgets');
 }
 
 function finalizeAnalyticsMetrics(
@@ -2044,6 +2124,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const budgetRows = budgetSourceRows
       .filter((row) => {
+        if (row.level !== 'ad') {
+          return false;
+        }
         if (row.active_from > window.dateTo) {
           return false;
         }
@@ -2063,17 +2146,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       })
       .map((row) => normalizeBudgetRow(row, window.dateFrom, window.dateTo));
 
-    const campaignBudgetByKey = new Map<string, number>();
     const adBudgetByKey = new Map<string, number>();
     for (const budget of budgetRows) {
       if (budget.effectiveSpendArs <= 0) {
         continue;
       }
 
-      const campaignKey = analyticsGroupKey(budget.channel, budget.campaignKey);
-      if (budget.level === 'campaign') {
-        campaignBudgetByKey.set(campaignKey, roundTo((campaignBudgetByKey.get(campaignKey) ?? 0) + budget.effectiveSpendArs));
-      } else if (budget.adKey) {
+      if (budget.adKey) {
         const adKey = analyticsGroupKey(budget.channel, budget.campaignKey, budget.adKey);
         adBudgetByKey.set(adKey, roundTo((adBudgetByKey.get(adKey) ?? 0) + budget.effectiveSpendArs));
       }
@@ -2234,14 +2313,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     for (const campaign of campaigns.values()) {
       const campaignKey = analyticsGroupKey(campaign.channel, campaign.campaignKey);
-      const campaignBudget = campaignBudgetByKey.get(campaignKey) ?? 0;
       const adBudget = [...adBudgetByKey.entries()]
         .filter(([key]) => key.startsWith(`${campaignKey}\u001f`))
         .reduce((total, [, spend]) => total + spend, 0);
-      campaign.campaignBudgetArs = roundTo(campaignBudget);
+      campaign.campaignBudgetArs = 0;
       campaign.adBudgetArs = roundTo(adBudget);
-      campaign.undistributedBudgetArs = campaignBudget > 0 ? roundTo(Math.max(campaignBudget - adBudget, 0)) : 0;
-      campaign.investmentArs = campaignBudget > 0 ? roundTo(campaignBudget) : roundTo(adBudget);
+      campaign.undistributedBudgetArs = 0;
+      campaign.investmentArs = roundTo(adBudget);
       if (campaign.leads > 0 && campaign.investmentArs <= 0) {
         audit.missingBudgetCampaigns += 1;
       }
@@ -2406,8 +2484,8 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (input.channel !== 'landing' && input.channel !== 'meta_ctwa') {
       throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing or meta_ctwa');
     }
-    if (input.level !== 'campaign' && input.level !== 'ad') {
-      throw new MastercrmUserStoreError('VALIDATION', 'level must be campaign or ad');
+    if (input.level !== 'ad') {
+      throw new MastercrmUserStoreError('VALIDATION', 'level must be ad');
     }
 
     const campaignKey = nullableText(input.campaignKey);
@@ -2478,6 +2556,56 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
 
     return normalizeBudgetRow(data as OwnerMarketingDailyBudgetRow, activeFrom, activeTo ?? activeFrom);
+  }
+
+  async distributeMarketingBudgets(
+    input: DistributeMastercrmMarketingBudgetsInput
+  ): Promise<MastercrmMarketingBudgetRecord[]> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+
+    const totalDailyBudgetArs = Number(input.totalDailyBudgetArs);
+    if (!Number.isFinite(totalDailyBudgetArs) || totalDailyBudgetArs < 0) {
+      throw new MastercrmUserStoreError('VALIDATION', 'total_daily_budget_ars must be a positive number or zero');
+    }
+
+    const activeFrom = normalizeMastercrmDate(input.activeFrom, 'active_from');
+    const activeTo = input.activeTo ? normalizeMastercrmDate(input.activeTo, 'active_to') : null;
+    if (activeTo && activeTo < activeFrom) {
+      throw new MastercrmUserStoreError('VALIDATION', 'active_to must be after active_from');
+    }
+
+    const ads = normalizeDistributedBudgetAds(input.ads);
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const { data, error } = await this.client.rpc('distribute_owner_marketing_ad_budgets_v1', {
+      p_owner_id: owner.id,
+      p_mastercrm_user_id: input.userId,
+      p_total_daily_budget_ars: roundTo(totalDailyBudgetArs),
+      p_active_from: activeFrom,
+      p_active_to: activeTo,
+      p_ads: ads.map((ad) => ({
+        channel: ad.channel,
+        campaign_key: ad.campaignKey,
+        campaign_name: ad.campaignName,
+        ad_key: ad.adKey,
+        ad_name: ad.adName ?? null,
+        link_url: ad.linkUrl ?? null
+      }))
+    });
+
+    if (error) {
+      throw mapDistributedBudgetRpcError(error);
+    }
+
+    const rows = Array.isArray(data) ? data : [];
+    return rows.map((row) => normalizeBudgetRow(row as OwnerMarketingDailyBudgetRow, activeFrom, activeTo ?? activeFrom));
   }
 
   async deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }> {

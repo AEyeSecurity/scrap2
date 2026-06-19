@@ -110,7 +110,7 @@ class FakeSupabaseClient {
   public readonly calls: Array<Record<string, unknown>> = [];
   private readonly results = new Map<string, QueryResult[]>();
 
-  queue(table: string, operation: 'select' | 'insert' | 'update' | 'upsert', result: QueryResult): void {
+  queue(table: string, operation: 'select' | 'insert' | 'update' | 'upsert' | 'rpc', result: QueryResult): void {
     const key = `${table}:${operation}`;
     const pending = this.results.get(key) ?? [];
     pending.push(result);
@@ -122,9 +122,14 @@ class FakeSupabaseClient {
     return new FakeQueryBuilder(this, table);
   }
 
+  async rpc(name: string, payload: unknown): Promise<QueryResult> {
+    this.calls.push({ operation: 'rpc', name, payload });
+    return this.dequeue(name, 'rpc', []);
+  }
+
   async dequeue(
     table: string,
-    operation: 'select' | 'insert' | 'update' | 'upsert',
+    operation: 'select' | 'insert' | 'update' | 'upsert' | 'rpc',
     filters: Array<{ column: string; value: unknown }>
   ): Promise<QueryResult> {
     this.calls.push({ table, operation: `resolve-${operation}`, filters });
@@ -494,6 +499,200 @@ describe('mastercrm user cashier links', () => {
       payload: {
         owner_id: 'owner-1'
       }
+    });
+  });
+});
+
+describe('mastercrm marketing budgets', () => {
+  function queueActiveUserAndOwner(client: FakeSupabaseClient): void {
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 999,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'luqui10:luqui10',
+          owner_label: 'Lucas10',
+          pagina: 'RdA'
+        }
+      },
+      error: null
+    });
+  }
+
+  it('distributes ad budgets through the atomic Supabase RPC', async () => {
+    const client = new FakeSupabaseClient();
+    queueActiveUserAndOwner(client);
+    client.queue('distribute_owner_marketing_ad_budgets_v1', 'rpc', {
+      data: [
+        {
+          id: 'budget-1',
+          channel: 'meta_ctwa',
+          level: 'ad',
+          campaign_key: 'Reino Dorado',
+          campaign_name: 'Reino Dorado',
+          ad_key: 'ad-1',
+          ad_name: 'Anuncio 1',
+          link_url: null,
+          daily_budget_ars: '333.34',
+          active_from: '2026-06-01',
+          active_to: '2026-06-19',
+          updated_at: '2026-06-19T12:00:00.000Z'
+        },
+        {
+          id: 'budget-2',
+          channel: 'meta_ctwa',
+          level: 'ad',
+          campaign_key: 'Reino Dorado',
+          campaign_name: 'Reino Dorado',
+          ad_key: 'ad-2',
+          ad_name: 'Anuncio 2',
+          link_url: null,
+          daily_budget_ars: '333.33',
+          active_from: '2026-06-01',
+          active_to: '2026-06-19',
+          updated_at: '2026-06-19T12:00:00.000Z'
+        },
+        {
+          id: 'budget-3',
+          channel: 'meta_ctwa',
+          level: 'ad',
+          campaign_key: 'Reino Dorado',
+          campaign_name: 'Reino Dorado',
+          ad_key: 'ad-3',
+          ad_name: 'Anuncio 3',
+          link_url: null,
+          daily_budget_ars: '333.33',
+          active_from: '2026-06-01',
+          active_to: '2026-06-19',
+          updated_at: '2026-06-19T12:00:00.000Z'
+        }
+      ],
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const budgets = await store.distributeMarketingBudgets({
+      userId: 999,
+      totalDailyBudgetArs: 1000,
+      activeFrom: '2026-06-01',
+      activeTo: '2026-06-19',
+      ads: [
+        {
+          channel: 'meta_ctwa',
+          campaignKey: 'Reino Dorado',
+          campaignName: 'Reino Dorado',
+          adKey: 'ad-1',
+          adName: 'Anuncio 1'
+        },
+        {
+          channel: 'meta_ctwa',
+          campaignKey: 'Reino Dorado',
+          campaignName: 'Reino Dorado',
+          adKey: 'ad-2',
+          adName: 'Anuncio 2'
+        },
+        {
+          channel: 'meta_ctwa',
+          campaignKey: 'Reino Dorado',
+          campaignName: 'Reino Dorado',
+          adKey: 'ad-3',
+          adName: 'Anuncio 3'
+        }
+      ]
+    });
+
+    expect(budgets.map((budget) => budget.dailyBudgetArs)).toEqual([333.34, 333.33, 333.33]);
+    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
+      name: 'distribute_owner_marketing_ad_budgets_v1',
+      payload: {
+        p_owner_id: 'owner-lucas',
+        p_mastercrm_user_id: 999,
+        p_total_daily_budget_ars: 1000,
+        p_active_from: '2026-06-01',
+        p_active_to: '2026-06-19'
+      }
+    });
+  });
+
+  it('rejects distributed budgets with mixed channels before calling Supabase', async () => {
+    const client = new FakeSupabaseClient();
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+
+    await expect(
+      store.distributeMarketingBudgets({
+        userId: 999,
+        totalDailyBudgetArs: 1000,
+        activeFrom: '2026-06-01',
+        ads: [
+          {
+            channel: 'meta_ctwa',
+            campaignKey: 'Reino Dorado',
+            campaignName: 'Reino Dorado',
+            adKey: 'ad-1'
+          },
+          {
+            channel: 'landing',
+            campaignKey: 'Landing Test',
+            campaignName: 'Landing Test',
+            adKey: 'landing-ad-1'
+          }
+        ]
+      })
+    ).rejects.toMatchObject({
+      code: 'VALIDATION',
+      message: 'all ads must use the same channel'
+    });
+    expect(client.calls).toEqual([]);
+  });
+
+  it('surfaces distributed budget overlap conflicts with affected ads', async () => {
+    const client = new FakeSupabaseClient();
+    queueActiveUserAndOwner(client);
+    client.queue('distribute_owner_marketing_ad_budgets_v1', 'rpc', {
+      data: null,
+      error: createPostgrestError('23505', 'Budget overlaps existing ads: meta_ctwa / Reino Dorado / Anuncio 1')
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+
+    await expect(
+      store.distributeMarketingBudgets({
+        userId: 999,
+        totalDailyBudgetArs: 1000,
+        activeFrom: '2026-06-01',
+        ads: [
+          {
+            channel: 'meta_ctwa',
+            campaignKey: 'Reino Dorado',
+            campaignName: 'Reino Dorado',
+            adKey: 'ad-1',
+            adName: 'Anuncio 1'
+          },
+          {
+            channel: 'meta_ctwa',
+            campaignKey: 'Reino Dorado',
+            campaignName: 'Reino Dorado',
+            adKey: 'ad-2',
+            adName: 'Anuncio 2'
+          }
+        ]
+      })
+    ).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'Budget overlaps existing ads: meta_ctwa / Reino Dorado / Anuncio 1'
     });
   });
 });
@@ -1158,20 +1357,21 @@ describe('mastercrm clients dashboard', () => {
     });
 
     expect(analytics.summary).toMatchObject({
-      investmentArs: 900,
+      investmentArs: 90,
       revenueArs: 1000,
       estimatedProfitArs: 500,
-      roiPct: -44.44,
-      roas: 1.11,
+      roiPct: 455.56,
+      roas: 11.11,
       leads: 2,
       depositors: 1
     });
     expect(analytics.campaigns[0]).toMatchObject({
       campaignKey: 'campaign-1',
       campaignName: 'TESTEO V2',
-      campaignBudgetArs: 900,
+      investmentArs: 90,
+      campaignBudgetArs: 0,
       adBudgetArs: 90,
-      undistributedBudgetArs: 810
+      undistributedBudgetArs: 0
     });
     expect(analytics.ads.find((ad) => ad.adKey === 'ad-1')).toMatchObject({
       investmentArs: 90,

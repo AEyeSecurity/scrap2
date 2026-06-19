@@ -7,6 +7,7 @@ import {
   MastercrmUserStoreError,
   type DeleteMastercrmMarketingBudgetInput,
   type GetMastercrmAnalyticsInput,
+  type DistributeMastercrmMarketingBudgetsInput,
   type MastercrmClientsDashboardRecord,
   type MastercrmAnalyticsRecord,
   type MastercrmMarketingBudgetRecord,
@@ -496,6 +497,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public readonly financialInputs: Array<{ userId: number; month: string; adSpendArs: number; commissionPct: number }> = [];
   public readonly analyticsInputs: GetMastercrmAnalyticsInput[] = [];
   public readonly marketingBudgetInputs: UpsertMastercrmMarketingBudgetInput[] = [];
+  public readonly distributeMarketingBudgetInputs: DistributeMastercrmMarketingBudgetsInput[] = [];
   public readonly deleteMarketingBudgetInputs: DeleteMastercrmMarketingBudgetInput[] = [];
 
   public readonly linkInputs: Array<{
@@ -687,6 +689,25 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     updatedAt: '2026-06-18T12:00:00.000Z'
   });
 
+  public distributeMarketingBudgetsBehavior: (
+    input: DistributeMastercrmMarketingBudgetsInput
+  ) => Promise<MastercrmMarketingBudgetRecord[]> = async (input) =>
+    input.ads.map((ad, index) => ({
+      id: `budget-${index + 1}`,
+      channel: ad.channel,
+      level: 'ad',
+      campaignKey: ad.campaignKey,
+      campaignName: ad.campaignName,
+      adKey: ad.adKey,
+      adName: ad.adName ?? null,
+      linkUrl: ad.linkUrl ?? null,
+      dailyBudgetArs: input.totalDailyBudgetArs / input.ads.length,
+      activeFrom: input.activeFrom,
+      activeTo: input.activeTo ?? null,
+      effectiveSpendArs: input.totalDailyBudgetArs / input.ads.length,
+      updatedAt: '2026-06-18T12:00:00.000Z'
+    }));
+
   public deleteMarketingBudgetBehavior: (input: DeleteMastercrmMarketingBudgetInput) => Promise<{ deleted: true; id: string }> = async (input) => ({
     deleted: true,
     id: input.budgetId
@@ -775,6 +796,13 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   async upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord> {
     this.marketingBudgetInputs.push(input);
     return this.upsertMarketingBudgetBehavior(input);
+  }
+
+  async distributeMarketingBudgets(
+    input: DistributeMastercrmMarketingBudgetsInput
+  ): Promise<MastercrmMarketingBudgetRecord[]> {
+    this.distributeMarketingBudgetInputs.push(input);
+    return this.distributeMarketingBudgetsBehavior(input);
   }
 
   async deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }> {
@@ -1600,6 +1628,164 @@ describe('server routes', () => {
       channel: 'meta_ctwa',
       level: 'ad',
       dailyBudgetArs: 15000
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-marketing-budgets rejects campaign budgets', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-marketing-budgets',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        channel: 'meta_ctwa',
+        level: 'campaign',
+        campaign_key: 'Diamond play winner',
+        campaign_name: 'Diamond play winner',
+        daily_budget_ars: 15000,
+        active_from: '2026-06-01'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(store.marketingBudgetInputs).toEqual([]);
+    expect(response.json()).toEqual({
+      message: 'Invalid payload',
+      issues: [{ path: 'level', message: 'level must be ad' }]
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-marketing-budgets/distribute saves a distributed daily ad budget', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-marketing-budgets/distribute',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        total_daily_budget_ars: 1000,
+        active_from: '2026-06-01',
+        active_to: '2026-06-18',
+        ads: [
+          {
+            channel: 'meta_ctwa',
+            campaign_key: 'Reino Dorado',
+            campaign_name: 'Reino Dorado',
+            ad_key: 'ad-1',
+            ad_name: 'Anuncio 1',
+            link_url: 'https://example.test/ad-1'
+          },
+          {
+            channel: 'meta_ctwa',
+            campaign_key: 'Reino Dorado',
+            campaign_name: 'Reino Dorado',
+            ad_key: 'ad-2',
+            ad_name: 'Anuncio 2'
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.distributeMarketingBudgetInputs).toEqual([
+      {
+        userId: 101,
+        totalDailyBudgetArs: 1000,
+        activeFrom: '2026-06-01',
+        activeTo: '2026-06-18',
+        ads: [
+          {
+            channel: 'meta_ctwa',
+            campaignKey: 'Reino Dorado',
+            campaignName: 'Reino Dorado',
+            adKey: 'ad-1',
+            adName: 'Anuncio 1',
+            linkUrl: 'https://example.test/ad-1'
+          },
+          {
+            channel: 'meta_ctwa',
+            campaignKey: 'Reino Dorado',
+            campaignName: 'Reino Dorado',
+            adKey: 'ad-2',
+            adName: 'Anuncio 2'
+          }
+        ]
+      }
+    ]);
+    expect(response.json()).toMatchObject({
+      budgets: [
+        { id: 'budget-1', level: 'ad', dailyBudgetArs: 500 },
+        { id: 'budget-2', level: 'ad', dailyBudgetArs: 500 }
+      ]
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-marketing-budgets/distribute rejects invalid ad selections before the store', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-marketing-budgets/distribute',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        total_daily_budget_ars: 1000,
+        active_from: '2026-06-01',
+        ads: [
+          {
+            channel: 'meta_ctwa',
+            campaign_key: 'Reino Dorado',
+            campaign_name: 'Reino Dorado',
+            ad_key: 'ad-1'
+          }
+        ]
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(store.distributeMarketingBudgetInputs).toEqual([]);
+    expect(response.json()).toMatchObject({
+      message: 'Invalid payload',
+      issues: [{ path: 'ads', message: 'ads must include at least two ads' }]
     });
 
     await server.close();
