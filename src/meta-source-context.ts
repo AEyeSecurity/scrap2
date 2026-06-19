@@ -1,8 +1,9 @@
-import type { MetaSourceContext, OwnerContext } from './types';
+import type { MetaCustomerData, MetaSourceContext, OwnerContext } from './types';
 
 export interface StoredMetaSourcePayload extends Record<string, unknown> {
   owner_key?: string;
   owner_label?: string;
+  customer_data?: Record<string, unknown>;
   source_context?: Record<string, unknown>;
   ReferralCtwaClid?: string;
   Fbp?: string;
@@ -46,6 +47,21 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+export function normalizeMetaCustomerData(input: MetaCustomerData | null | undefined): MetaCustomerData | null {
+  if (!input) {
+    return null;
+  }
+
+  const normalized: MetaCustomerData = {
+    email: normalizeOptionalText(input.email)?.toLowerCase() ?? null,
+    firstName: normalizeOptionalText(input.firstName),
+    lastName: normalizeOptionalText(input.lastName),
+    fullName: normalizeOptionalText(input.fullName)
+  };
+
+  return Object.values(normalized).some((value) => value != null) ? normalized : null;
 }
 
 function normalizeMetaDynamicName(value: string | null | undefined): string | null {
@@ -144,11 +160,14 @@ export function isLandingMetaSourceContext(input: MetaSourceContext | null | und
 export function buildStoredMetaSourcePayload(input: {
   ownerContext?: Pick<OwnerContext, 'ownerKey' | 'ownerLabel'> | null;
   sourceContext?: MetaSourceContext | null;
+  customerData?: MetaCustomerData | null;
 }): StoredMetaSourcePayload {
   const sourceContext = normalizeMetaSourceContext(input.sourceContext);
+  const customerData = normalizeMetaCustomerData(input.customerData);
   const payload = pruneNullish({
     owner_key: input.ownerContext?.ownerKey?.trim().toLowerCase() || null,
     owner_label: normalizeOptionalText(input.ownerContext?.ownerLabel),
+    customer_data: customerData ? pruneNullish({ ...customerData }) : null,
     source_context: sourceContext ? pruneNullish({ ...sourceContext }) : null,
     ReferralCtwaClid: sourceContext?.ctwaClid ?? null,
     Fbp: sourceContext?.fbp ?? null,
@@ -196,6 +215,26 @@ function readPayloadField(payload: Record<string, unknown>, key: string): string
 function readPayloadBooleanField(payload: Record<string, unknown>, key: string): boolean | null {
   const value = payload[key];
   return typeof value === 'boolean' ? value : null;
+}
+
+export function extractMetaCustomerData(payload: Record<string, unknown> | null | undefined): MetaCustomerData | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+
+  const nested = payload.customer_data;
+  const customerData =
+    nested && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : null;
+  if (!customerData) {
+    return null;
+  }
+
+  return normalizeMetaCustomerData({
+    email: readPayloadField(customerData, 'email'),
+    firstName: readPayloadField(customerData, 'firstName'),
+    lastName: readPayloadField(customerData, 'lastName'),
+    fullName: readPayloadField(customerData, 'fullName')
+  });
 }
 
 export function extractMetaSourceContext(payload: Record<string, unknown> | null | undefined): MetaSourceContext | null {

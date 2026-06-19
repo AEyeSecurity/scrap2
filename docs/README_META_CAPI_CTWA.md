@@ -117,6 +117,8 @@ Unicidad:
       "custom_data": {
         "event_source": "crm",
         "lead_event_source": "scrap2",
+        "value": 1,
+        "currency": "ARS",
         "ctwa_clid": "<ctwa_clid>",
         "referral_source_id": "<referral_source_id>",
         "referral_source_url": "<referral_source_url>",
@@ -190,6 +192,7 @@ META_ACTION_SOURCE=system_generated
 META_PAGE_ID=
 META_WHATSAPP_BUSINESS_ACCOUNT_ID=
 META_LEAD_ENABLED=true
+META_LEAD_VALUE=1
 META_PURCHASE_ENABLED=true
 META_VALUE_SIGNAL_THRESHOLD=10000
 META_VALUE_SIGNAL_CURRENCY=ARS
@@ -212,6 +215,7 @@ Notas:
 - `business_messaging` requiere ademas:
   - `META_PAGE_ID` o `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
 - Cuando `business_messaging` se usa para eventos de intención, el payload se adapta a `LeadSubmitted` porque Meta no acepta `Lead` en ese contexto.
+- `META_LEAD_VALUE` es el valor nominal positivo que se manda en `Lead`/`LeadSubmitted`; `Purchase` sigue usando el valor real de `first_day_cargado_hoy`.
 - `META_VALUE_SIGNAL_WINDOW_MODE` hoy solo soporta:
   - `intake_local_day`
 - En el rollout productivo actual no deben existir:

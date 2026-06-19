@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
-import type { MetaSourceContext, OwnerContext } from './types';
+import type { MetaCustomerData, MetaSourceContext, OwnerContext } from './types';
 import { buildStoredMetaSourcePayload, normalizeMetaSourceContext } from './meta-source-context';
 
 type MetaConversionsStoreErrorCode = 'CONFIGURATION' | 'VALIDATION' | 'NOT_FOUND' | 'CONFLICT' | 'INTERNAL';
@@ -27,6 +27,7 @@ export interface EnqueueMetaLeadInput {
   phoneE164: string;
   ownerContext: Pick<OwnerContext, 'ownerKey' | 'ownerLabel'>;
   sourceContext: MetaSourceContext;
+  customerData?: MetaCustomerData | null;
   eventTime?: string;
 }
 
@@ -225,7 +226,8 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
         qualified_at: normalizeEventTime(input.eventTime ?? normalizedSource.receivedAt ?? undefined),
         source_payload: buildStoredMetaSourcePayload({
           ownerContext: input.ownerContext,
-          sourceContext: normalizedSource
+          sourceContext: normalizedSource,
+          customerData: input.customerData ?? null
         })
       }
     );
@@ -273,7 +275,8 @@ export class SupabaseMetaConversionsStore implements MetaConversionsStore {
         qualified_at: eventTime,
         source_payload: buildStoredMetaSourcePayload({
           ownerContext: input.ownerContext,
-          sourceContext: normalizedSource
+          sourceContext: normalizedSource,
+          customerData: input.customerData ?? null
         })
       }
     );

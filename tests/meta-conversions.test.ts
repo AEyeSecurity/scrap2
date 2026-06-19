@@ -38,6 +38,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
   }): Promise<void> {
     // not used here
   }
@@ -48,6 +49,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
   }): Promise<void> {
     // not used here
   }
@@ -113,6 +115,10 @@ function expectedExternalId(value: string): string {
   return createHash('sha256').update(value.toLowerCase()).digest('hex');
 }
 
+function expectedHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 describe('meta source context helpers', () => {
   it('builds and re-extracts Twilio source metadata', () => {
     const payload = buildStoredMetaSourcePayload({
@@ -171,6 +177,7 @@ describe('meta conversions dispatcher', () => {
     const body = buildMetaConversionsRequestBody(buildLease(), {
       testEventCode: 'TEST87269',
       actionSource: 'system_generated',
+      leadValue: 1,
       valueSignalCurrency: 'ARS'
     });
     expect(body.test_event_code).toBe('TEST87269');
@@ -202,6 +209,8 @@ describe('meta conversions dispatcher', () => {
       /^[a-f0-9]{64}$/
     );
     expect((body.data[0].user_data as { ctwa_clid?: string }).ctwa_clid).toBe('clid-123');
+    expect((body.data[0].user_data as { fn?: string }).fn).toBe(expectedHash('raul'));
+    expect((body.data[0].user_data as { ln?: string }).ln).toBe(expectedHash('rodriguez'));
     expect((body.data[0].user_data as Record<string, unknown>).client_ip_address).toBeUndefined();
     expect((body.data[0].user_data as Record<string, unknown>).client_user_agent).toBeUndefined();
     expect((body.data[0].custom_data as { ctwa_clid?: string; received_at?: string }).ctwa_clid).toBe('clid-123');
@@ -210,8 +219,14 @@ describe('meta conversions dispatcher', () => {
     );
     expect((body.data[0].custom_data as { event_source?: string }).event_source).toBe('crm');
     expect((body.data[0].custom_data as { lead_event_source?: string }).lead_event_source).toBe('scrap2');
+    expect((body.data[0].custom_data as { value?: number; currency?: string }).value).toBe(1);
+    expect((body.data[0].custom_data as { value?: number; currency?: string }).currency).toBe('ARS');
     expect((body.data[0].custom_data as Record<string, unknown>).client_ip_address).toBeUndefined();
     expect((body.data[0].custom_data as Record<string, unknown>).client_user_agent).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).wa_id).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).message_sid).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).account_sid).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).profile_name).toBeUndefined();
   });
 
   it('builds website Contact payloads with browser and server match fields', () => {
@@ -251,6 +266,7 @@ describe('meta conversions dispatcher', () => {
       }),
       {
         actionSource: 'website',
+        leadValue: 1,
         valueSignalCurrency: 'ARS',
         testEventCode: 'TEST123'
       }
@@ -324,6 +340,7 @@ describe('meta conversions dispatcher', () => {
       }),
       {
         actionSource: 'website',
+        leadValue: 1,
         valueSignalCurrency: 'ARS'
       }
     );
@@ -342,21 +359,59 @@ describe('meta conversions dispatcher', () => {
       custom_data: {
         event_source: 'landing',
         lead_event_source: 'landing_whatsapp',
+        value: 1,
+        currency: 'ARS',
         landing_session_id: 'session_landing_lead',
         landing_variant: 'rda-luqui10-v1',
         cta_type: 'whatsapp_click',
         fbclid: 'fbclid-123',
-        whatsapp_url: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
-        wa_id: '5493511112222',
-        message_sid: 'SM-LANDING',
-        profile_name: 'Cliente Landing'
+        whatsapp_url: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
       }
     });
     expect((body.data[0].user_data as { ph?: string[] }).ph?.[0]).toMatch(/^[a-f0-9]{64}$/);
+    expect((body.data[0].user_data as Record<string, unknown>).fn).toBeUndefined();
+    expect((body.data[0].user_data as Record<string, unknown>).ln).toBeUndefined();
     expect((body.data[0].user_data as { external_id?: string[] }).external_id).toEqual([
       expectedExternalId('landing:session_landing_lead'),
       expectedExternalId('owner-1:client-1')
     ]);
+    expect((body.data[0].custom_data as Record<string, unknown>).wa_id).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).message_sid).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).account_sid).toBeUndefined();
+    expect((body.data[0].custom_data as Record<string, unknown>).profile_name).toBeUndefined();
+  });
+
+  it('hashes canonical CRM customer email and names without sending raw values', () => {
+    const body = buildMetaConversionsRequestBody(
+      buildLease({
+        sourcePayload: buildStoredMetaSourcePayload({
+          ownerContext: { ownerKey: 'wf_001', ownerLabel: 'Lucas 10' },
+          customerData: {
+            email: ' Lead.User+1@Gmail.COM ',
+            firstName: ' Maria ',
+            lastName: " O'Connor "
+          },
+          sourceContext: {
+            ctwaClid: 'clid-123',
+            referralSourceType: 'ad',
+            profileName: 'Cliente Landing'
+          }
+        })
+      }),
+      {
+        actionSource: 'system_generated',
+        leadValue: 1,
+        valueSignalCurrency: 'ARS'
+      }
+    );
+
+    const userData = body.data[0].user_data as { em?: string[]; fn?: string; ln?: string };
+    expect(userData.em).toEqual([expectedHash('lead.user+1@gmail.com')]);
+    expect(userData.fn).toBe(expectedHash('maria'));
+    expect(userData.ln).toBe(expectedHash('oconnor'));
+    expect(JSON.stringify(body.data[0])).not.toContain('Lead.User');
+    expect(JSON.stringify(body.data[0])).not.toContain('Maria');
+    expect(JSON.stringify(body.data[0])).not.toContain("O'Connor");
   });
 
   it('builds Purchase payloads with real value and currency', () => {
@@ -380,6 +435,7 @@ describe('meta conversions dispatcher', () => {
       }),
       {
         actionSource: 'system_generated',
+        leadValue: 1,
         valueSignalCurrency: 'ARS'
       }
     );
@@ -417,6 +473,7 @@ describe('meta conversions dispatcher', () => {
         apiVersion: 'v23.0',
         actionSource: 'system_generated',
         batchSize: 1,
+        leadValue: 1,
         valueSignalCurrency: 'ARS',
         testEventCode: 'TEST87269'
       },
@@ -449,6 +506,7 @@ describe('meta conversions dispatcher', () => {
         apiVersion: 'v23.0',
         actionSource: 'system_generated',
         batchSize: 1,
+        leadValue: 1,
         valueSignalCurrency: 'ARS'
       },
       fetchMock as unknown as typeof fetch
@@ -483,8 +541,34 @@ describe('meta conversions dispatcher', () => {
       enabled: true,
       actionSource: 'business_messaging',
       batchSize: 3,
+      leadValue: 1,
       valueSignalCurrency: 'ARS'
     });
+  });
+
+  it('reads a positive configured Lead value from env', () => {
+    expect(
+      buildMetaConversionsConfigFromEnv({
+        META_ENABLED: 'true',
+        META_DATASET_ID: '900004339427467',
+        META_ACCESS_TOKEN: 'secret-token',
+        META_LEAD_VALUE: '125.5'
+      })
+    ).toMatchObject({
+      leadValue: 125.5,
+      valueSignalCurrency: 'ARS'
+    });
+  });
+
+  it('rejects zero or negative Lead values', () => {
+    expect(() =>
+      buildMetaConversionsConfigFromEnv({
+        META_ENABLED: 'true',
+        META_DATASET_ID: '900004339427467',
+        META_ACCESS_TOKEN: 'secret-token',
+        META_LEAD_VALUE: '0'
+      })
+    ).toThrow(/META_LEAD_VALUE must be a positive number/i);
   });
 
   it('uses website action source for landing CAPI config without changing global CTWA action source', () => {
@@ -507,6 +591,7 @@ describe('meta conversions dispatcher', () => {
     expect(() =>
       buildMetaConversionsRequestBody(buildLease(), {
         actionSource: 'business_messaging',
+        leadValue: 1,
         valueSignalCurrency: 'ARS'
       })
     ).toThrow(/META_PAGE_ID or META_WHATSAPP_BUSINESS_ACCOUNT_ID/i);
@@ -515,6 +600,7 @@ describe('meta conversions dispatcher', () => {
   it('maps Lead to LeadSubmitted for business_messaging and includes whatsapp ids', () => {
     const body = buildMetaConversionsRequestBody(buildLease(), {
       actionSource: 'business_messaging',
+      leadValue: 1,
       valueSignalCurrency: 'ARS',
       whatsappBusinessAccountId: '1234567890'
     });
@@ -525,6 +611,10 @@ describe('meta conversions dispatcher', () => {
       messaging_channel: 'whatsapp',
       user_data: {
         whatsapp_business_account_id: '1234567890'
+      },
+      custom_data: {
+        value: 1,
+        currency: 'ARS'
       }
     });
   });
@@ -580,6 +670,11 @@ describe('meta conversions store', () => {
         clientIpAddress: '181.45.10.22',
         clientUserAgent: 'Mozilla/5.0',
         receivedAt: '2026-03-17T09:58:00.000Z'
+      },
+      customerData: {
+        email: 'cliente@gmail.com',
+        firstName: 'Raul',
+        lastName: 'Rodriguez'
       }
     });
 
@@ -596,6 +691,11 @@ describe('meta conversions store', () => {
         phone_e164: '+5491122334455',
         source_payload: expect.objectContaining({
           ReferralCtwaClid: 'CLID-123',
+          customer_data: {
+            email: 'cliente@gmail.com',
+            firstName: 'Raul',
+            lastName: 'Rodriguez'
+          },
           ClientIpAddress: '181.45.10.22',
           ClientUserAgent: 'Mozilla/5.0',
           ReceivedAt: '2026-03-17T09:58:00.000Z'

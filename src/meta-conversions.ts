@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { MetaConversionLease } from './meta-conversions-store';
-import { extractMetaSourceContext } from './meta-source-context';
+import { extractMetaCustomerData, extractMetaSourceContext } from './meta-source-context';
+import type { MetaCustomerData, MetaSourceContext } from './types';
 
 type MetaActionSource = 'system_generated' | 'business_messaging' | 'website';
 
@@ -11,6 +12,7 @@ export interface MetaConversionsConfig {
   apiVersion: string;
   actionSource: MetaActionSource;
   batchSize: number;
+  leadValue: number;
   valueSignalCurrency: string;
   pageId?: string;
   whatsappBusinessAccountId?: string;
@@ -61,6 +63,103 @@ function normalizePhoneForMeta(phoneE164: string | null): string | null {
   return digits.length >= 8 ? digits : null;
 }
 
+function normalizeEmailForMeta(email: string | null | undefined): string | null {
+  if (!email) {
+    return null;
+  }
+
+  const normalized = email.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+    return null;
+  }
+
+  const domain = normalized.split('@')[1];
+  if (!domain || ['example.com', 'example.net', 'example.org', 'localhost', 'invalid'].includes(domain)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function stripDiacritics(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+function normalizeNameForMeta(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = stripDiacritics(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z\s'-]/g, '')
+    .replace(/['-]/g, '')
+    .replace(/\s+/g, '');
+
+  return normalized.length >= 2 ? normalized : null;
+}
+
+const GENERIC_PROFILE_NAME_TOKENS = new Set([
+  'admin',
+  'bot',
+  'cliente',
+  'clienta',
+  'landing',
+  'prueba',
+  'test',
+  'usuario',
+  'user',
+  'whatsapp'
+]);
+
+function parseTrustedFullName(value: string | null | undefined): { firstName: string; lastName: string } | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = stripDiacritics(value).trim().toLowerCase();
+  if (!/^[a-z\s'-]+$/.test(normalized)) {
+    return null;
+  }
+
+  const parts = normalized
+    .split(/\s+/)
+    .map((part) => part.replace(/[^a-z]/g, ''))
+    .filter((part) => part.length > 0);
+
+  if (parts.length < 2 || parts.length > 4) {
+    return null;
+  }
+  if (parts.some((part) => part.length < 2 || GENERIC_PROFILE_NAME_TOKENS.has(part))) {
+    return null;
+  }
+
+  return {
+    firstName: parts[0],
+    lastName: parts[parts.length - 1]
+  };
+}
+
+function buildAdvancedMatchingUserData(
+  customerData: MetaCustomerData | null,
+  sourceContext: MetaSourceContext | null
+): Record<string, unknown> {
+  const email = normalizeEmailForMeta(customerData?.email);
+  const structuredFirstName = normalizeNameForMeta(customerData?.firstName);
+  const structuredLastName = normalizeNameForMeta(customerData?.lastName);
+  const fullName = parseTrustedFullName(customerData?.fullName);
+  const profileName = structuredFirstName || structuredLastName || fullName ? null : parseTrustedFullName(sourceContext?.profileName);
+  const firstName = structuredFirstName ?? fullName?.firstName ?? profileName?.firstName ?? null;
+  const lastName = structuredLastName ?? fullName?.lastName ?? profileName?.lastName ?? null;
+
+  return {
+    ...(email ? { em: [sha256(email)] } : {}),
+    ...(firstName ? { fn: sha256(firstName) } : {}),
+    ...(lastName ? { ln: sha256(lastName) } : {})
+  };
+}
+
 function normalizeExternalId(ownerId: string, clientId: string): string {
   return sha256(`${ownerId}:${clientId}`.toLowerCase());
 }
@@ -91,6 +190,15 @@ function normalizeBatchSize(value: string | undefined): number {
   }
 
   return Math.trunc(parsed);
+}
+
+function normalizePositiveNumber(value: string | undefined, envName: string, fallback: number): number {
+  const parsed = value == null || value.trim() === '' ? fallback : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${envName} must be a positive number`);
+  }
+
+  return parsed;
 }
 
 function normalizeCurrency(value: string | undefined): string {
@@ -129,6 +237,7 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
   const apiVersion = normalizeApiVersion(env.META_API_VERSION?.trim() || 'v25.0');
   const actionSource = normalizeActionSource(env.META_ACTION_SOURCE || 'system_generated');
   const batchSize = normalizeBatchSize(env.META_BATCH_SIZE);
+  const leadValue = normalizePositiveNumber(env.META_LEAD_VALUE, 'META_LEAD_VALUE', 1);
   const valueSignalCurrency = normalizeCurrency(env.META_VALUE_SIGNAL_CURRENCY);
   const pageId = env.META_PAGE_ID?.trim() || undefined;
   const whatsappBusinessAccountId = env.META_WHATSAPP_BUSINESS_ACCOUNT_ID?.trim() || undefined;
@@ -142,6 +251,7 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
       apiVersion,
       actionSource,
       batchSize,
+      leadValue,
       valueSignalCurrency,
       ...(pageId ? { pageId } : {}),
       ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
@@ -160,6 +270,7 @@ export function buildMetaConversionsConfigFromEnv(env: NodeJS.ProcessEnv = proce
     apiVersion,
     actionSource,
     batchSize,
+    leadValue,
     valueSignalCurrency,
     ...(pageId ? { pageId } : {}),
     ...(whatsappBusinessAccountId ? { whatsappBusinessAccountId } : {}),
@@ -199,11 +310,12 @@ export function buildMetaConversionsRequestBody(
   lease: MetaConversionLease,
   config: Pick<
     MetaConversionsConfig,
-    'testEventCode' | 'actionSource' | 'valueSignalCurrency' | 'pageId' | 'whatsappBusinessAccountId'
+    'testEventCode' | 'actionSource' | 'leadValue' | 'valueSignalCurrency' | 'pageId' | 'whatsappBusinessAccountId'
   >
 ): MetaConversionsRequestBody {
   const normalizedPhone = normalizePhoneForMeta(lease.phoneE164);
   const sourceContext = extractMetaSourceContext(lease.sourcePayload);
+  const customerData = extractMetaCustomerData(lease.sourcePayload);
   const ownerKey = typeof lease.sourcePayload.owner_key === 'string' ? lease.sourcePayload.owner_key : null;
   const ownerLabel = typeof lease.sourcePayload.owner_label === 'string' ? lease.sourcePayload.owner_label : null;
   const eventSourceUrl = sourceContext?.eventSourceUrl ?? sourceContext?.referralSourceUrl ?? null;
@@ -223,6 +335,7 @@ export function buildMetaConversionsRequestBody(
         : [crmExternalId];
   const userData = {
     ...(normalizedPhone ? { ph: [sha256(normalizedPhone)] } : {}),
+    ...buildAdvancedMatchingUserData(customerData, sourceContext),
     external_id: [...new Set(externalIds)],
     ...(sourceContext?.ctwaClid ? { ctwa_clid: sourceContext.ctwaClid } : {}),
     ...(config.actionSource === 'website' && sourceContext?.fbp ? { fbp: sourceContext.fbp } : {}),
@@ -251,6 +364,8 @@ export function buildMetaConversionsRequestBody(
     config.actionSource === 'business_messaging' && lease.metaEventName === 'Lead'
       ? 'LeadSubmitted'
       : lease.metaEventName;
+  const isLeadEvent = resolvedEventName === 'Lead' || resolvedEventName === 'LeadSubmitted';
+  const customEventValue = lease.metaEventName === 'Purchase' ? monetaryValue : isLeadEvent ? config.leadValue : null;
 
   const businessMessagingUserData =
     config.actionSource === 'business_messaging'
@@ -320,9 +435,9 @@ export function buildMetaConversionsRequestBody(
             whatsapp_url: sourceContext?.whatsappUrl ?? null
           }
         : {}),
-      ...(lease.metaEventName === 'Purchase'
+      ...(customEventValue != null
         ? {
-            value: monetaryValue,
+            value: customEventValue,
             currency: config.valueSignalCurrency
           }
         : {}),
@@ -332,10 +447,6 @@ export function buildMetaConversionsRequestBody(
       referral_headline: sourceContext?.referralHeadline ?? null,
       referral_body: sourceContext?.referralBody ?? null,
       referral_source_type: sourceContext?.referralSourceType ?? null,
-      wa_id: sourceContext?.waId ?? null,
-      message_sid: sourceContext?.messageSid ?? null,
-      account_sid: sourceContext?.accountSid ?? null,
-      profile_name: sourceContext?.profileName ?? null,
       received_at: sourceContext?.receivedAt ?? null,
       owner_key: ownerKey,
       owner_label: ownerLabel,

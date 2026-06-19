@@ -150,6 +150,13 @@ export interface OwnerContext {
   actorPhone?: string | null;
 }
 
+export interface MetaCustomerData {
+  email?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  fullName?: string | null;
+}
+
 export interface MetaSourceContext {
   ctwaClid?: string | null;
   fbp?: string | null;

@@ -86,6 +86,7 @@ import type {
   JobResult,
   JobStoreEntry,
   LoginJobRequest,
+  MetaCustomerData,
   MetaSourceContext,
   OwnerContext,
   PaginaCode,
@@ -282,6 +283,13 @@ const sourceContextSchema = z.object({
   receivedAt: z.string().trim().min(1).nullable().optional()
 });
 
+const metaCustomerDataSchema = z.object({
+  email: z.string().trim().min(1).nullable().optional(),
+  firstName: z.string().trim().min(1).nullable().optional(),
+  lastName: z.string().trim().min(1).nullable().optional(),
+  fullName: z.string().trim().min(1).nullable().optional()
+});
+
 const loginBodySchema = z
   .object({
     username: z.string().min(1),
@@ -338,7 +346,8 @@ const intakePendingBodySchema = z.object({
   pagina: paginaCodeSchema,
   telefono: z.string().trim().min(1),
   ownerContext: ownerContextSchema,
-  sourceContext: sourceContextSchema.optional()
+  sourceContext: sourceContextSchema.optional(),
+  customerData: metaCustomerDataSchema.optional()
 });
 
 const whatsappPayloadBodySchema = z.record(z.string(), z.unknown());
@@ -348,7 +357,8 @@ const whatsappIntakeBodySchema = z.object({
   telefono: z.string().trim().min(1).nullable().optional(),
   body: whatsappPayloadBodySchema.optional(),
   ownerContext: ownerContextSchema.optional(),
-  sourceContext: sourceContextSchema.optional()
+  sourceContext: sourceContextSchema.optional(),
+  customerData: metaCustomerDataSchema.optional()
 });
 
 const landingContactBodySchema = z
@@ -1607,6 +1617,7 @@ export function createServer(
     telefono: string;
     ownerContext: OwnerContext;
     sourceContext?: MetaSourceContext | null;
+    customerData?: MetaCustomerData | null;
   }) {
     const intake = await getPlayerPhoneStore().intakePendingCliente({
       pagina: input.pagina,
@@ -1630,6 +1641,7 @@ export function createServer(
           phoneE164: input.telefono,
           ownerContext: input.ownerContext,
           sourceContext: input.sourceContext,
+          ...(input.customerData ? { customerData: input.customerData } : {}),
           ...(input.sourceContext.receivedAt ? { eventTime: input.sourceContext.receivedAt } : {})
         };
         if (isLandingMetaSourceContext(input.sourceContext)) {
@@ -2516,7 +2528,8 @@ export function createServer(
         pagina: payload.pagina,
         telefono: payload.telefono,
         ownerContext: payload.ownerContext,
-        ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {})
+        ...(payload.sourceContext ? { sourceContext: payload.sourceContext } : {}),
+        ...(payload.customerData ? { customerData: payload.customerData } : {})
       });
 
       return reply.code(200).send({
@@ -2633,7 +2646,8 @@ export function createServer(
         pagina,
         telefono,
         ownerContext,
-        ...(sourceContext ? { sourceContext } : {})
+        ...(sourceContext ? { sourceContext } : {}),
+        ...(payload.customerData ? { customerData: payload.customerData } : {})
       });
 
       return reply.code(200).send({

@@ -406,6 +406,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
     eventTime?: string;
   }> = [];
   public readonly landingLeadInputs: Array<{
@@ -414,6 +415,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
     eventTime?: string;
   }> = [];
 
@@ -423,6 +425,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
     eventTime?: string;
   }): Promise<void> {
     this.leadInputs.push(input);
@@ -434,6 +437,7 @@ class FakeMetaConversionsStore implements MetaConversionsStore {
     phoneE164: string;
     ownerContext: { ownerKey: string; ownerLabel: string };
     sourceContext: Record<string, unknown>;
+    customerData?: Record<string, unknown> | null;
     eventTime?: string;
   }): Promise<void> {
     this.landingLeadInputs.push(input);
@@ -2777,6 +2781,11 @@ describe('server routes', () => {
           clientIpAddress: '181.45.10.22',
           clientUserAgent: 'Mozilla/5.0',
           receivedAt: '2026-03-17T09:58:00.000Z'
+        },
+        customerData: {
+          email: 'cliente@gmail.com',
+          firstName: 'Raul',
+          lastName: 'Rodriguez'
         }
       }
     });
@@ -2828,6 +2837,11 @@ describe('server routes', () => {
           clientIpAddress: '181.45.10.22',
           clientUserAgent: 'Mozilla/5.0',
           receivedAt: '2026-03-17T09:58:00.000Z'
+        },
+        customerData: {
+          email: 'cliente@gmail.com',
+          firstName: 'Raul',
+          lastName: 'Rodriguez'
         },
         eventTime: '2026-03-17T09:58:00.000Z'
       }
