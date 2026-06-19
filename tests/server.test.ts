@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AsnUserCheckError } from '../src/asn-user-check';
 import { buildAppConfig } from '../src/config';
 import { createLogger } from '../src/logging';
@@ -784,6 +784,44 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
 }
 
 describe('server routes', () => {
+  it('keeps serving when technical retention is enabled but Supabase config is missing', async () => {
+    await withEnv({ SUPABASE_URL: undefined, SUPABASE_SERVICE_ROLE_KEY: undefined }, async () => {
+      const queue = new FakeQueue();
+      const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+      const logger = createLogger('silent', false);
+      const errorSpy = vi.spyOn(logger, 'error');
+      const server = createServer(
+        appConfig,
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        logger,
+        queue,
+        {
+          asnUserExistsChecker: allowAsnUserExists,
+          metaWorkerEnabled: false,
+          reportWorkerEnabled: false,
+          retentionWorkerEnabled: true
+        }
+      );
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/login',
+        payload: {
+          username: 'user',
+          password: 'pass'
+        }
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.any(Error) }),
+        'MasterCRM technical retention worker could not start'
+      );
+
+      await server.close();
+    });
+  });
+
   it('POST /login returns 202 with job id', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });

@@ -17,6 +17,7 @@ The implementation does not use generated images or Docker image generation. Cha
 Migration:
 
 - `db/migrations/20260618_mastercrm_marketing_daily_budgets.sql`
+- `db/migrations/20260619_mastercrm_technical_retention.sql`
 
 New table:
 
@@ -130,6 +131,50 @@ average_revenue = revenue_ars / depositors
 
 If investment is zero, ROI, ROAS, CPL and cost per depositor are returned as null and the UI shows them as no investment.
 
+## Supabase pagination and retention
+
+CRM reads that can exceed Supabase's default 1000-row response limit must use paginated selects with `.range(...)`.
+This is required for:
+
+- `owner_client_events`
+- `report_daily_snapshots`
+- `owner_client_monthly_facts`
+- `owner_marketing_daily_budgets`
+
+The retention RPC is:
+
+```sql
+select * from public.purge_mastercrm_technical_history_v1(date '2026-06-01');
+```
+
+It deletes only technical history before the cutoff month:
+
+- `report_daily_snapshots`
+- `report_runs`, with cascade to `report_run_items` and `report_outbox`
+- terminal `meta_conversion_outbox` rows with status `sent`, `failed` or `discarded`
+- old `landing_sessions`, keeping a 48 hour safety margin before the cutoff
+
+It never deletes business attribution records:
+
+- `clients`
+- `owner_client_links`
+- `owner_client_identities`
+- `owner_client_events`
+- `owner_client_monthly_facts`
+- `owner_marketing_daily_budgets`
+- `owner_financial_settings`
+
+Retention worker env:
+
+```env
+MASTERCRM_RETENTION_ENABLED=true
+MASTERCRM_RETENTION_RUN_ON_START=true
+MASTERCRM_RETENTION_POLL_MS=86400000
+```
+
+The worker calculates the cutoff as the first day of the current month in `America/Argentina/Buenos_Aires`.
+If the purge fails, it logs the error and the API keeps running.
+
 ## Operational checks
 
 Before pushing a CRM analytics change:
@@ -138,10 +183,11 @@ Before pushing a CRM analytics change:
 2. Run backend tests and build:
    - `npm test`
    - `npm run build`
-3. Run frontend checks:
+3. Verify `/mastercrm-analytics` for `luqui10` and range `2026-06-01` to `2026-06-19` includes `3Miriam776` under `Reino Dorado` / `120250708847350471`.
+4. Run frontend checks:
    - `npm run build`
    - `npm run lint`
-4. Login to the local CRM with a real user and verify:
+5. Login to the local CRM with a real user and verify:
    - `Pagina Principal` loads the executive dashboard.
    - `Clientes` keeps the operational client view.
    - `Estadisticas` loads range/channel/campaign/ad filters.

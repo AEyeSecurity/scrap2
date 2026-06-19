@@ -51,6 +51,11 @@ import {
   type MastercrmUserStore
 } from './mastercrm-user-store';
 import {
+  createMastercrmRetentionStoreFromEnv,
+  MastercrmRetentionWorker,
+  type MastercrmRetentionStore
+} from './mastercrm-retention';
+import {
   issueMastercrmSessionToken,
   readBearerToken,
   resolveMastercrmSessionSecret,
@@ -107,6 +112,7 @@ interface ServerDependencies {
   playerPhoneStore?: PlayerPhoneStore;
   landingSessionStore?: LandingSessionStore;
   reportRunStore?: ReportRunStore;
+  mastercrmRetentionStore?: MastercrmRetentionStore;
   metaConversionsStore?: MetaConversionsStore;
   asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
   rdaUserExistsChecker?: (input: AssertRdaUserExistsInput) => Promise<void>;
@@ -127,6 +133,9 @@ interface ServerDependencies {
   reportWorkerLeaseSeconds?: number;
   reportWorkerMaxAttempts?: number;
   reportJobExecutor?: ReportJobExecutor;
+  retentionWorkerEnabled?: boolean;
+  retentionRunOnStart?: boolean;
+  retentionPollMs?: number;
 }
 
 interface ValidationIssue {
@@ -1346,9 +1355,11 @@ export function createServer(
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
   let cachedLandingSessionStore: LandingSessionStore | null = dependencies?.landingSessionStore ?? null;
   let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
+  let cachedMastercrmRetentionStore: MastercrmRetentionStore | null = dependencies?.mastercrmRetentionStore ?? null;
   let cachedMetaConversionsStore: MetaConversionsStore | null = dependencies?.metaConversionsStore ?? null;
   let reportWorker: ReportRunWorker | null = null;
   let metaWorker: MetaConversionsWorker | null = null;
+  let retentionWorker: MastercrmRetentionWorker | null = null;
   const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
   const rdaUserExistsChecker = dependencies?.rdaUserExistsChecker ?? assertRdaUserExists;
   const hasSupabaseConfig = Boolean(
@@ -1394,6 +1405,12 @@ export function createServer(
     dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
   const reportWorkerMaxAttempts =
     dependencies?.reportWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_ATTEMPTS, 3);
+  const retentionWorkerEnabled =
+    dependencies?.retentionWorkerEnabled ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_ENABLED) ?? false);
+  const retentionRunOnStart =
+    dependencies?.retentionRunOnStart ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_RUN_ON_START) ?? true);
+  const retentionPollMs =
+    dependencies?.retentionPollMs ?? parsePositiveIntegerEnv(process.env.MASTERCRM_RETENTION_POLL_MS, 86_400_000);
 
   fastify.register(cors, {
     origin: resolveMastercrmCorsOrigins()
@@ -1490,6 +1507,15 @@ export function createServer(
 
     cachedReportRunStore = createReportRunStoreFromEnv();
     return cachedReportRunStore;
+  }
+
+  function getMastercrmRetentionStore(): MastercrmRetentionStore {
+    if (cachedMastercrmRetentionStore) {
+      return cachedMastercrmRetentionStore;
+    }
+
+    cachedMastercrmRetentionStore = createMastercrmRetentionStoreFromEnv();
+    return cachedMastercrmRetentionStore;
   }
 
   function getMetaConversionsStore(): MetaConversionsStore {
@@ -1750,6 +1776,18 @@ export function createServer(
       batchSize: metaWorkerBatchSize
     });
     metaWorker.start();
+  }
+
+  if (retentionWorkerEnabled) {
+    try {
+      retentionWorker = new MastercrmRetentionWorker(getMastercrmRetentionStore(), logger, {
+        runOnStart: retentionRunOnStart,
+        pollMs: retentionPollMs
+      });
+      retentionWorker.start();
+    } catch (error) {
+      logger.error({ error }, 'MasterCRM technical retention worker could not start');
+    }
   }
 
   async function sendLandingHtml(reply: FastifyReply, fileName: string, landingVariant: string = LANDING_VARIANT) {
@@ -3222,6 +3260,9 @@ export function createServer(
     }
     if (metaWorker) {
       await metaWorker.stop();
+    }
+    if (retentionWorker) {
+      await retentionWorker.stop();
     }
     await internalQueue.shutdown();
   });

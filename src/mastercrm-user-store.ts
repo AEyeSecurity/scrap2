@@ -458,6 +458,8 @@ interface ReportRunFinishedAtRow {
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
 const DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}$/;
+export const SUPABASE_SELECT_PAGE_SIZE = 1000;
+const SUPABASE_IN_FILTER_CHUNK_SIZE = 500;
 
 export class MastercrmUserStoreError extends Error {
   constructor(
@@ -524,6 +526,63 @@ function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): Ma
 
 function mapPostgrestError(error: PostgrestError, fallbackMessage: string): MastercrmUserStoreError {
   return mapDatabaseError({ code: error.code, message: error.message }, fallbackMessage);
+}
+
+type SupabasePagedResult<Row> = {
+  data: Row[] | null;
+  error: PostgrestError | null;
+};
+
+type SupabasePagedQuery<Row> = PromiseLike<SupabasePagedResult<Row>> & {
+  range(from: number, to: number): PromiseLike<SupabasePagedResult<Row>>;
+};
+
+export async function selectAllSupabasePages<Row>(
+  buildQuery: () => SupabasePagedQuery<Row>,
+  fallbackMessage: string,
+  pageSize = SUPABASE_SELECT_PAGE_SIZE
+): Promise<Row[]> {
+  if (!Number.isInteger(pageSize) || pageSize < 1) {
+    throw new MastercrmUserStoreError('INTERNAL', 'Supabase page size must be a positive integer');
+  }
+
+  const rows: Row[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await buildQuery().range(offset, offset + pageSize - 1);
+    if (error) {
+      throw mapPostgrestError(error, fallbackMessage);
+    }
+
+    const pageRows = data ?? [];
+    rows.push(...pageRows);
+
+    if (pageRows.length < pageSize) {
+      return rows;
+    }
+
+    offset += pageSize;
+  }
+}
+
+async function selectAllSupabasePagesByChunks<Row, Value>(
+  values: Value[],
+  buildQuery: (chunk: Value[]) => SupabasePagedQuery<Row>,
+  fallbackMessage: string,
+  chunkSize = SUPABASE_IN_FILTER_CHUNK_SIZE
+): Promise<Row[]> {
+  if (!Number.isInteger(chunkSize) || chunkSize < 1) {
+    throw new MastercrmUserStoreError('INTERNAL', 'Supabase chunk size must be a positive integer');
+  }
+
+  const rows: Row[] = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    const chunk = values.slice(index, index + chunkSize);
+    rows.push(...(await selectAllSupabasePages(() => buildQuery(chunk), fallbackMessage)));
+  }
+
+  return rows;
 }
 
 function parsePasswordHash(passwordHash: string): { salt: Buffer; derivedKey: Buffer } {
@@ -1439,22 +1498,25 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const [
       ownerPhone,
-      ownerClientFactsResult,
+      factsForSelectedMonth,
       latestReportDateResult,
-      monthlyClientSnapshotsResult,
       financialSettingsResult,
-      adSpendResult,
-      monthlyTrendSnapshotsResult
+      adSpendResult
     ] =
       await Promise.all([
         this.getOwnerPhone(owner.id),
-        this.client
-          .from('owner_client_monthly_facts')
-          .select(
-            'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
-          )
-          .eq('owner_id', owner.id)
-          .eq('month_start', monthWindow.monthStartDate),
+        selectAllSupabasePages<OwnerClientMonthlyFactRow>(
+          () =>
+            this.client
+              .from('owner_client_monthly_facts')
+              .select(
+                'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
+              )
+              .eq('owner_id', owner.id)
+              .eq('month_start', monthWindow.monthStartDate)
+              .order('client_id', { ascending: true }),
+          'Could not read owner client monthly facts'
+        ),
         this.client
           .from('report_daily_snapshots')
           .select('report_date')
@@ -1463,12 +1525,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .lt('report_date', monthWindow.nextMonthStartDate)
           .order('report_date', { ascending: false })
           .limit(1),
-        this.client
-          .from('report_daily_snapshots')
-          .select('client_id')
-          .eq('owner_id', owner.id)
-          .gte('report_date', monthWindow.monthStartDate)
-          .lt('report_date', monthWindow.nextMonthStartDate),
         this.client
           .from('owner_financial_settings')
           .select('commission_pct')
@@ -1479,21 +1535,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           .select('ad_spend_ars')
           .eq('owner_id', owner.id)
           .eq('month_start', monthWindow.monthStartDate)
-          .maybeSingle(),
-        this.client
-          .from('report_daily_snapshots')
-          .select('report_date, cargado_mes')
-          .eq('owner_id', owner.id)
-          .gte('report_date', monthTrail[0]?.monthStartDate ?? monthWindow.monthStartDate)
-          .lt('report_date', monthWindow.nextMonthStartDate)
+          .maybeSingle()
       ]);
 
-    if (ownerClientFactsResult.error) {
-      throw mapPostgrestError(ownerClientFactsResult.error, 'Could not read owner client monthly facts');
-    }
-    if (monthlyClientSnapshotsResult.error) {
-      throw mapPostgrestError(monthlyClientSnapshotsResult.error, 'Could not read owner monthly client snapshots');
-    }
     if (latestReportDateResult.error) {
       throw mapPostgrestError(latestReportDateResult.error, 'Could not read owner report date');
     }
@@ -1503,9 +1547,32 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (adSpendResult.error) {
       throw mapPostgrestError(adSpendResult.error, 'Could not read owner monthly ad spend');
     }
-    if (monthlyTrendSnapshotsResult.error) {
-      throw mapPostgrestError(monthlyTrendSnapshotsResult.error, 'Could not read owner monthly trend snapshots');
-    }
+
+    const monthlyClientSnapshotRows = await selectAllSupabasePages<{ client_id: string | null }>(
+      () =>
+        this.client
+          .from('report_daily_snapshots')
+          .select('client_id')
+          .eq('owner_id', owner.id)
+          .gte('report_date', monthWindow.monthStartDate)
+          .lt('report_date', monthWindow.nextMonthStartDate)
+          .order('report_date', { ascending: true })
+          .order('client_id', { ascending: true }),
+      'Could not read owner monthly client snapshots'
+    );
+
+    const monthlyTrendSnapshots = await selectAllSupabasePages<{ report_date: string; cargado_mes: number | string | null }>(
+      () =>
+        this.client
+          .from('report_daily_snapshots')
+          .select('report_date, cargado_mes')
+          .eq('owner_id', owner.id)
+          .gte('report_date', monthTrail[0]?.monthStartDate ?? monthWindow.monthStartDate)
+          .lt('report_date', monthWindow.nextMonthStartDate)
+          .order('report_date', { ascending: true })
+          .order('identity_id', { ascending: true }),
+      'Could not read owner monthly trend snapshots'
+    );
 
     const linkedOwner: MastercrmLinkedOwnerRecord = {
       ownerId: owner.id,
@@ -1515,7 +1582,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       telefono: ownerPhone
     };
 
-    const factsForSelectedMonth = (ownerClientFactsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
     const dashboardMonthFacts = factsForSelectedMonth.filter(isDashboardMonthFact);
     const dashboardClientIds = new Set(dashboardMonthFacts.map((fact) => fact.client_id));
     const ownerClientLinkIds = dashboardMonthFacts
@@ -1525,36 +1591,37 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const attributionByClientId = new Map<string, MastercrmClientAttribution>();
 
     if (ownerClientLinkIds.length > 0) {
-      const { data: ownerClientLinksData, error: ownerClientLinksError } = await this.client
-        .from('owner_client_links')
-        .select('id, first_seen_at')
-        .eq('owner_id', owner.id)
-        .in('id', ownerClientLinkIds);
-
-      if (ownerClientLinksError) {
-        throw mapPostgrestError(ownerClientLinksError, 'Could not read owner client links');
-      }
-
-      const ownerClientLinks = (ownerClientLinksData as OwnerClientLinkFirstSeenRow[] | null) ?? [];
+      const ownerClientLinks = await selectAllSupabasePagesByChunks<OwnerClientLinkFirstSeenRow, string>(
+        ownerClientLinkIds,
+        (chunk) =>
+          this.client
+            .from('owner_client_links')
+            .select('id, first_seen_at')
+            .eq('owner_id', owner.id)
+            .in('id', chunk)
+            .order('id', { ascending: true }),
+        'Could not read owner client links'
+      );
       for (const link of ownerClientLinks) {
         linkFirstSeenById.set(link.id, link.first_seen_at ?? null);
       }
     }
 
     if (dashboardClientIds.size > 0) {
-      const { data: ownerClientEventsData, error: ownerClientEventsError } = await this.client
-        .from('owner_client_events')
-        .select('client_id, event_type, payload, occurred_at')
-        .eq('owner_id', owner.id)
-        .eq('event_type', 'intake')
-        .in('client_id', [...dashboardClientIds]);
-
-      if (ownerClientEventsError) {
-        throw mapPostgrestError(ownerClientEventsError, 'Could not read owner client attribution events');
-      }
-
+      const ownerClientEvents = await selectAllSupabasePagesByChunks<OwnerClientEventRow, string>(
+        [...dashboardClientIds],
+        (chunk) =>
+          this.client
+            .from('owner_client_events')
+            .select('client_id, event_type, payload, occurred_at')
+            .eq('owner_id', owner.id)
+            .eq('event_type', 'intake')
+            .in('client_id', chunk)
+            .order('client_id', { ascending: true })
+            .order('occurred_at', { ascending: true }),
+        'Could not read owner client attribution events'
+      );
       const eventsByClientId = new Map<string, OwnerClientEventRow[]>();
-      const ownerClientEvents = (ownerClientEventsData as OwnerClientEventRow[] | null) ?? [];
       for (const event of ownerClientEvents) {
         if (!event.client_id || !dashboardClientIds.has(event.client_id)) {
           continue;
@@ -1584,8 +1651,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     let cargadoHoyTotal: number | null = null;
     let cargadoMesTotal: number | null = null;
-    const monthlyClientSnapshotRows =
-      (monthlyClientSnapshotsResult.data as Array<{ client_id: string | null }> | null) ?? [];
     const reportClientIds = new Set(
       monthlyClientSnapshotRows
         .map((snapshot) => (typeof snapshot.client_id === 'string' ? snapshot.client_id : null))
@@ -1599,17 +1664,17 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     >();
 
     if (reportDate) {
-      const { data: snapshotsData, error: snapshotsError } = await this.client
-        .from('report_daily_snapshots')
-        .select('identity_id, client_id, report_date, username, cargado_hoy, cargado_mes')
-        .eq('owner_id', owner.id)
-        .eq('report_date', reportDate);
-
-      if (snapshotsError) {
-        throw mapPostgrestError(snapshotsError, 'Could not read owner report snapshots');
-      }
-
-      const snapshots = (snapshotsData as ReportDailySnapshotRow[] | null) ?? [];
+      const snapshots = await selectAllSupabasePages<ReportDailySnapshotRow>(
+        () =>
+          this.client
+            .from('report_daily_snapshots')
+            .select('identity_id, client_id, report_date, username, cargado_hoy, cargado_mes')
+            .eq('owner_id', owner.id)
+            .eq('report_date', reportDate)
+            .order('client_id', { ascending: true })
+            .order('identity_id', { ascending: true }),
+        'Could not read owner report snapshots'
+      );
       cargadoHoyTotal = 0;
       cargadoMesTotal = 0;
 
@@ -1650,8 +1715,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const financialSettings = financialSettingsResult.data as OwnerFinancialSettingsRow | null;
     const adSpendRow = adSpendResult.data as OwnerMonthlyAdSpendRow | null;
-    const monthlyTrendSnapshots =
-      (monthlyTrendSnapshotsResult.data as Array<{ report_date: string; cargado_mes: number | string | null }> | null) ?? [];
     const monthlyTrendByMonth = new Map<string, { reportDate: string; cargadoMesArs: number }>();
 
     for (const snapshot of monthlyTrendSnapshots) {
@@ -1825,60 +1888,76 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const [
       ownerPhone,
-      eventsResult,
-      factsResult,
-      snapshotsResult,
+      events,
+      facts,
+      snapshotRows,
       financialSettingsResult,
-      budgetsResult
+      budgetSourceRows
     ] = await Promise.all([
       this.getOwnerPhone(owner.id),
-      this.client
-        .from('owner_client_events')
-        .select('client_id, event_type, payload, occurred_at')
-        .eq('owner_id', owner.id)
-        .eq('event_type', 'intake')
-        .lt('occurred_at', window.endedAtIso),
-      this.client
-        .from('owner_client_monthly_facts')
-        .select(
-          'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
-        )
-        .eq('owner_id', owner.id)
-        .gte('month_start', window.firstMonthStartDate)
-        .lt('month_start', window.afterLastMonthStartDate),
-      this.client
-        .from('report_daily_snapshots')
-        .select('identity_id, client_id, link_id, report_date, username, cargado_hoy, cargado_mes')
-        .eq('owner_id', owner.id)
-        .gte('report_date', window.firstMonthStartDate)
-        .lt('report_date', window.dayAfterDateTo),
+      selectAllSupabasePages<OwnerClientEventRow>(
+        () =>
+          this.client
+            .from('owner_client_events')
+            .select('client_id, event_type, payload, occurred_at')
+            .eq('owner_id', owner.id)
+            .eq('event_type', 'intake')
+            .lt('occurred_at', window.endedAtIso)
+            .order('occurred_at', { ascending: true })
+            .order('client_id', { ascending: true }),
+        'Could not read owner client acquisition events'
+      ),
+      selectAllSupabasePages<OwnerClientMonthlyFactRow>(
+        () =>
+          this.client
+            .from('owner_client_monthly_facts')
+            .select(
+              'owner_id, client_id, link_id, month_start, status_at_month_end, identity_id_at_month_end, username_at_month_end, had_intake_in_month, is_new_intake_in_month, is_reentry_in_month, had_assignment_in_month, assigned_from_backlog_in_month, clients!inner(id, phone_e164, pagina, created_at)'
+            )
+            .eq('owner_id', owner.id)
+            .gte('month_start', window.firstMonthStartDate)
+            .lt('month_start', window.afterLastMonthStartDate)
+            .order('month_start', { ascending: true })
+            .order('client_id', { ascending: true }),
+        'Could not read owner client monthly facts'
+      ),
+      selectAllSupabasePages<ReportDailySnapshotRow>(
+        () =>
+          this.client
+            .from('report_daily_snapshots')
+            .select('identity_id, client_id, link_id, report_date, username, cargado_hoy, cargado_mes')
+            .eq('owner_id', owner.id)
+            .gte('report_date', window.firstMonthStartDate)
+            .lt('report_date', window.dayAfterDateTo)
+            .order('report_date', { ascending: true })
+            .order('client_id', { ascending: true })
+            .order('identity_id', { ascending: true }),
+        'Could not read owner report snapshots'
+      ),
       this.client
         .from('owner_financial_settings')
         .select('commission_pct')
         .eq('owner_id', owner.id)
         .maybeSingle(),
-      this.client
-        .from('owner_marketing_daily_budgets')
-        .select(
-          'id, channel, level, campaign_key, campaign_name, ad_key, ad_name, link_url, daily_budget_ars, active_from, active_to, updated_at'
-        )
-        .eq('owner_id', owner.id)
+      selectAllSupabasePages<OwnerMarketingDailyBudgetRow>(
+        () =>
+          this.client
+            .from('owner_marketing_daily_budgets')
+            .select(
+              'id, channel, level, campaign_key, campaign_name, ad_key, ad_name, link_url, daily_budget_ars, active_from, active_to, updated_at'
+            )
+            .eq('owner_id', owner.id)
+            .order('channel', { ascending: true })
+            .order('campaign_key', { ascending: true })
+            .order('ad_key', { ascending: true })
+            .order('active_from', { ascending: true })
+            .order('id', { ascending: true }),
+        'Could not read owner marketing budgets'
+      )
     ]);
 
-    if (eventsResult.error) {
-      throw mapPostgrestError(eventsResult.error, 'Could not read owner client acquisition events');
-    }
-    if (factsResult.error) {
-      throw mapPostgrestError(factsResult.error, 'Could not read owner client monthly facts');
-    }
-    if (snapshotsResult.error) {
-      throw mapPostgrestError(snapshotsResult.error, 'Could not read owner report snapshots');
-    }
     if (financialSettingsResult.error) {
       throw mapPostgrestError(financialSettingsResult.error, 'Could not read owner financial settings');
-    }
-    if (budgetsResult.error) {
-      throw mapPostgrestError(budgetsResult.error, 'Could not read owner marketing budgets');
     }
 
     const linkedOwner: MastercrmLinkedOwnerRecord = {
@@ -1889,11 +1968,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       telefono: ownerPhone
     };
     const commissionPct = toFiniteNumber((financialSettingsResult.data as OwnerFinancialSettingsRow | null)?.commission_pct);
-    const events = ((eventsResult.data as OwnerClientEventRow[] | null) ?? [])
+    const sortedEvents = events
       .filter((event) => event.client_id)
       .sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at));
     const eventsByClientId = new Map<string, OwnerClientEventRow[]>();
-    for (const event of events) {
+    for (const event of sortedEvents) {
       if (!event.client_id) {
         continue;
       }
@@ -1902,7 +1981,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       eventsByClientId.set(event.client_id, list);
     }
 
-    const facts = (factsResult.data as OwnerClientMonthlyFactRow[] | null) ?? [];
     const factByClientId = new Map<string, OwnerClientMonthlyFactRow>();
     for (const fact of facts) {
       const existing = factByClientId.get(fact.client_id);
@@ -1913,7 +1991,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const monthlySnapshotByClientId = new Map<string, Map<string, number>>();
     const usernameByClientId = new Map<string, string | null>();
-    const snapshotRows = (snapshotsResult.data as ReportDailySnapshotRow[] | null) ?? [];
     for (const snapshot of snapshotRows) {
       const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
       if (!clientId) {
@@ -1965,7 +2042,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       revenueByClientId.set(clientId, roundTo(clientRevenue));
     }
 
-    const budgetRows = ((budgetsResult.data as OwnerMarketingDailyBudgetRow[] | null) ?? [])
+    const budgetRows = budgetSourceRows
       .filter((row) => {
         if (row.active_from > window.dateTo) {
           return false;

@@ -146,12 +146,22 @@ Senales practicas de que la conexion quedo bien:
 
 ## Nota operativa sobre crecimiento
 
-Si crece el uso de Supabase en este proyecto, lo esperable es que crezca en Postgres por historial tecnico de snapshots, corridas e outbox. La fase siguiente de endurecimiento debe definir retencion para:
+Las lecturas del CRM que pueden superar 1000 filas usan paginacion por `.range(...)`.
+No reemplazar esas lecturas por selects simples: Supabase recorta por defecto y el CRM pierde clientes/carga.
+
+La retencion tecnica mensual se define en:
+
+- `db/migrations/20260619_mastercrm_technical_retention.sql`
+- RPC `public.purge_mastercrm_technical_history_v1(date)`
+
+La purga elimina solo historial tecnico anterior al mes actual:
 
 - `report_daily_snapshots`
-- `report_run_items`
-- `report_outbox`
-- `meta_conversion_outbox`
+- `report_runs`, con cascade a `report_run_items` y `report_outbox`
+- `meta_conversion_outbox` terminal (`sent`, `failed`, `discarded`)
+- `landing_sessions` viejas con margen de 48 horas
+
+No elimina clientes, eventos de negocio, facts mensuales, identidades, presupuestos ni financial settings.
 
 Si la conexion esta mal, lo esperable es ver errores de configuracion o errores de PostgREST/RPC al invocar endpoints que dependen de Supabase.
 

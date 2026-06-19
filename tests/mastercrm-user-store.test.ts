@@ -1,6 +1,7 @@
 import type { PostgrestError, SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it } from 'vitest';
 import {
+  SUPABASE_SELECT_PAGE_SIZE,
   attributionFromSourceContext,
   createMastercrmUserStore,
   hashMastercrmPassword,
@@ -8,6 +9,7 @@ import {
   normalizeMastercrmOwnerKey,
   normalizeMastercrmTelefono,
   normalizeMastercrmUsername,
+  selectAllSupabasePages,
   toMastercrmUserRecord,
   verifyMastercrmPassword
 } from '../src/mastercrm-user-store';
@@ -80,6 +82,11 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
 
   limit(value: number): FakeQueryBuilder {
     this.client.calls.push({ table: this.table, operation: 'limit', value });
+    return this;
+  }
+
+  range(from: number, to: number): FakeQueryBuilder {
+    this.client.calls.push({ table: this.table, operation: 'range', from, to });
     return this;
   }
 
@@ -180,6 +187,79 @@ function createPostgrestError(code: string, message: string): PostgrestError {
 }
 
 describe('mastercrm user store helpers', () => {
+  function buildPagedRows(count: number): Array<{ id: number }> {
+    return Array.from({ length: count }, (_, index) => ({ id: index + 1 }));
+  }
+
+  function buildPagedQuery(client: FakeSupabaseClient): ReturnType<FakeSupabaseClient['from']> {
+    return client.from('paged_rows').select('id').order('id', { ascending: true });
+  }
+
+  it('reads zero rows with the paginated Supabase helper', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('paged_rows', 'select', { data: [], error: null });
+
+    await expect(selectAllSupabasePages(() => buildPagedQuery(client), 'Could not read paged rows')).resolves.toEqual([]);
+    expect(client.calls.filter((call) => call.operation === 'range')).toEqual([
+      { table: 'paged_rows', operation: 'range', from: 0, to: SUPABASE_SELECT_PAGE_SIZE - 1 }
+    ]);
+  });
+
+  it('reads one partial page with the paginated Supabase helper', async () => {
+    const client = new FakeSupabaseClient();
+    const rows = buildPagedRows(SUPABASE_SELECT_PAGE_SIZE - 1);
+    client.queue('paged_rows', 'select', { data: rows, error: null });
+
+    await expect(selectAllSupabasePages(() => buildPagedQuery(client), 'Could not read paged rows')).resolves.toHaveLength(
+      SUPABASE_SELECT_PAGE_SIZE - 1
+    );
+    expect(client.calls.filter((call) => call.operation === 'range')).toHaveLength(1);
+  });
+
+  it('reads an exact full page and confirms the next page is empty', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('paged_rows', 'select', { data: buildPagedRows(SUPABASE_SELECT_PAGE_SIZE), error: null });
+    client.queue('paged_rows', 'select', { data: [], error: null });
+
+    await expect(selectAllSupabasePages(() => buildPagedQuery(client), 'Could not read paged rows')).resolves.toHaveLength(
+      SUPABASE_SELECT_PAGE_SIZE
+    );
+    expect(client.calls.filter((call) => call.operation === 'range')).toEqual([
+      { table: 'paged_rows', operation: 'range', from: 0, to: SUPABASE_SELECT_PAGE_SIZE - 1 },
+      {
+        table: 'paged_rows',
+        operation: 'range',
+        from: SUPABASE_SELECT_PAGE_SIZE,
+        to: SUPABASE_SELECT_PAGE_SIZE * 2 - 1
+      }
+    ]);
+  });
+
+  it('reads multiple pages with the paginated Supabase helper', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('paged_rows', 'select', { data: buildPagedRows(SUPABASE_SELECT_PAGE_SIZE), error: null });
+    client.queue('paged_rows', 'select', { data: [{ id: SUPABASE_SELECT_PAGE_SIZE + 1 }], error: null });
+
+    const rows = await selectAllSupabasePages(() => buildPagedQuery(client), 'Could not read paged rows');
+
+    expect(rows).toHaveLength(SUPABASE_SELECT_PAGE_SIZE + 1);
+    expect(rows.at(-1)).toEqual({ id: SUPABASE_SELECT_PAGE_SIZE + 1 });
+  });
+
+  it('surfaces paginated Supabase helper errors from later pages', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('paged_rows', 'select', { data: buildPagedRows(SUPABASE_SELECT_PAGE_SIZE), error: null });
+    client.queue('paged_rows', 'select', {
+      data: null,
+      error: createPostgrestError('XX000', 'second page failed')
+    });
+
+    await expect(selectAllSupabasePages(() => buildPagedQuery(client), 'Could not read paged rows')).rejects.toMatchObject({
+      code: 'INTERNAL',
+      message: 'Could not read paged rows (XX000: second page failed)'
+    });
+  });
+
   it('maps historical numeric UTM values to IDs without inventing names', () => {
     expect(
       attributionFromSourceContext({
@@ -1116,6 +1196,140 @@ describe('mastercrm clients dashboard', () => {
     ]);
   });
 
+  it('paginates marketing acquisition events and snapshots beyond Supabase default limits', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 999,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'luqui10:luqui10',
+          owner_label: 'Lucas10',
+          pagina: 'RdA'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', { data: [], error: null });
+    client.queue('owner_client_events', 'select', {
+      data: Array.from({ length: SUPABASE_SELECT_PAGE_SIZE }, (_, index) => ({
+        client_id: `old-client-${index}`,
+        event_type: 'intake',
+        occurred_at: '2026-05-15T13:00:00.000Z',
+        payload: {}
+      })),
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [
+        {
+          client_id: 'client-miriam',
+          event_type: 'intake',
+          occurred_at: '2026-06-18T16:36:19.121Z',
+          payload: {
+            ReferralSourceType: 'ad',
+            ReferralSourceId: '120250708847350471',
+            ReferralSourceUrl: 'https://www.instagram.com/p/DZsKPCVANd0/',
+            ReferralHeadline: 'Reino Dorado',
+            CtwaClid: 'ctwa-miriam'
+          }
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_client_monthly_facts', 'select', {
+      data: [
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-miriam',
+          link_id: 'link-miriam',
+          month_start: '2026-06-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-miriam',
+          username_at_month_end: '3miriam776',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-miriam', phone_e164: '+5493510000776', pagina: 'RdA' }
+        }
+      ],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: Array.from({ length: SUPABASE_SELECT_PAGE_SIZE }, (_, index) => ({
+        client_id: `snapshot-client-${index}`,
+        identity_id: `snapshot-identity-${index}`,
+        report_date: '2026-06-19',
+        username: `snapshot${index}`,
+        cargado_hoy: 0,
+        cargado_mes: 10
+      })),
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [
+        {
+          client_id: 'client-miriam',
+          identity_id: 'identity-miriam',
+          report_date: '2026-06-19',
+          username: '3miriam776',
+          cargado_hoy: 0,
+          cargado_mes: 820000
+        }
+      ],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: { commission_pct: 50 },
+      error: null
+    });
+    client.queue('owner_marketing_daily_budgets', 'select', { data: [], error: null });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const analytics = await store.getMarketingAnalytics({
+      userId: 999,
+      dateFrom: '2026-06-01',
+      dateTo: '2026-06-19'
+    });
+
+    expect(analytics.clients).toContainEqual(
+      expect.objectContaining({
+        username: '3miriam776',
+        channel: 'meta_ctwa',
+        campaignKey: 'Reino Dorado',
+        adKey: '120250708847350471',
+        revenueArs: 820000
+      })
+    );
+    expect(analytics.campaigns.find((campaign) => campaign.campaignName === 'Reino Dorado')).toMatchObject({
+      leads: 1,
+      assigned: 1,
+      depositors: 1,
+      revenueArs: 820000
+    });
+    expect(analytics.ads.find((ad) => ad.adKey === '120250708847350471')).toMatchObject({
+      leads: 1,
+      assigned: 1,
+      depositors: 1,
+      revenueArs: 820000
+    });
+  });
+
   it('calculates intake to assignment rate from unique monthly leads that ended assigned', async () => {
     const client = new FakeSupabaseClient();
     client.queue('mastercrm_users', 'select', {
@@ -1240,6 +1454,132 @@ describe('mastercrm clients dashboard', () => {
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
     expect(dashboard.statsKpis.clientesTotales).toBe(2);
     expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-2', 'link-1']);
+  });
+
+  it('paginates dashboard report snapshots beyond Supabase default limits', async () => {
+    const client = new FakeSupabaseClient();
+    client.queue('mastercrm_users', 'select', {
+      data: {
+        id: 777,
+        username: 'lucas',
+        nombre: 'Lucas',
+        telefono: '54911',
+        inversion: 0,
+        is_active: true,
+        created_at: '2026-03-10T12:00:00.000Z'
+      },
+      error: null
+    });
+    client.queue('mastercrm_user_owner_links', 'select', {
+      data: {
+        id: 'crm-link-1',
+        owner_id: 'owner-lucas',
+        owners: {
+          id: 'owner-lucas',
+          owner_key: 'luqui10:luqui10',
+          owner_label: 'Lucas10',
+          pagina: 'RdA'
+        }
+      },
+      error: null
+    });
+    client.queue('owner_aliases', 'select', { data: [], error: null });
+    client.queue('owner_client_monthly_facts', 'select', {
+      data: [
+        {
+          owner_id: 'owner-lucas',
+          client_id: 'client-miriam',
+          link_id: 'link-miriam',
+          month_start: '2026-06-01',
+          status_at_month_end: 'assigned',
+          identity_id_at_month_end: 'identity-miriam',
+          username_at_month_end: '3miriam776',
+          had_intake_in_month: true,
+          is_new_intake_in_month: true,
+          is_reentry_in_month: false,
+          had_assignment_in_month: true,
+          assigned_from_backlog_in_month: false,
+          clients: { id: 'client-miriam', phone_e164: '+5493510000776', pagina: 'RdA' }
+        }
+      ],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [{ report_date: '2026-06-19' }],
+      error: null
+    });
+    client.queue('owner_financial_settings', 'select', {
+      data: { commission_pct: 50 },
+      error: null
+    });
+    client.queue('owner_monthly_ad_spend', 'select', {
+      data: null,
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: Array.from({ length: SUPABASE_SELECT_PAGE_SIZE }, (_, index) => ({
+        client_id: `other-client-${index}`
+      })),
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [{ client_id: 'client-miriam' }],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('owner_client_links', 'select', {
+      data: [{ id: 'link-miriam', first_seen_at: '2026-06-18T16:36:21.000Z' }],
+      error: null
+    });
+    client.queue('owner_client_events', 'select', {
+      data: [],
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: Array.from({ length: SUPABASE_SELECT_PAGE_SIZE }, (_, index) => ({
+        client_id: `other-client-${index}`,
+        identity_id: `other-identity-${index}`,
+        report_date: '2026-06-19',
+        username: `other${index}`,
+        cargado_hoy: 0,
+        cargado_mes: 10
+      })),
+      error: null
+    });
+    client.queue('report_daily_snapshots', 'select', {
+      data: [
+        {
+          client_id: 'client-miriam',
+          identity_id: 'identity-miriam',
+          report_date: '2026-06-19',
+          username: '3miriam776',
+          cargado_hoy: 0,
+          cargado_mes: 820000
+        }
+      ],
+      error: null
+    });
+    client.queue('report_runs', 'select', {
+      data: { finished_at: '2026-06-19T12:00:00.000Z' },
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-06' });
+
+    expect(dashboard.statsKpis.clientesConReporte).toBe(1);
+    expect(dashboard.statsKpis.cargadoMesArs).toBe(820000);
+    expect(dashboard.clientes).toContainEqual(
+      expect.objectContaining({
+        id: 'link-miriam',
+        username: '3miriam776',
+        cargadoMes: 820000,
+        reportDate: '2026-06-19'
+      })
+    );
   });
 
   it('builds monthly trend from the latest snapshot date of each month', async () => {
