@@ -134,6 +134,7 @@ export interface WhatsappQrStore {
   resolveOwnerByKey(pagina: PaginaCode, ownerKey: string): Promise<WhatsappQrOwner | null>;
   listOwnerClientPhonesForMonth(input: { ownerId: string; monthStart: string; limit?: number }): Promise<Set<string>>;
   listMonthClients(input: { ownerId: string; monthStart: string; limit?: number }): Promise<WhatsappQrMonthClientRecord[]>;
+  listIgnoredPhonesForMonth(input: { ownerId: string; monthStart: string }): Promise<Set<string>>;
   getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null>;
   listReconnectableSessions(): Promise<WhatsappQrSessionRecord[]>;
   listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]>;
@@ -155,6 +156,12 @@ export interface WhatsappQrStore {
   listMatches(ownerIds?: string[] | null, limit?: number): Promise<WhatsappQrMatchRecord[]>;
   listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]>;
   listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]>;
+  ignorePhoneForMonth(input: {
+    ownerId: string;
+    monthStart: string;
+    phoneE164: string;
+    ignoredByUserId?: number | null;
+  }): Promise<void>;
   getRdaCredential(ownerId: string): Promise<WhatsappQrRdaCredential | null>;
   upsertRdaCredential(input: {
     ownerId: string;
@@ -439,6 +446,24 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }));
   }
 
+  async listIgnoredPhonesForMonth(input: { ownerId: string; monthStart: string }): Promise<Set<string>> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_ignored_phones')
+      .select('client_phone_e164')
+      .eq('owner_id', input.ownerId)
+      .eq('month_start', input.monthStart);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not list ignored WhatsApp QR phones for month');
+    }
+
+    return new Set(
+      (((data as Array<{ client_phone_e164?: string | null }> | null) ?? [])
+        .map((row) => row.client_phone_e164)
+        .filter(Boolean) as string[]).map((phone) => normalizePhone(phone))
+    );
+  }
+
   async getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null> {
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_sessions')
@@ -699,6 +724,30 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
 
     return ((data as any[] | null) ?? []).map(asMatch);
+  }
+
+  async ignorePhoneForMonth(input: {
+    ownerId: string;
+    monthStart: string;
+    phoneE164: string;
+    ignoredByUserId?: number | null;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    const { error } = await this.client.from('mastercrm_whatsapp_qr_ignored_phones').upsert(
+      {
+        owner_id: input.ownerId,
+        month_start: input.monthStart,
+        client_phone_e164: normalizePhone(input.phoneE164),
+        ignored_by_user_id: input.ignoredByUserId ?? null,
+        reason: 'manual_ignore',
+        updated_at: now
+      },
+      { onConflict: 'owner_id,month_start,client_phone_e164' }
+    );
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not ignore WhatsApp QR phone for month');
+    }
   }
 
   async getRdaCredential(ownerId: string): Promise<WhatsappQrRdaCredential | null> {

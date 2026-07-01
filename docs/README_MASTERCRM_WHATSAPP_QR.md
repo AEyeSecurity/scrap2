@@ -10,6 +10,7 @@ Aplicar la migracion:
 
 ```powershell
 db/migrations/20260630_mastercrm_whatsapp_qr.sql
+db/migrations/20260701_mastercrm_whatsapp_qr_ignored_phones.sql
 ```
 
 Crea:
@@ -18,6 +19,7 @@ Crea:
 - `mastercrm_whatsapp_qr_messages`
 - `mastercrm_whatsapp_qr_matches`
 - `mastercrm_rda_credentials`
+- `mastercrm_whatsapp_qr_ignored_phones`
 
 La API usa service role. El CRM no expone claves RdA ni `qr_payload`; solo muestra `qr_data_url`, estado, heartbeat y matches.
 
@@ -59,6 +61,7 @@ Si una sesion quedo `connected` y la auth persistida sigue valida, el backend la
 
 - `POST /mastercrm-whatsapp-qr/status`
 - `POST /mastercrm-whatsapp-qr/assign`
+- `POST /mastercrm-whatsapp-qr/ignore`
 - `POST /mastercrm-whatsapp-qr/connect`
 - `POST /mastercrm-whatsapp-qr/disconnect`
 
@@ -73,6 +76,7 @@ La solapa `WhatsApp QR` muestra:
 - una cola operativa de revision con una fila real por telefono;
 - detalle por telefono con senal por contacto, senal por mensaje, ultimo intento y error;
 - accion manual `Validar y asignar` usando credenciales RdA ya sincronizadas.
+- accion manual `Ignorar` por telefono y mes para sacar casos no-RdA de la cola operativa.
 
 Estados operativos del panel:
 
@@ -91,7 +95,7 @@ La fuente de verdad del panel ya no es el ultimo match crudo. El estado visible 
 
 No hay limite de `50` ni paginacion en v1. La respuesta de `status` devuelve:
 
-- `summary`: totales del mes (`totalPhones`, `assigned`, `review` y breakdown por motivo);
+- `summary`: totales del mes (`totalPhones`, `assigned`, `review`, `ignored` y breakdown por motivo);
 - `queue`: filas operativas por telefono con `assignedUsername`, `suggestedUsername`, `contactCandidateUsername`, `outboundCandidateUsername`, `primarySignalSource`, `lastSignalAt`, `lastAttemptAt` y `lastError`.
 
 ## Activacion controlada

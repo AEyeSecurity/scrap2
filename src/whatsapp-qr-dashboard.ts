@@ -33,6 +33,7 @@ export interface WhatsappQrQueueSummary {
   totalPhones: number;
   assigned: number;
   review: number;
+  ignored: number;
   noSignal: number;
   detectedUnassigned: number;
   notFound: number;
@@ -112,10 +113,12 @@ export function buildWhatsappQrPhoneQueue(input: {
   monthClients: WhatsappQrMonthClientRecord[];
   messages: WhatsappQrMessageRecord[];
   matches: WhatsappQrMatchRecord[];
+  ignoredPhones?: ReadonlySet<string>;
 }): {
   summary: WhatsappQrQueueSummary;
   queue: WhatsappQrPhoneQueueRow[];
 } {
+  const ignoredPhones = input.ignoredPhones ?? new Set<string>();
   const messagesByPhone = new Map<string, WhatsappQrMessageRecord[]>();
   const matchesByPhone = new Map<string, WhatsappQrMatchRecord[]>();
 
@@ -131,7 +134,7 @@ export function buildWhatsappQrPhoneQueue(input: {
     matchesByPhone.set(match.clientPhoneE164, entries);
   }
 
-  const queue = input.monthClients.map((monthClient) => {
+  const allRows = input.monthClients.map((monthClient) => {
     const phoneMessages = messagesByPhone.get(monthClient.phoneE164) ?? [];
     const phoneMatches = matchesByPhone.get(monthClient.phoneE164) ?? [];
 
@@ -194,6 +197,9 @@ export function buildWhatsappQrPhoneQueue(input: {
     };
   });
 
+  const ignored = allRows.filter((row) => row.status === 'review' && ignoredPhones.has(row.phoneE164)).length;
+  const queue = allRows.filter((row) => row.status === 'assigned' || !ignoredPhones.has(row.phoneE164));
+
   queue.sort((left, right) => {
     if (left.status !== right.status) {
       return left.status === 'review' ? -1 : 1;
@@ -210,9 +216,10 @@ export function buildWhatsappQrPhoneQueue(input: {
   });
 
   const summary: WhatsappQrQueueSummary = {
-    totalPhones: queue.length,
-    assigned: queue.filter((row) => row.status === 'assigned').length,
+    totalPhones: allRows.length,
+    assigned: allRows.filter((row) => row.status === 'assigned').length,
     review: queue.filter((row) => row.status === 'review').length,
+    ignored,
     noSignal: queue.filter((row) => row.reviewReason === 'no_signal').length,
     detectedUnassigned: queue.filter((row) => row.reviewReason === 'detected_unassigned').length,
     notFound: queue.filter((row) => row.reviewReason === 'not_found').length,

@@ -145,6 +145,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         totalPhones: 3,
         assigned: 2,
         review: 1,
+        ignored: 0,
         noSignal: 0,
         detectedUnassigned: 1,
         notFound: 0,
@@ -229,7 +230,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         deletedOldPhone: false
       }))
     } as any),
-    whatsappQrStore: {
+    whatsappQrStore: (overrides.whatsappQrStore as any) ?? ({
       getRdaCredential: vi.fn(async () => ({
         ownerId: 'owner-admin',
         ownerKey: 'luqui10:luqui10',
@@ -240,6 +241,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         sourceRef: 'fixture',
         syncedAt: '2026-06-30T12:00:00.000Z'
       })),
+      ignorePhoneForMonth: vi.fn(async () => undefined),
       getSessionByOwner: vi.fn(async (ownerId: string) => ({
         id: 'session-target',
         ownerId,
@@ -260,7 +262,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         createdAt: '2026-06-30T12:00:00.000Z',
         updatedAt: '2026-06-30T12:00:00.000Z'
       }))
-    } as any,
+    } as any),
     whatsappQrManager: (overrides.whatsappQrManager as any) ?? (whatsappQrManager as any),
     rdaUserExistsChecker: (overrides.rdaUserExistsChecker as any) ?? (vi.fn(async () => undefined) as any)
   });
@@ -358,6 +360,7 @@ describe('WhatsApp QR CRM routes', () => {
             totalPhones: 3,
             assigned: 3,
             review: 0,
+            ignored: 0,
             noSignal: 0,
             detectedUnassigned: 0,
             notFound: 0,
@@ -436,6 +439,127 @@ describe('WhatsApp QR CRM routes', () => {
         },
         summary: {
           assigned: 3
+        }
+      });
+    });
+  });
+
+  it('ignores a reviewed phone inside the QR queue for the selected month', async () => {
+    await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
+      const ignorePhoneForMonth = vi.fn(async () => undefined);
+      const whatsappQrManager = {
+        start: vi.fn(async () => undefined),
+        getDashboard: vi
+          .fn()
+          .mockResolvedValueOnce({
+            isAdmin: true,
+            runtimeEnabled: true,
+            sessions: [],
+            summary: {
+              totalPhones: 3,
+              assigned: 2,
+              review: 1,
+              ignored: 0,
+              noSignal: 0,
+              detectedUnassigned: 1,
+              notFound: 0,
+              conflict: 0,
+              technicalError: 0
+            },
+            queue: [
+              {
+                clientId: 'client-1',
+                linkId: 'link-1',
+                phoneE164: '+5493515555555',
+                status: 'review',
+                reviewReason: 'detected_unassigned',
+                assignedUsername: null,
+                suggestedUsername: 'player_123',
+                contactCandidateUsername: 'player_123',
+                outboundCandidateUsername: null,
+                primarySignalSource: 'contact_name',
+                lastSignalAt: '2026-07-01T12:00:00.000Z',
+                lastAttemptAt: '2026-07-01T12:00:00.000Z',
+                lastError: null
+              }
+            ]
+          })
+          .mockResolvedValueOnce({
+            isAdmin: true,
+            runtimeEnabled: true,
+            sessions: [],
+            summary: {
+              totalPhones: 3,
+              assigned: 2,
+              review: 0,
+              ignored: 1,
+              noSignal: 0,
+              detectedUnassigned: 0,
+              notFound: 0,
+              conflict: 0,
+              technicalError: 0
+            },
+            queue: []
+          }),
+        connect: vi.fn(async () => undefined),
+        disconnect: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined)
+      };
+
+      const { app } = buildApp({
+        whatsappQrManager,
+        whatsappQrStore: {
+          getRdaCredential: vi.fn(async () => ({
+            ownerId: 'owner-admin',
+            ownerKey: 'luqui10:luqui10',
+            pagina: 'RdA',
+            loginUsername: 'agente',
+            loginPassword: 'clave',
+            source: 'n8n',
+            sourceRef: 'fixture',
+            syncedAt: '2026-06-30T12:00:00.000Z'
+          })),
+          getSessionByOwner: vi.fn(async () => null),
+          ignorePhoneForMonth
+        }
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/ignore',
+        headers: authHeader(2, 'luqui'),
+        payload: {
+          user_id: 2,
+          month: '2026-07',
+          phone_e164: '+5493515555555'
+        }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(ignorePhoneForMonth).toHaveBeenCalledWith({
+        ownerId: 'owner-admin',
+        monthStart: '2026-07-01',
+        phoneE164: '+5493515555555',
+        ignoredByUserId: 2
+      });
+      expect(whatsappQrManager.getDashboard).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ ownerId: 'owner-admin' }),
+        true,
+        '2026-07'
+      );
+      expect(whatsappQrManager.getDashboard).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ ownerId: 'owner-admin' }),
+        true,
+        '2026-07'
+      );
+      expect(response.json()).toMatchObject({
+        ignoredPhoneE164: '+5493515555555',
+        summary: {
+          ignored: 1,
+          review: 0
         }
       });
     });

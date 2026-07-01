@@ -531,6 +531,16 @@ const mastercrmWhatsappQrAssignBodySchema = z
   })
   .passthrough();
 
+const mastercrmWhatsappQrIgnoreBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    month: z.string().optional(),
+    mes: z.string().optional(),
+    phone_e164: z.string().optional(),
+    telefono: z.string().optional()
+  })
+  .passthrough();
+
 const mastercrmOwnerFinancialsBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
@@ -1437,6 +1447,47 @@ function parseMastercrmWhatsappQrAssignPayload(body: unknown): {
   }
 
   return { data: { userId, month, phoneE164, username }, issues };
+}
+
+function parseMastercrmWhatsappQrIgnorePayload(body: unknown): {
+  data?: { userId: number; month: string; phoneE164: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrIgnoreBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const rawMonth = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues);
+  const rawPhone = resolveAliasStringField(parsed.data, ['phone_e164', 'telefono'], 'phone_e164', issues);
+
+  let month: string | undefined;
+  let phoneE164: string | undefined;
+
+  if (rawMonth) {
+    try {
+      month = normalizeMonthToken(rawMonth, 'month');
+    } catch (error) {
+      issues.push({ path: 'month', message: error instanceof Error ? error.message : 'month is invalid' });
+    }
+  }
+  if (rawPhone) {
+    try {
+      phoneE164 = normalizePhone(rawPhone);
+    } catch (error) {
+      issues.push({ path: 'phone_e164', message: error instanceof Error ? error.message : 'phone_e164 is invalid' });
+    }
+  }
+
+  if (issues.length > 0 || !userId || !month || !phoneE164) {
+    return { issues };
+  }
+
+  return { data: { userId, month, phoneE164 }, issues };
 }
 
 function parseMastercrmOwnerFinancialsPayload(body: unknown): {
@@ -3115,6 +3166,70 @@ export function createServer(
       return reply.code(500).send({
         message: 'Unexpected WhatsApp QR assign error',
         code: 'WHATSAPP_QR_ASSIGN_INTERNAL'
+      });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/ignore', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrIgnorePayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) {
+        return;
+      }
+
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) {
+        return;
+      }
+
+      const currentDashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
+      const queueRow = findWhatsappQrQueueRow(currentDashboard, parsed.data.phoneE164);
+      if (!queueRow) {
+        return reply.code(404).send({
+          message: 'Ese telefono ya no esta pendiente en la cola operativa',
+          code: 'WHATSAPP_QR_QUEUE_PHONE_NOT_FOUND'
+        });
+      }
+      if (queueRow.status !== 'review') {
+        return reply.code(409).send({
+          message: 'Ese telefono ya no requiere revision manual',
+          code: 'WHATSAPP_QR_QUEUE_PHONE_NOT_REVIEW'
+        });
+      }
+
+      await getWhatsappQrStore().ignorePhoneForMonth({
+        ownerId: qrOwner.owner.ownerId,
+        monthStart: `${parsed.data.month}-01`,
+        phoneE164: parsed.data.phoneE164,
+        ignoredByUserId: session.userId
+      });
+
+      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
+      return reply.code(200).send({
+        ignoredPhoneE164: parsed.data.phoneE164,
+        summary: dashboard.summary
+      });
+    } catch (error) {
+      const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          ...('code' in mappedError ? { code: mappedError.code } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/ignore error');
+      return reply.code(500).send({
+        message: 'Unexpected WhatsApp QR ignore error',
+        code: 'WHATSAPP_QR_IGNORE_INTERNAL'
       });
     }
   });

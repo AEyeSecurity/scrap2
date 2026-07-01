@@ -650,7 +650,7 @@ export class WhatsappQrManager {
   async getDashboard(owner: WhatsappQrOwner, isAdmin: boolean, month: string): Promise<WhatsappQrDashboard> {
     const ownerIds = isAdmin ? null : [owner.ownerId];
     const monthWindow = buildWhatsappQrMonthWindow(month);
-    const [sessions, credentialOwnerIds, monthClients, messages, matches] = await Promise.all([
+    const [sessions, credentialOwnerIds, monthClients, messages, matches, ignoredPhones] = await Promise.all([
       this.options.store.listSessions(ownerIds),
       this.options.store.listCredentialOwnerIds(ownerIds),
       this.options.store.listMonthClients({
@@ -666,12 +666,17 @@ export class WhatsappQrManager {
         ownerId: owner.ownerId,
         createdFrom: monthWindow.startedAtIso,
         createdTo: monthWindow.endedAtIso
+      }),
+      this.options.store.listIgnoredPhonesForMonth({
+        ownerId: owner.ownerId,
+        monthStart: monthWindow.monthStartDate
       })
     ]);
     const { summary, queue } = buildWhatsappQrPhoneQueue({
       monthClients,
       messages,
-      matches
+      matches,
+      ignoredPhones
     });
 
     return {

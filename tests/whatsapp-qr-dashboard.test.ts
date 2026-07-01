@@ -57,6 +57,7 @@ describe('buildWhatsappQrPhoneQueue', () => {
 
     expect(result.summary.assigned).toBe(1);
     expect(result.summary.review).toBe(0);
+    expect(result.summary.ignored).toBe(0);
     expect(result.queue[0]).toMatchObject({
       status: 'assigned',
       assignedUsername: 'player_real',
@@ -113,11 +114,48 @@ describe('buildWhatsappQrPhoneQueue', () => {
 
     expect(result.summary.notFound).toBe(1);
     expect(result.summary.noSignal).toBe(1);
+    expect(result.summary.ignored).toBe(0);
     expect(result.queue).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ phoneE164: '+5493511111111', reviewReason: 'not_found' }),
         expect.objectContaining({ phoneE164: '+5493512222222', reviewReason: 'no_signal' })
       ])
     );
+  });
+
+  it('hides ignored review rows from the operational queue but keeps the month totals', () => {
+    const result = buildWhatsappQrPhoneQueue({
+      monthClients: [
+        baseMonthClient,
+        { ...baseMonthClient, clientId: 'client-2', linkId: 'link-2', phoneE164: '+5493512222222' }
+      ],
+      messages: [
+        buildMessage({ candidateUsername: 'player_contact', clientPhoneE164: '+5493511111111' }),
+        buildMessage({
+          id: 'message-2',
+          clientPhoneE164: '+5493512222222',
+          candidateUsername: 'player_second'
+        })
+      ],
+      matches: [
+        buildMatch({ clientPhoneE164: '+5493511111111' }),
+        buildMatch({
+          id: 'match-2',
+          messageId: 'message-2',
+          clientPhoneE164: '+5493512222222',
+          username: 'player_second'
+        })
+      ],
+      ignoredPhones: new Set(['+5493511111111'])
+    });
+
+    expect(result.summary.totalPhones).toBe(2);
+    expect(result.summary.review).toBe(1);
+    expect(result.summary.ignored).toBe(1);
+    expect(result.queue).toHaveLength(1);
+    expect(result.queue[0]).toMatchObject({
+      phoneE164: '+5493512222222',
+      reviewReason: 'detected_unassigned'
+    });
   });
 });
