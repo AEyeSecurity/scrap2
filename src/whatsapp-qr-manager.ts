@@ -3,6 +3,11 @@ import { join } from 'node:path';
 import type { Logger } from 'pino';
 import type { TelegramAlertSender } from './telegram-alerts';
 import type { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
+import {
+  buildWhatsappQrPhoneQueue,
+  type WhatsappQrPhoneQueueRow,
+  type WhatsappQrQueueSummary
+} from './whatsapp-qr-dashboard';
 import type {
   UpsertWhatsappQrSessionPatch,
   WhatsappQrOwner,
@@ -68,10 +73,13 @@ export interface WhatsappQrManagerOptions {
 
 export interface WhatsappQrDashboard {
   sessions: Array<WhatsappQrSessionRecord & { hasRdaCredentials: boolean }>;
-  matches: Awaited<ReturnType<WhatsappQrStore['listMatches']>>;
+  summary: WhatsappQrQueueSummary;
+  queue: WhatsappQrPhoneQueueRow[];
   isAdmin: boolean;
   runtimeEnabled: boolean;
 }
+
+const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
 
 function safeRuntimeSessionId(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '_');
@@ -106,6 +114,53 @@ function getBuenosAiresMonthStart(input = new Date()): string {
   const month = parts.find((part) => part.type === 'month')?.value;
 
   return year && month ? `${year}-${month}-01` : input.toISOString().slice(0, 7) + '-01';
+}
+
+function getBuenosAiresMonthToken(input = new Date()): string {
+  return getBuenosAiresMonthStart(input).slice(0, 7);
+}
+
+function normalizeWhatsappQrMonth(month: string | undefined): string {
+  const normalized = month?.trim() ?? '';
+  if (!normalized) {
+    return getBuenosAiresMonthToken();
+  }
+  if (!MONTH_TOKEN_RE.test(normalized)) {
+    throw new Error('month must use YYYY-MM format');
+  }
+
+  const [, monthToken] = normalized.split('-');
+  const monthValue = Number(monthToken);
+  if (!Number.isInteger(monthValue) || monthValue < 1 || monthValue > 12) {
+    throw new Error('month must use a valid YYYY-MM value');
+  }
+
+  return normalized;
+}
+
+function buildWhatsappQrMonthWindow(month: string | undefined): {
+  month: string;
+  monthStartDate: string;
+  nextMonthStartDate: string;
+  startedAtIso: string;
+  endedAtIso: string;
+} {
+  const normalizedMonth = normalizeWhatsappQrMonth(month);
+  const [yearToken, monthToken] = normalizedMonth.split('-');
+  const year = Number(yearToken);
+  const monthIndex = Number(monthToken) - 1;
+  const nextMonthYear = monthIndex === 11 ? year + 1 : year;
+  const nextMonthIndex = (monthIndex + 1) % 12;
+  const monthStartDate = `${normalizedMonth}-01`;
+  const nextMonthStartDate = `${nextMonthYear}-${String(nextMonthIndex + 1).padStart(2, '0')}-01`;
+
+  return {
+    month: normalizedMonth,
+    monthStartDate,
+    nextMonthStartDate,
+    startedAtIso: new Date(Date.UTC(year, monthIndex, 1, 3, 0, 0, 0)).toISOString(),
+    endedAtIso: new Date(Date.UTC(nextMonthYear, nextMonthIndex, 1, 3, 0, 0, 0)).toISOString()
+  };
 }
 
 function resolveWhatsappQrMonthStart(): string {
@@ -592,20 +647,40 @@ export class WhatsappQrManager {
     await Promise.allSettled(sessions.map((session) => session.stop()));
   }
 
-  async getDashboard(owner: WhatsappQrOwner, isAdmin: boolean): Promise<WhatsappQrDashboard> {
+  async getDashboard(owner: WhatsappQrOwner, isAdmin: boolean, month: string): Promise<WhatsappQrDashboard> {
     const ownerIds = isAdmin ? null : [owner.ownerId];
-    const [sessions, matches, credentialOwnerIds] = await Promise.all([
+    const monthWindow = buildWhatsappQrMonthWindow(month);
+    const [sessions, credentialOwnerIds, monthClients, messages, matches] = await Promise.all([
       this.options.store.listSessions(ownerIds),
-      this.options.store.listMatches(ownerIds, 50),
-      this.options.store.listCredentialOwnerIds(ownerIds)
+      this.options.store.listCredentialOwnerIds(ownerIds),
+      this.options.store.listMonthClients({
+        ownerId: owner.ownerId,
+        monthStart: monthWindow.monthStartDate
+      }),
+      this.options.store.listMessagesForMonth({
+        ownerId: owner.ownerId,
+        createdFrom: monthWindow.startedAtIso,
+        createdTo: monthWindow.endedAtIso
+      }),
+      this.options.store.listMatchesForMonth({
+        ownerId: owner.ownerId,
+        createdFrom: monthWindow.startedAtIso,
+        createdTo: monthWindow.endedAtIso
+      })
     ]);
+    const { summary, queue } = buildWhatsappQrPhoneQueue({
+      monthClients,
+      messages,
+      matches
+    });
 
     return {
       sessions: sessions.map((session) => ({
         ...session,
         hasRdaCredentials: credentialOwnerIds.has(session.ownerId)
       })),
-      matches,
+      summary,
+      queue,
       isAdmin,
       runtimeEnabled: this.runtimeEnabled
     };

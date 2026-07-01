@@ -69,6 +69,7 @@ import {
 import {
   createPlayerPhoneStoreFromEnv,
   normalizePhone,
+  normalizeUsername,
   toHttpError,
   type PlayerPhoneStore
 } from './player-phone-store';
@@ -111,6 +112,7 @@ import { WhatsappQrManager } from './whatsapp-qr-manager';
 import { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
 import {
   createWhatsappQrStoreFromEnv,
+  ownerContextFromWhatsappQrOwner,
   sanitizeWhatsappQrSessionForHttp,
   toWhatsappQrHttpError,
   type WhatsappQrOwner,
@@ -509,6 +511,26 @@ const mastercrmWhatsappQrBodySchema = z
   })
   .passthrough();
 
+const mastercrmWhatsappQrStatusBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    month: z.string().optional(),
+    mes: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmWhatsappQrAssignBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    month: z.string().optional(),
+    mes: z.string().optional(),
+    phone_e164: z.string().optional(),
+    telefono: z.string().optional(),
+    username: z.string().optional(),
+    usuario: z.string().optional()
+  })
+  .passthrough();
+
 const mastercrmOwnerFinancialsBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
@@ -887,21 +909,16 @@ function whatsappQrDashboardToResponse(
     isAdmin: dashboard.isAdmin,
     runtimeEnabled: dashboard.runtimeEnabled,
     sessions: dashboard.sessions.map(whatsappQrSessionToResponse),
-    matches: dashboard.matches.map((match) => ({
-      id: match.id,
-      sessionId: match.sessionId,
-      ownerId: match.ownerId,
-      clientPhoneE164: match.clientPhoneE164,
-      username: match.username,
-      source: match.source,
-      status: match.status,
-      rdaValidatedAt: match.rdaValidatedAt,
-      assignedAt: match.assignedAt,
-      errorMessage: match.errorMessage,
-      createdAt: match.createdAt,
-      updatedAt: match.updatedAt
-    }))
+    summary: dashboard.summary,
+    queue: dashboard.queue
   };
+}
+
+function findWhatsappQrQueueRow(
+  dashboard: Awaited<ReturnType<WhatsappQrManager['getDashboard']>>,
+  phoneE164: string
+): Awaited<ReturnType<WhatsappQrManager['getDashboard']>>['queue'][number] | null {
+  return dashboard.queue.find((row) => row.phoneE164 === phoneE164) ?? null;
 }
 
 function resolveMastercrmCorsOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -1260,6 +1277,21 @@ function resolveAliasNumberField(
   return present[0]?.value;
 }
 
+function normalizeMonthToken(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!/^\d{4}-\d{2}$/.test(normalized)) {
+    throw new Error(`${label} must use YYYY-MM format`);
+  }
+
+  const [, monthToken] = normalized.split('-');
+  const monthValue = Number(monthToken);
+  if (!Number.isInteger(monthValue) || monthValue < 1 || monthValue > 12) {
+    throw new Error(`${label} must use a valid YYYY-MM value`);
+  }
+
+  return normalized;
+}
+
 function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number; month?: string }; issues: ValidationIssue[] } {
   const parsed = mastercrmClientsBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -1325,6 +1357,86 @@ function parseMastercrmWhatsappQrPayload(body: unknown): {
   }
 
   return { data: { userId, ...(ownerId ? { ownerId } : {}) }, issues };
+}
+
+function parseMastercrmWhatsappQrStatusPayload(body: unknown): {
+  data?: { userId: number; month: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrStatusBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const rawMonth = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues);
+  let month: string | undefined;
+  if (rawMonth) {
+    try {
+      month = normalizeMonthToken(rawMonth, 'month');
+    } catch (error) {
+      issues.push({ path: 'month', message: error instanceof Error ? error.message : 'month is invalid' });
+    }
+  }
+
+  if (issues.length > 0 || !userId || !month) {
+    return { issues };
+  }
+
+  return { data: { userId, month }, issues };
+}
+
+function parseMastercrmWhatsappQrAssignPayload(body: unknown): {
+  data?: { userId: number; month: string; phoneE164: string; username: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrAssignBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const rawMonth = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues);
+  const rawPhone = resolveAliasStringField(parsed.data, ['phone_e164', 'telefono'], 'phone_e164', issues);
+  const rawUsername = resolveAliasStringField(parsed.data, ['username', 'usuario'], 'username', issues);
+
+  let month: string | undefined;
+  let phoneE164: string | undefined;
+  let username: string | undefined;
+
+  if (rawMonth) {
+    try {
+      month = normalizeMonthToken(rawMonth, 'month');
+    } catch (error) {
+      issues.push({ path: 'month', message: error instanceof Error ? error.message : 'month is invalid' });
+    }
+  }
+  if (rawPhone) {
+    try {
+      phoneE164 = normalizePhone(rawPhone);
+    } catch (error) {
+      issues.push({ path: 'phone_e164', message: error instanceof Error ? error.message : 'phone_e164 is invalid' });
+    }
+  }
+  if (rawUsername) {
+    try {
+      username = normalizeUsername(rawUsername, 'username');
+    } catch (error) {
+      issues.push({ path: 'username', message: error instanceof Error ? error.message : 'username is invalid' });
+    }
+  }
+
+  if (issues.length > 0 || !userId || !month || !phoneE164 || !username) {
+    return { issues };
+  }
+
+  return { data: { userId, month, phoneE164, username }, issues };
 }
 
 function parseMastercrmOwnerFinancialsPayload(body: unknown): {
@@ -2857,7 +2969,7 @@ export function createServer(
   });
 
   fastify.post('/mastercrm-whatsapp-qr/status', async (request, reply) => {
-    const parsed = parseMastercrmWhatsappQrPayload(request.body);
+    const parsed = parseMastercrmWhatsappQrStatusPayload(request.body);
     if (!parsed.data) {
       return reply.code(400).send({
         message: 'Invalid payload',
@@ -2876,7 +2988,7 @@ export function createServer(
         return;
       }
 
-      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin);
+      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
       return reply.code(200).send(whatsappQrDashboardToResponse(dashboard, qrOwner.linkedOwner));
     } catch (error) {
       const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
@@ -2889,6 +3001,121 @@ export function createServer(
 
       logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/status error');
       return reply.code(500).send({ message: 'Unexpected WhatsApp QR status error' });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/assign', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrAssignPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) {
+        return;
+      }
+
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) {
+        return;
+      }
+
+      const credentials = await getWhatsappQrStore().getRdaCredential(qrOwner.owner.ownerId);
+      if (!credentials) {
+        return reply.code(409).send({
+          message: 'El cajero no tiene credenciales RdA sincronizadas',
+          code: 'WHATSAPP_QR_RDA_CREDENTIALS_MISSING'
+        });
+      }
+
+      await rdaUserExistsChecker({
+        usuario: parsed.data.username,
+        agente: credentials.loginUsername,
+        contrasenaAgente: credentials.loginPassword,
+        appConfig,
+        logger
+      });
+
+      await getPlayerPhoneStore().assignUsernameByPhone({
+        pagina: 'RdA',
+        jugadorUsername: parsed.data.username,
+        telefono: parsed.data.phoneE164,
+        ownerContext: ownerContextFromWhatsappQrOwner(qrOwner.owner, qrOwner.linkedOwner.telefono ?? null)
+      });
+
+      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
+      return reply.code(200).send({
+        row: findWhatsappQrQueueRow(dashboard, parsed.data.phoneE164),
+        summary: dashboard.summary
+      });
+    } catch (error) {
+      if (error instanceof RdaUserCheckError) {
+        if (error.code === 'NOT_FOUND') {
+          return reply.code(404).send({
+            message: error.message,
+            code: 'RDA_USER_NOT_FOUND'
+          });
+        }
+        if (error.code === 'AMBIGUOUS') {
+          return reply.code(409).send({
+            message: error.message,
+            code: 'RDA_USER_AMBIGUOUS'
+          });
+        }
+        if (error.code === 'UNAVAILABLE') {
+          return reply.code(503).send({
+            message: error.message,
+            code: 'RDA_UNAVAILABLE'
+          });
+        }
+
+        logger.error({ error }, 'Unexpected RdA user existence checker error for WhatsApp QR assign');
+        return reply.code(500).send({
+          message: 'No se pudo verificar el usuario en RdA',
+          code: 'RDA_USER_CHECK_FAILED'
+        });
+      }
+
+      const mappedError = toHttpError(error);
+      if (mappedError) {
+        if (mappedError.code === 'USERNAME_ALREADY_EXISTS_IN_PAGINA') {
+          return reply.code(409).send({
+            message: 'Ese usuario ya esta vinculado a otro numero dentro de RdA',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+        if (mappedError.code === 'PHONE_ALREADY_ASSIGNED_FOR_OWNER') {
+          return reply.code(409).send({
+            message: 'Ese numero ya tiene otro usuario asignado para este cajero',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+        if (mappedError.code === 'OWNER_CLIENT_LINK_NOT_FOUND') {
+          return reply.code(404).send({
+            message: 'No se encontro el cliente dentro de la cartera del cajero',
+            code: mappedError.code,
+            ...(mappedError.details ? { details: mappedError.details } : {})
+          });
+        }
+
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          code: mappedError.code,
+          ...(mappedError.details ? { details: mappedError.details } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/assign error');
+      return reply.code(500).send({
+        message: 'Unexpected WhatsApp QR assign error',
+        code: 'WHATSAPP_QR_ASSIGN_INTERNAL'
+      });
     }
   });
 

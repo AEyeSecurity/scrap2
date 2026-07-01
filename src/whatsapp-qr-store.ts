@@ -70,6 +70,13 @@ export interface WhatsappQrMatchRecord {
   updatedAt: string;
 }
 
+export interface WhatsappQrMonthClientRecord {
+  clientId: string;
+  linkId: string | null;
+  phoneE164: string;
+  assignedUsername: string | null;
+}
+
 export interface WhatsappQrRdaCredential {
   ownerId: string;
   ownerKey: string;
@@ -126,6 +133,7 @@ export interface CreateWhatsappQrMatchInput {
 export interface WhatsappQrStore {
   resolveOwnerByKey(pagina: PaginaCode, ownerKey: string): Promise<WhatsappQrOwner | null>;
   listOwnerClientPhonesForMonth(input: { ownerId: string; monthStart: string; limit?: number }): Promise<Set<string>>;
+  listMonthClients(input: { ownerId: string; monthStart: string; limit?: number }): Promise<WhatsappQrMonthClientRecord[]>;
   getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null>;
   listReconnectableSessions(): Promise<WhatsappQrSessionRecord[]>;
   listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]>;
@@ -145,6 +153,8 @@ export interface WhatsappQrStore {
     }
   ): Promise<WhatsappQrMatchRecord>;
   listMatches(ownerIds?: string[] | null, limit?: number): Promise<WhatsappQrMatchRecord[]>;
+  listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]>;
+  listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]>;
   getRdaCredential(ownerId: string): Promise<WhatsappQrRdaCredential | null>;
   upsertRdaCredential(input: {
     ownerId: string;
@@ -297,6 +307,18 @@ function sessionPatchToRow(patch: UpsertWhatsappQrSessionPatch): Record<string, 
   };
 }
 
+function chunkValues<T>(values: T[], size = 500): T[][] {
+  if (values.length === 0) {
+    return [];
+  }
+
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+}
+
 export function sanitizeWhatsappQrSessionForHttp(session: WhatsappQrSessionRecord): Omit<WhatsappQrSessionRecord, 'qrPayload'> {
   const { qrPayload: _qrPayload, ...safeSession } = session;
   return safeSession;
@@ -350,6 +372,71 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
 
     return phones;
+  }
+
+  async listMonthClients(input: { ownerId: string; monthStart: string; limit?: number }): Promise<WhatsappQrMonthClientRecord[]> {
+    const { data, error } = await this.client
+      .from('owner_client_monthly_facts')
+      .select('client_id, link_id, clients!inner(phone_e164)')
+      .eq('owner_id', input.ownerId)
+      .eq('month_start', input.monthStart)
+      .limit(input.limit ?? 5000);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read owner monthly client queue');
+    }
+
+    const monthClients: WhatsappQrMonthClientRecord[] = [];
+    for (const row of ((data as Array<{
+      client_id?: string | null;
+      link_id?: string | null;
+      clients?: { phone_e164?: string | null } | { phone_e164?: string | null }[];
+    }> | null) ?? [])) {
+      const client = Array.isArray(row.clients) ? row.clients[0] : row.clients;
+      const phone = client?.phone_e164 ? normalizePhone(client.phone_e164) : null;
+      if (!row.client_id || !phone) {
+        continue;
+      }
+
+      monthClients.push({
+        clientId: row.client_id,
+        linkId: typeof row.link_id === 'string' && row.link_id.length > 0 ? row.link_id : null,
+        phoneE164: phone,
+        assignedUsername: null
+      });
+    }
+
+    const linkIds = [...new Set(monthClients.map((row) => row.linkId).filter((linkId): linkId is string => Boolean(linkId)))];
+    if (linkIds.length === 0) {
+      return monthClients;
+    }
+
+    const activeIdentityByLinkId = new Map<string, string>();
+    // Supabase serializes `.in(...)` filters into the request URL; large UUID batches can overflow header limits.
+    for (const chunk of chunkValues(linkIds, 100)) {
+      const { data: identityData, error: identityError } = await this.client
+        .from('owner_client_identities')
+        .select('owner_client_link_id, username')
+        .eq('is_active', true)
+        .in('owner_client_link_id', chunk);
+
+      if (identityError) {
+        throw mapPostgrestError(identityError, 'Could not read owner monthly client identities');
+      }
+
+      for (const row of (identityData as Array<{ owner_client_link_id?: string | null; username?: string | null }> | null) ?? []) {
+        if (row.owner_client_link_id && row.username) {
+          activeIdentityByLinkId.set(row.owner_client_link_id, row.username);
+        }
+      }
+    }
+
+    return monthClients.map((row) => ({
+      clientId: row.clientId,
+      linkId: row.linkId,
+      phoneE164: row.phoneE164,
+      assignedUsername: row.linkId ? activeIdentityByLinkId.get(row.linkId) ?? null : null
+    }));
   }
 
   async getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null> {
@@ -561,6 +648,23 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     return asMatch(data);
   }
 
+  async listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_messages')
+      .select('*')
+      .eq('owner_id', input.ownerId)
+      .gte('created_at', input.createdFrom)
+      .lt('created_at', input.createdTo)
+      .order('created_at', { ascending: false })
+      .limit(input.limit ?? 5000);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not list WhatsApp QR messages for month');
+    }
+
+    return ((data as any[] | null) ?? []).map(asMessage);
+  }
+
   async listMatches(ownerIds?: string[] | null, limit = 50): Promise<WhatsappQrMatchRecord[]> {
     let query = this.client
       .from('mastercrm_whatsapp_qr_matches')
@@ -575,6 +679,23 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     const { data, error } = await query;
     if (error) {
       throw mapPostgrestError(error, 'Could not list WhatsApp QR matches');
+    }
+
+    return ((data as any[] | null) ?? []).map(asMatch);
+  }
+
+  async listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_matches')
+      .select('*')
+      .eq('owner_id', input.ownerId)
+      .gte('created_at', input.createdFrom)
+      .lt('created_at', input.createdTo)
+      .order('created_at', { ascending: false })
+      .limit(input.limit ?? 5000);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not list WhatsApp QR matches for month');
     }
 
     return ((data as any[] | null) ?? []).map(asMatch);

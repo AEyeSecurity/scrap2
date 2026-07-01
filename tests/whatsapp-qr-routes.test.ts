@@ -141,7 +141,33 @@ function buildApp(overrides: Record<string, unknown> = {}) {
           hasRdaCredentials: true
         }
       ],
-      matches: []
+      summary: {
+        totalPhones: 3,
+        assigned: 2,
+        review: 1,
+        noSignal: 0,
+        detectedUnassigned: 1,
+        notFound: 0,
+        conflict: 0,
+        technicalError: 0
+      },
+      queue: [
+        {
+          clientId: 'client-1',
+          linkId: 'link-1',
+          phoneE164: '+5493515555555',
+          status: 'review',
+          reviewReason: 'detected_unassigned',
+          assignedUsername: null,
+          suggestedUsername: 'player_123',
+          contactCandidateUsername: 'player_123',
+          outboundCandidateUsername: null,
+          primarySignalSource: 'contact_name',
+          lastSignalAt: '2026-06-30T12:00:00.000Z',
+          lastAttemptAt: '2026-06-30T12:00:00.000Z',
+          lastError: null
+        }
+      ]
     })),
     connect: vi.fn(async (owner) => ({
       id: 'session-connect',
@@ -192,7 +218,28 @@ function buildApp(overrides: Record<string, unknown> = {}) {
       getActiveUserById: vi.fn(async (id: number) => users.get(id)),
       getLinkedOwnerForUser: vi.fn(async (id: number) => linkedOwners.get(id) ?? null)
     } as any,
+    playerPhoneStore: (overrides.playerPhoneStore as any) ?? ({
+      assignUsernameByPhone: vi.fn(async () => ({
+        previousUsername: null,
+        currentUsername: 'player_123',
+        overwritten: false,
+        createdClient: false,
+        createdLink: false,
+        movedFromPhone: null,
+        deletedOldPhone: false
+      }))
+    } as any),
     whatsappQrStore: {
+      getRdaCredential: vi.fn(async () => ({
+        ownerId: 'owner-admin',
+        ownerKey: 'luqui10:luqui10',
+        pagina: 'RdA',
+        loginUsername: 'agente',
+        loginPassword: 'clave',
+        source: 'n8n',
+        sourceRef: 'fixture',
+        syncedAt: '2026-06-30T12:00:00.000Z'
+      })),
       getSessionByOwner: vi.fn(async (ownerId: string) => ({
         id: 'session-target',
         ownerId,
@@ -214,7 +261,8 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         updatedAt: '2026-06-30T12:00:00.000Z'
       }))
     } as any,
-    whatsappQrManager: (overrides.whatsappQrManager as any) ?? (whatsappQrManager as any)
+    whatsappQrManager: (overrides.whatsappQrManager as any) ?? (whatsappQrManager as any),
+    rdaUserExistsChecker: (overrides.rdaUserExistsChecker as any) ?? (vi.fn(async () => undefined) as any)
   });
 
   return { app, whatsappQrManager };
@@ -228,7 +276,7 @@ describe('WhatsApp QR CRM routes', () => {
         method: 'POST',
         url: '/mastercrm-whatsapp-qr/status',
         headers: authHeader(1, 'juan'),
-        payload: { user_id: 1 }
+        payload: { user_id: 1, month: '2026-07' }
       });
       await app.close();
 
@@ -237,12 +285,15 @@ describe('WhatsApp QR CRM routes', () => {
       expect(body).toMatchObject({
         isAdmin: false,
         linkedOwner: { ownerId: 'owner-juan', ownerKey: 'juan:juan' },
-        sessions: [{ ownerId: 'owner-juan' }]
+        sessions: [{ ownerId: 'owner-juan' }],
+        summary: { totalPhones: 3, review: 1 },
+        queue: [{ phoneE164: '+5493515555555', status: 'review' }]
       });
       expect(body.sessions[0]).not.toHaveProperty('qrPayload');
       expect(whatsappQrManager.getDashboard).toHaveBeenCalledWith(
         expect.objectContaining({ ownerId: 'owner-juan' }),
-        false
+        false,
+        '2026-07'
       );
       expect(whatsappQrManager.start).toHaveBeenCalledTimes(1);
     });
@@ -255,7 +306,7 @@ describe('WhatsApp QR CRM routes', () => {
         method: 'POST',
         url: '/mastercrm-whatsapp-qr/status',
         headers: authHeader(2, 'luqui'),
-        payload: { user_id: 2 }
+        payload: { user_id: 2, month: '2026-07' }
       });
       await app.close();
 
@@ -263,7 +314,8 @@ describe('WhatsApp QR CRM routes', () => {
       expect(response.json().isAdmin).toBe(true);
       expect(whatsappQrManager.getDashboard).toHaveBeenCalledWith(
         expect.objectContaining({ ownerId: 'owner-admin' }),
-        true
+        true,
+        '2026-07'
       );
     });
   });
@@ -281,6 +333,111 @@ describe('WhatsApp QR CRM routes', () => {
 
       expect(response.statusCode).toBe(403);
       expect(whatsappQrManager.disconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  it('validates and assigns a reviewed phone inside the QR queue', async () => {
+    await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
+      const assignUsernameByPhone = vi.fn(async () => ({
+        previousUsername: null,
+        currentUsername: 'player_manual',
+        overwritten: false,
+        createdClient: false,
+        createdLink: false,
+        movedFromPhone: null,
+        deletedOldPhone: false
+      }));
+      const rdaUserExistsChecker = vi.fn(async () => undefined);
+      const whatsappQrManager = {
+        start: vi.fn(async () => undefined),
+        getDashboard: vi.fn(async (_owner, isAdmin, month) => ({
+          isAdmin,
+          runtimeEnabled: true,
+          sessions: [],
+          summary: {
+            totalPhones: 3,
+            assigned: 3,
+            review: 0,
+            noSignal: 0,
+            detectedUnassigned: 0,
+            notFound: 0,
+            conflict: 0,
+            technicalError: 0
+          },
+          queue: [
+            {
+              clientId: 'client-1',
+              linkId: 'link-1',
+              phoneE164: '+5493515555555',
+              status: 'assigned',
+              reviewReason: null,
+              assignedUsername: 'player_manual',
+              suggestedUsername: 'player_manual',
+              contactCandidateUsername: 'player_manual',
+              outboundCandidateUsername: null,
+              primarySignalSource: 'contact_name',
+              lastSignalAt: '2026-07-01T12:00:00.000Z',
+              lastAttemptAt: '2026-07-01T12:05:00.000Z',
+              lastError: null,
+              month
+            }
+          ]
+        })),
+        connect: vi.fn(async () => undefined),
+        disconnect: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined)
+      };
+
+      const { app } = buildApp({
+        playerPhoneStore: { assignUsernameByPhone },
+        rdaUserExistsChecker,
+        whatsappQrManager
+      });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/assign',
+        headers: authHeader(2, 'luqui'),
+        payload: {
+          user_id: 2,
+          month: '2026-07',
+          phone_e164: '+5493515555555',
+          username: 'player_manual'
+        }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(rdaUserExistsChecker).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usuario: 'player_manual',
+          agente: 'agente',
+          contrasenaAgente: 'clave'
+        })
+      );
+      expect(assignUsernameByPhone).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pagina: 'RdA',
+          jugadorUsername: 'player_manual',
+          telefono: '+5493515555555',
+          ownerContext: expect.objectContaining({ ownerKey: 'luqui10:luqui10' })
+        })
+      );
+      expect(whatsappQrManager.getDashboard).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'owner-admin' }),
+        true,
+        '2026-07'
+      );
+      expect(response.json()).toMatchObject({
+        row: {
+          phoneE164: '+5493515555555',
+          status: 'assigned',
+          assignedUsername: 'player_manual'
+        },
+        summary: {
+          assigned: 3
+        }
+      });
     });
   });
 });

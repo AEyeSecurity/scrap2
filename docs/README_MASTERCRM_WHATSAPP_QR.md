@@ -58,29 +58,41 @@ Si una sesion quedo `connected` y la auth persistida sigue valida, el backend la
 ## Endpoints CRM
 
 - `POST /mastercrm-whatsapp-qr/status`
+- `POST /mastercrm-whatsapp-qr/assign`
 - `POST /mastercrm-whatsapp-qr/connect`
 - `POST /mastercrm-whatsapp-qr/disconnect`
 
-Todos requieren bearer token MasterCRM y `user_id`. Un cajero solo opera su owner vinculado. Un admin por `MASTERCRM_QR_ADMIN_OWNER_KEYS` puede ver todas las sesiones y desconectar por `owner_id`.
+Todos requieren bearer token MasterCRM y `user_id`. `status` y `assign` tambien requieren `month` en formato `YYYY-MM`. Un cajero solo opera su owner vinculado. Un admin por `MASTERCRM_QR_ADMIN_OWNER_KEYS` puede ver todas las sesiones y desconectar por `owner_id`.
 
 ## Solapa CRM
 
 La solapa `WhatsApp QR` muestra:
 
 - estado de la sesion y datos basicos del numero conectado;
-- resumen rapido de los ultimos matches visibles (hasta 50 recientes);
-- leyenda corta de estados para uso operativo;
-- lista destacada con seleccion, filtros y tabla completa del lote visible;
-- detalle del match con origen, motivo, historial corto y copia rapida de usuario/telefono.
+- resumen mensual por telefono del mes seleccionado en la app;
+- una cola operativa de revision con una fila real por telefono;
+- detalle por telefono con senal por contacto, senal por mensaje, ultimo intento y error;
+- accion manual `Validar y asignar` usando credenciales RdA ya sincronizadas.
 
 Estados operativos del panel:
 
-- `Candidato`: parece ser ese usuario, pero todavia falta confirmarlo.
-- `Validado`: el usuario existe en RdA y falta terminar la asignacion.
 - `Asignado`: el telefono ya quedo vinculado al usuario.
-- `No existe`: el usuario no aparece en RdA.
-- `Conflicto`: ese usuario ya estaba usado por otro numero.
-- `Error`: hubo una falla y requiere revision.
+- `Revisar / no_signal`: no hubo senal usable para ese telefono.
+- `Revisar / detected_unassigned`: hubo username detectado, pero todavia no quedo asignado.
+- `Revisar / not_found`: el username sugerido no existe en RdA.
+- `Revisar / conflict`: el username sugerido ya pertenece a otro numero.
+- `Revisar / technical_error`: fallo la validacion o la asignacion.
+
+La fuente de verdad del panel ya no es el ultimo match crudo. El estado visible sale de:
+
+- telefonos del `selectedMonth` global;
+- asignacion real actual del owner;
+- senales QR mas recientes por contacto o mensaje.
+
+No hay limite de `50` ni paginacion en v1. La respuesta de `status` devuelve:
+
+- `summary`: totales del mes (`totalPhones`, `assigned`, `review` y breakdown por motivo);
+- `queue`: filas operativas por telefono con `assignedUsername`, `suggestedUsername`, `contactCandidateUsername`, `outboundCandidateUsername`, `primarySignalSource`, `lastSignalAt`, `lastAttemptAt` y `lastError`.
 
 ## Activacion controlada
 

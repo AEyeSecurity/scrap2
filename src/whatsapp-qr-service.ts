@@ -91,7 +91,17 @@ export class WhatsappQrAutoAssignService {
       source: matchSource
     });
 
-    const credentials = await this.options.store.getRdaCredential(event.owner.ownerId);
+    let credentials;
+    try {
+      credentials = await this.options.store.getRdaCredential(event.owner.ownerId);
+    } catch (error) {
+      match = await this.options.store.updateMatch(match.id, {
+        status: 'error',
+        errorMessage: error instanceof Error ? error.message : 'rda_credentials_unavailable'
+      });
+      return { message, match };
+    }
+
     if (!credentials) {
       match = await this.options.store.updateMatch(match.id, {
         status: 'error',
@@ -126,12 +136,6 @@ export class WhatsappQrAutoAssignService {
     }
 
     const validatedAt = new Date().toISOString();
-    match = await this.options.store.updateMatch(match.id, {
-      status: 'validated',
-      rdaValidatedAt: validatedAt,
-      errorMessage: null
-    });
-
     try {
       await this.options.playerPhoneStore.assignUsernameByPhone({
         pagina: 'RdA',
