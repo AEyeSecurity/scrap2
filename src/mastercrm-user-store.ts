@@ -358,6 +358,7 @@ export interface MastercrmUserStore {
   createUser(input: CreateMastercrmUserInput): Promise<MastercrmUserRecord>;
   authenticate(input: AuthenticateMastercrmUserInput): Promise<MastercrmUserRecord>;
   getActiveUserById(id: number): Promise<MastercrmUserRecord>;
+  getLinkedOwnerForUser(userId: number): Promise<MastercrmLinkedOwnerRecord | null>;
   linkCashierToUser(input: LinkCashierToMastercrmUserInput): Promise<MastercrmUserCashierLinkRecord>;
   getClientsDashboard(input: GetMastercrmClientsDashboardInput): Promise<MastercrmClientsDashboardRecord>;
   upsertOwnerFinancials(input: UpsertMastercrmOwnerFinancialsInput): Promise<MastercrmOwnerFinancialInputsRecord>;
@@ -1412,6 +1413,21 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     }
 
     return pickPreferredAliasPhone((data as OwnerAliasRow[] | null) ?? []);
+  }
+
+  async getLinkedOwnerForUser(userId: number): Promise<MastercrmLinkedOwnerRecord | null> {
+    const owner = await this.getLinkedOwnerRow(userId);
+    if (!owner) {
+      return null;
+    }
+
+    return {
+      ownerId: owner.id,
+      ownerKey: owner.owner_key,
+      ownerLabel: owner.owner_label,
+      pagina: owner.pagina,
+      telefono: await this.getOwnerPhone(owner.id)
+    };
   }
 
   async createUser(input: CreateMastercrmUserInput): Promise<MastercrmUserRecord> {

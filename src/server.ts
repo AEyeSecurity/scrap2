@@ -48,6 +48,7 @@ import {
   normalizeMastercrmUsername,
   toMastercrmHttpError,
   type DistributeMastercrmMarketingBudgetsInput,
+  type MastercrmLinkedOwnerRecord,
   type MastercrmUserRecord,
   type MastercrmUserStore
 } from './mastercrm-user-store';
@@ -80,6 +81,12 @@ import { createReportJobExecutor, ReportRunWorker, type ReportJobExecutor } from
 import { runRdaReportJob } from './rda-report-job';
 import { assertRdaUserExists, RdaUserCheckError, type AssertRdaUserExistsInput } from './rda-user-check';
 import { paginaCodeSchema } from './site-profile';
+import {
+  buildTelegramAlertConfigFromEnv,
+  NoopTelegramAlertSender,
+  TelegramHttpAlertSender,
+  type TelegramAlertSender
+} from './telegram-alerts';
 import type {
   AppConfig,
   AsnReportJobRequest,
@@ -100,6 +107,16 @@ import type {
   RdaReportJobRequest,
   ServerConfig
 } from './types';
+import { WhatsappQrManager } from './whatsapp-qr-manager';
+import { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
+import {
+  createWhatsappQrStoreFromEnv,
+  sanitizeWhatsappQrSessionForHttp,
+  toWhatsappQrHttpError,
+  type WhatsappQrOwner,
+  type WhatsappQrSessionRecord,
+  type WhatsappQrStore
+} from './whatsapp-qr-store';
 
 interface JobQueue {
   enqueue(request: JobRequest): string;
@@ -111,6 +128,9 @@ interface ServerDependencies {
   mastercrmUserStore?: MastercrmUserStore;
   mastercrmSessionSecret?: string;
   playerPhoneStore?: PlayerPhoneStore;
+  whatsappQrStore?: WhatsappQrStore;
+  whatsappQrManager?: WhatsappQrManager;
+  telegramAlertSender?: TelegramAlertSender;
   landingSessionStore?: LandingSessionStore;
   reportRunStore?: ReportRunStore;
   mastercrmRetentionStore?: MastercrmRetentionStore;
@@ -482,6 +502,13 @@ const mastercrmLinkCashierBodySchema = z
   })
   .passthrough();
 
+const mastercrmWhatsappQrBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    owner_id: z.string().optional()
+  })
+  .passthrough();
+
 const mastercrmOwnerFinancialsBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
@@ -798,8 +825,95 @@ function mastercrmUserToResponse(user: MastercrmUserRecord): Record<string, unkn
   };
 }
 
+function mastercrmLinkedOwnerToWhatsappQrOwner(owner: MastercrmLinkedOwnerRecord): WhatsappQrOwner {
+  return {
+    ownerId: owner.ownerId,
+    ownerKey: owner.ownerKey,
+    ownerLabel: owner.ownerLabel,
+    pagina: owner.pagina,
+    telefono: owner.telefono
+  };
+}
+
+function whatsappQrOwnerToResponse(owner: MastercrmLinkedOwnerRecord): Record<string, unknown> {
+  return {
+    ownerId: owner.ownerId,
+    ownerKey: owner.ownerKey,
+    ownerLabel: owner.ownerLabel,
+    pagina: owner.pagina,
+    telefono: owner.telefono
+  };
+}
+
+function whatsappQrSessionOwner(session: WhatsappQrSessionRecord): WhatsappQrOwner {
+  return {
+    ownerId: session.ownerId,
+    ownerKey: session.ownerKey,
+    ownerLabel: session.ownerLabel,
+    pagina: session.pagina,
+    telefono: session.phoneE164
+  };
+}
+
+function whatsappQrSessionToResponse(session: WhatsappQrSessionRecord): Record<string, unknown> {
+  const safeSession = sanitizeWhatsappQrSessionForHttp(session);
+  return {
+    id: safeSession.id,
+    ownerId: safeSession.ownerId,
+    ownerKey: safeSession.ownerKey,
+    ownerLabel: safeSession.ownerLabel,
+    pagina: safeSession.pagina,
+    status: safeSession.status,
+    runtimeSessionId: safeSession.runtimeSessionId,
+    phoneE164: safeSession.phoneE164,
+    qrDataUrl: safeSession.qrDataUrl,
+    qrExpiresAt: safeSession.qrExpiresAt,
+    lastHeartbeatAt: safeSession.lastHeartbeatAt,
+    lastConnectedAt: safeSession.lastConnectedAt,
+    lastDisconnectedAt: safeSession.lastDisconnectedAt,
+    lastError: safeSession.lastError,
+    botGroupKey: safeSession.botGroupKey,
+    hasRdaCredentials: Boolean(safeSession.hasRdaCredentials),
+    updatedAt: safeSession.updatedAt
+  };
+}
+
+function whatsappQrDashboardToResponse(
+  dashboard: Awaited<ReturnType<WhatsappQrManager['getDashboard']>>,
+  linkedOwner: MastercrmLinkedOwnerRecord
+): Record<string, unknown> {
+  return {
+    linkedOwner: whatsappQrOwnerToResponse(linkedOwner),
+    isAdmin: dashboard.isAdmin,
+    runtimeEnabled: dashboard.runtimeEnabled,
+    sessions: dashboard.sessions.map(whatsappQrSessionToResponse),
+    matches: dashboard.matches.map((match) => ({
+      id: match.id,
+      sessionId: match.sessionId,
+      ownerId: match.ownerId,
+      clientPhoneE164: match.clientPhoneE164,
+      username: match.username,
+      source: match.source,
+      status: match.status,
+      rdaValidatedAt: match.rdaValidatedAt,
+      assignedAt: match.assignedAt,
+      errorMessage: match.errorMessage,
+      createdAt: match.createdAt,
+      updatedAt: match.updatedAt
+    }))
+  };
+}
+
 function resolveMastercrmCorsOrigins(env: NodeJS.ProcessEnv = process.env): string[] {
   return parseListEnv(env.MASTERCRM_CORS_ORIGINS, DEFAULT_MASTERCRM_CORS_ORIGINS);
+}
+
+function resolveMastercrmQrAdminOwnerKeys(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  return new Set(
+    parseListEnv(env.MASTERCRM_QR_ADMIN_OWNER_KEYS, [])
+      .map((ownerKey) => normalizeMastercrmOwnerKey(ownerKey))
+      .filter(Boolean)
+  );
 }
 
 function isLandingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -1192,6 +1306,27 @@ function parseMastercrmLinkCashierPayload(body: unknown): {
   return { data: { userId, ownerKey, pagina: parsed.data.pagina ?? 'ASN', staffPassword }, issues };
 }
 
+function parseMastercrmWhatsappQrPayload(body: unknown): {
+  data?: { userId: number; ownerId?: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const ownerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues, { required: false });
+  if (issues.length > 0 || !userId) {
+    return { issues };
+  }
+
+  return { data: { userId, ...(ownerId ? { ownerId } : {}) }, issues };
+}
+
 function parseMastercrmOwnerFinancialsPayload(body: unknown): {
   data?: { userId: number; month: string; adSpendArs: number; commissionPct: number };
   issues: ValidationIssue[];
@@ -1463,6 +1598,8 @@ export function createServer(
   let cachedMastercrmUserStore: MastercrmUserStore | null = dependencies?.mastercrmUserStore ?? null;
   let cachedMastercrmSessionSecret: string | null = dependencies?.mastercrmSessionSecret ?? null;
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
+  let cachedWhatsappQrStore: WhatsappQrStore | null = dependencies?.whatsappQrStore ?? null;
+  let cachedWhatsappQrManager: WhatsappQrManager | null = dependencies?.whatsappQrManager ?? null;
   let cachedLandingSessionStore: LandingSessionStore | null = dependencies?.landingSessionStore ?? null;
   let cachedReportRunStore: ReportRunStore | null = dependencies?.reportRunStore ?? null;
   let cachedMastercrmRetentionStore: MastercrmRetentionStore | null = dependencies?.mastercrmRetentionStore ?? null;
@@ -1521,6 +1658,9 @@ export function createServer(
     dependencies?.retentionRunOnStart ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_RUN_ON_START) ?? true);
   const retentionPollMs =
     dependencies?.retentionPollMs ?? parsePositiveIntegerEnv(process.env.MASTERCRM_RETENTION_POLL_MS, 86_400_000);
+  const mastercrmQrAdminOwnerKeys = resolveMastercrmQrAdminOwnerKeys();
+  const shouldStartWhatsappQrManager =
+    Boolean(dependencies?.whatsappQrManager) || process.env.WHATSAPP_QR_RUNTIME?.trim().toLowerCase() === 'baileys';
 
   fastify.register(cors, {
     origin: resolveMastercrmCorsOrigins()
@@ -1543,6 +1683,51 @@ export function createServer(
     cachedPlayerPhoneStore = createPlayerPhoneStoreFromEnv();
     return cachedPlayerPhoneStore;
   }
+
+  function getWhatsappQrStore(): WhatsappQrStore {
+    if (cachedWhatsappQrStore) {
+      return cachedWhatsappQrStore;
+    }
+
+    cachedWhatsappQrStore = createWhatsappQrStoreFromEnv();
+    return cachedWhatsappQrStore;
+  }
+
+  function getTelegramAlertSender(): TelegramAlertSender {
+    if (dependencies?.telegramAlertSender) {
+      return dependencies.telegramAlertSender;
+    }
+
+    const telegramConfig = buildTelegramAlertConfigFromEnv();
+    return telegramConfig ? new TelegramHttpAlertSender(telegramConfig, logger) : new NoopTelegramAlertSender();
+  }
+
+  function getWhatsappQrManager(): WhatsappQrManager {
+    if (cachedWhatsappQrManager) {
+      return cachedWhatsappQrManager;
+    }
+
+    const qrStore = getWhatsappQrStore();
+    cachedWhatsappQrManager = new WhatsappQrManager({
+      store: qrStore,
+      autoAssignService: new WhatsappQrAutoAssignService({
+        appConfig,
+        logger,
+        store: qrStore,
+        playerPhoneStore: getPlayerPhoneStore(),
+        rdaUserExistsChecker
+      }),
+      telegramAlerts: getTelegramAlertSender(),
+      logger
+    });
+    return cachedWhatsappQrManager;
+  }
+
+  fastify.addHook('onReady', async () => {
+    if (shouldStartWhatsappQrManager) {
+      await getWhatsappQrManager().start();
+    }
+  });
 
   function getMastercrmSessionSecret(): string {
     if (cachedMastercrmSessionSecret) {
@@ -1595,6 +1780,29 @@ export function createServer(
 
     reply.code(403).send({ message: 'MasterCRM session cannot access another user' });
     return false;
+  }
+
+  async function requireWhatsappQrOwner(
+    claims: MastercrmSessionClaims,
+    requestedUserId: number,
+    reply: FastifyReply
+  ): Promise<{ linkedOwner: MastercrmLinkedOwnerRecord; owner: WhatsappQrOwner; isAdmin: boolean } | null> {
+    if (!requireMatchingMastercrmUser(claims, requestedUserId, reply)) {
+      return null;
+    }
+
+    const linkedOwner = await getMastercrmUserStore().getLinkedOwnerForUser(requestedUserId);
+    if (!linkedOwner) {
+      reply.code(404).send({ message: 'El usuario no tiene cajero vinculado', code: 'MASTERCRM_OWNER_NOT_LINKED' });
+      return null;
+    }
+
+    const owner = mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner);
+    return {
+      linkedOwner,
+      owner,
+      isAdmin: mastercrmQrAdminOwnerKeys.has(normalizeMastercrmOwnerKey(owner.ownerKey))
+    };
   }
 
   function getLandingSessionStore(): LandingSessionStore | null {
@@ -2648,6 +2856,127 @@ export function createServer(
     }
   });
 
+  fastify.post('/mastercrm-whatsapp-qr/status', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) {
+        return;
+      }
+
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) {
+        return;
+      }
+
+      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin);
+      return reply.code(200).send(whatsappQrDashboardToResponse(dashboard, qrOwner.linkedOwner));
+    } catch (error) {
+      const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          ...('code' in mappedError ? { code: mappedError.code } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/status error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR status error' });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/connect', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) {
+        return;
+      }
+
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) {
+        return;
+      }
+
+      const qrSession = await getWhatsappQrManager().connect(qrOwner.owner);
+      return reply.code(200).send({ session: whatsappQrSessionToResponse(qrSession) });
+    } catch (error) {
+      const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          ...('code' in mappedError ? { code: mappedError.code } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/connect error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR connect error' });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/disconnect', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        issues: parsed.issues
+      });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) {
+        return;
+      }
+
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) {
+        return;
+      }
+
+      let targetOwner = qrOwner.owner;
+      if (parsed.data.ownerId && parsed.data.ownerId !== qrOwner.owner.ownerId) {
+        if (!qrOwner.isAdmin) {
+          return reply.code(403).send({ message: 'No tenes permiso para desconectar otra sesion QR' });
+        }
+
+        const targetSession = await getWhatsappQrStore().getSessionByOwner(parsed.data.ownerId);
+        if (!targetSession) {
+          return reply.code(404).send({ message: 'No se encontro la sesion QR solicitada' });
+        }
+        targetOwner = whatsappQrSessionOwner(targetSession);
+      }
+
+      const qrSession = await getWhatsappQrManager().disconnect(targetOwner);
+      return reply.code(200).send({ session: whatsappQrSessionToResponse(qrSession) });
+    } catch (error) {
+      const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({
+          message: mappedError.message,
+          ...('code' in mappedError ? { code: mappedError.code } : {})
+        });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/disconnect error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR disconnect error' });
+    }
+  });
+
   fastify.post('/users/create-player', async (request, reply) => {
     const parsed = createPlayerBodySchema.safeParse(request.body);
     if (!parsed.success) {
@@ -3401,6 +3730,9 @@ export function createServer(
     }
     if (retentionWorker) {
       await retentionWorker.stop();
+    }
+    if (cachedWhatsappQrManager) {
+      await cachedWhatsappQrManager.stop();
     }
     await internalQueue.shutdown();
   });

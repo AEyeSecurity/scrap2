@@ -26,7 +26,6 @@ describe('mastercrm retention', () => {
       data: [
         {
           cutoff_date: '2026-06-01',
-          report_daily_snapshots_deleted: '100',
           report_runs_deleted: 2,
           report_run_items_deleted: '200',
           report_outbox_deleted: null,
@@ -40,7 +39,6 @@ describe('mastercrm retention', () => {
 
     await expect(store.purgeTechnicalHistory('2026-06-01')).resolves.toEqual({
       cutoffDate: '2026-06-01',
-      reportDailySnapshotsDeleted: 100,
       reportRunsDeleted: 2,
       reportRunItemsDeleted: 200,
       reportOutboxDeleted: 0,
@@ -75,11 +73,12 @@ describe('mastercrm retention', () => {
 
   it('keeps the technical retention migration scoped to non-business history', () => {
     const migration = readFileSync(
-      join(__dirname, '..', 'db', 'migrations', '20260619_mastercrm_technical_retention.sql'),
+      join(__dirname, '..', 'db', 'migrations', '20260701_mastercrm_technical_retention_preserve_snapshots.sql'),
       'utf8'
     ).toLowerCase();
 
-    expect(migration).toMatch(/delete\s+from\s+public\.report_daily_snapshots/);
+    expect(migration).toContain('drop function if exists public.purge_mastercrm_technical_history_v1(date)');
+    expect(migration).not.toMatch(/delete\s+from\s+public\.report_daily_snapshots/);
     expect(migration).toMatch(/delete\s+from\s+public\.report_runs/);
     expect(migration).toMatch(/delete\s+from\s+public\.meta_conversion_outbox/);
     expect(migration).toMatch(/delete\s+from\s+public\.landing_sessions/);

@@ -176,7 +176,8 @@ export function createReportJobExecutor(
                 operacion: 'reporte',
                 usuario: lease.username,
                 agente: lease.agente,
-                contrasena_agente: lease.contrasenaAgente
+                contrasena_agente: lease.contrasenaAgente,
+                reportDate: lease.reportDate
               }
             } satisfies RdaReportJobRequest,
             appConfig,
@@ -190,7 +191,8 @@ export function createReportJobExecutor(
                 operacion: 'reporte',
                 usuario: lease.username,
                 agente: lease.agente,
-                contrasena_agente: lease.contrasenaAgente
+                contrasena_agente: lease.contrasenaAgente,
+                reportDate: lease.reportDate
               }
             } satisfies AsnReportJobRequest,
             appConfig,

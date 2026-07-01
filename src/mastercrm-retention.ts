@@ -10,7 +10,6 @@ interface DatabaseErrorLike {
 
 interface MastercrmTechnicalPurgeRow {
   cutoff_date: string;
-  report_daily_snapshots_deleted: number | string | null;
   report_runs_deleted: number | string | null;
   report_run_items_deleted: number | string | null;
   report_outbox_deleted: number | string | null;
@@ -20,7 +19,6 @@ interface MastercrmTechnicalPurgeRow {
 
 export interface MastercrmTechnicalPurgeRecord {
   cutoffDate: string;
-  reportDailySnapshotsDeleted: number;
   reportRunsDeleted: number;
   reportRunItemsDeleted: number;
   reportOutboxDeleted: number;
@@ -71,7 +69,6 @@ function normalizePurgeRow(row: MastercrmTechnicalPurgeRow | null | undefined): 
 
   return {
     cutoffDate: row.cutoff_date,
-    reportDailySnapshotsDeleted: toNonNegativeInteger(row.report_daily_snapshots_deleted),
     reportRunsDeleted: toNonNegativeInteger(row.report_runs_deleted),
     reportRunItemsDeleted: toNonNegativeInteger(row.report_run_items_deleted),
     reportOutboxDeleted: toNonNegativeInteger(row.report_outbox_deleted),

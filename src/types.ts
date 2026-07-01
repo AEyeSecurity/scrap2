@@ -244,6 +244,7 @@ export interface AsnReportJobPayload {
   agente: string;
   contrasena_agente: string;
   cantidad?: number;
+  reportDate?: string;
 }
 
 export interface RdaReportJobPayload {
@@ -253,6 +254,7 @@ export interface RdaReportJobPayload {
   agente: string;
   contrasena_agente: string;
   cantidad?: number;
+  reportDate?: string;
 }
 
 export type ReportJobPayload = AsnReportJobPayload | RdaReportJobPayload;

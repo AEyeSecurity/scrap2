@@ -1,116 +1,94 @@
 import { describe, expect, it } from 'vitest';
-import {
-  advanceRdaCashReportSettleState,
-  extractRdaDepositoTotalFromText,
-  parseRdaDepositoTotalNumber,
-  type RdaCashReportSettleState
-} from '../src/rda-report-job';
-import type { RdaReportJobResult } from '../src/types';
+import { applyRdaDateRangeFilter, buildPickerMonthLabel, monthStartFromReportDate } from '../src/rda-report-job';
 
-describe('rda report job helpers', () => {
-  it('extracts Deposito total from visible report text', () => {
-    const text = `Total
+class FakeLocator {
+  constructor(
+    private readonly state: {
+      activeFieldIndex: number;
+      currentLabels: string[];
+      selectedDays: Record<number, number | null>;
+      acceptClicks: number;
+    },
+    private readonly selector: string,
+    private readonly nthIndex = 0
+  ) {}
 
-Depósito total
+  locator(selector: string): FakeLocator {
+    return new FakeLocator(this.state, selector, this.nthIndex);
+  }
 
-$1.234,56
+  nth(index: number): FakeLocator {
+    return new FakeLocator(this.state, this.selector, index);
+  }
 
-Retiro total
+  first(): FakeLocator {
+    return this;
+  }
 
-$0,00`;
+  last(): FakeLocator {
+    return this;
+  }
 
-    expect(extractRdaDepositoTotalFromText(text)).toBe('$1.234,56');
-    expect(parseRdaDepositoTotalNumber('$1.234,56')).toBe(1234.56);
-  });
+  async click(): Promise<void> {
+    if (this.selector === 'button.input-date-desktop__custom-date-input') {
+      this.state.activeFieldIndex = this.nthIndex;
+      return;
+    }
 
-  it('maps RdA deposit total to persisted cargado fields', () => {
-    const result: RdaReportJobResult = {
-      kind: 'rda-reporte-deposito-total',
-      pagina: 'RdA',
-      usuario: '0robertino254',
-      depositoTotalTexto: '$1.000,00',
-      depositoTotalNumero: 1000,
-      cargadoTexto: '$1.000,00',
-      cargadoNumero: 1000,
-      cargadoHoyTexto: '0,00',
-      cargadoHoyNumero: 0
-    };
+    if (this.selector.startsWith('.react-datepicker__day--')) {
+      const match = this.selector.match(/day--(\d{3})/);
+      this.state.selectedDays[this.state.activeFieldIndex] = match ? Number(match[1]) : null;
+      return;
+    }
 
-    expect(result.cargadoNumero).toBe(result.depositoTotalNumero);
-    expect(result.cargadoHoyNumero).toBe(0);
-  });
+    if (this.selector === 'button:has-text("Aceptar filtro")') {
+      this.state.acceptClicks += 1;
+    }
+  }
 
-  it('does not accept the first ready placeholder immediately', () => {
-    const initial: RdaCashReportSettleState = {
-      readySince: null,
-      valueStableSince: null,
-      lastValue: null,
-      lastSample: ''
-    };
-    const first = advanceRdaCashReportSettleState(
-      initial,
-      { ready: true, depositoTotalTexto: '$0,00', sample: 'Depósito total $0,00' },
-      1_000,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
-    const second = advanceRdaCashReportSettleState(
-      first.state,
-      { ready: true, depositoTotalTexto: '$0,00', sample: 'Depósito total $0,00' },
-      1_700,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
+  async textContent(): Promise<string> {
+    if (this.selector === '.react-datepicker__current-month') {
+      return this.state.currentLabels[this.state.activeFieldIndex] ?? '';
+    }
 
-    expect(first.settled).toBe(false);
-    expect(second.settled).toBe(true);
-  });
+    return '';
+  }
 
-  it('resets stability when the deposit total changes after a placeholder', () => {
-    const initial: RdaCashReportSettleState = {
-      readySince: null,
-      valueStableSince: null,
-      lastValue: null,
-      lastSample: ''
-    };
-    const first = advanceRdaCashReportSettleState(
-      initial,
-      { ready: true, depositoTotalTexto: '$0,00', sample: 'Depósito total $0,00' },
-      1_000,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
-    const changed = advanceRdaCashReportSettleState(
-      first.state,
-      { ready: true, depositoTotalTexto: '$119.900,00', sample: 'Depósito total $119.900,00' },
-      1_700,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
-    const stable = advanceRdaCashReportSettleState(
-      changed.state,
-      { ready: true, depositoTotalTexto: '$119.900,00', sample: 'Depósito total $119.900,00' },
-      2_100,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
+  async count(): Promise<number> {
+    return 1;
+  }
 
-    expect(changed.settled).toBe(false);
-    expect(stable.settled).toBe(true);
-    expect(stable.state.lastValue).toBe('$119.900,00');
-  });
+  async isVisible(): Promise<boolean> {
+    return true;
+  }
+}
 
-  it('resets readiness when the report is not ready', () => {
-    const state: RdaCashReportSettleState = {
-      readySince: 1_000,
-      valueStableSince: 1_000,
-      lastValue: '$119.900,00',
-      lastSample: 'Depósito total $119.900,00'
-    };
-    const next = advanceRdaCashReportSettleState(
-      state,
-      { ready: false, depositoTotalTexto: '$119.900,00', sample: 'Cargando' },
-      1_500,
-      { minReadyMs: 500, valueStableMs: 300 }
-    );
+class FakePage {
+  public readonly state = {
+    activeFieldIndex: 0,
+    currentLabels: ['June 2026', 'June 2026'],
+    selectedDays: { 0: null, 1: null } as Record<number, number | null>,
+    acceptClicks: 0
+  };
 
-    expect(next.settled).toBe(false);
-    expect(next.state.readySince).toBeNull();
-    expect(next.state.lastValue).toBeNull();
+  locator(selector: string): FakeLocator {
+    return new FakeLocator(this.state, selector);
+  }
+
+  async waitForTimeout(): Promise<void> {
+    // no-op
+  }
+}
+
+describe('RdA report date range filter', () => {
+  it('applies the full June 2026 manual range', async () => {
+    const page = new FakePage();
+
+    await applyRdaDateRangeFilter(page as any, '2026-06-30', 1_000);
+
+    expect(monthStartFromReportDate('2026-06-30')).toBe('2026-06-01');
+    expect(buildPickerMonthLabel('2026-06-01')).toBe('June 2026');
+    expect(page.state.selectedDays).toEqual({ 0: 1, 1: 30 });
+    expect(page.state.acceptClicks).toBe(1);
   });
 });

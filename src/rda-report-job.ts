@@ -15,6 +15,20 @@ const RDA_CASH_REPORT_MIN_READY_MS = 2_200;
 const RDA_CASH_REPORT_VALUE_STABLE_MS = 1_200;
 const RDA_CASH_REPORT_POLL_MS = 150;
 const RDA_CASH_REPORT_NETWORK_IDLE_TIMEOUT_MS = 5_000;
+const ENGLISH_MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
+] as const;
 
 export type RdaCashReportSettleSample = {
   ready: boolean;
@@ -97,6 +111,65 @@ function normalizeSearchText(value: string): string {
     .toLowerCase();
 }
 
+function parseIsoDateToken(value: string): { year: number; month: number; day: number } {
+  const match = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    throw new Error(`Invalid reportDate token: ${value}`);
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    throw new Error(`Invalid reportDate token: ${value}`);
+  }
+
+  return { year, month, day };
+}
+
+export function monthStartFromReportDate(value: string): string {
+  const { year, month } = parseIsoDateToken(value);
+  return `${year}-${String(month).padStart(2, '0')}-01`;
+}
+
+export function buildPickerMonthLabel(value: string): string {
+  const { year, month } = parseIsoDateToken(value);
+  return `${ENGLISH_MONTH_NAMES[month - 1]} ${year}`;
+}
+
+function parsePickerMonthLabel(value: string): { year: number; month: number } {
+  const normalized = normalizeSpaces(value);
+  const [monthName, yearToken] = normalized.split(' ');
+  const month = ENGLISH_MONTH_NAMES.findIndex((item) => item.toLowerCase() === monthName?.toLowerCase());
+  const year = Number(yearToken);
+  if (month < 0 || !Number.isInteger(year)) {
+    throw new Error(`Unexpected RdA date picker label: ${value}`);
+  }
+
+  return {
+    year,
+    month: month + 1
+  };
+}
+
+function comparePickerMonthLabels(left: string, right: string): number {
+  const leftParts = parsePickerMonthLabel(left);
+  const rightParts = parsePickerMonthLabel(right);
+  if (leftParts.year !== rightParts.year) {
+    return leftParts.year - rightParts.year;
+  }
+
+  return leftParts.month - rightParts.month;
+}
+
 export function parseRdaDepositoTotalNumber(rawValue: string): number {
   return parseBalanceNumber(rawValue);
 }
@@ -171,7 +244,7 @@ async function executeActionStep(
   }
 }
 
-async function readRdaDepositoTotal(page: Page): Promise<string> {
+export async function readRdaDepositoTotal(page: Page): Promise<string> {
   const byCard = await page.evaluate(
     ({ labelSource, moneySource }) => {
       const labelRegex = new RegExp(labelSource, 'i');
@@ -284,7 +357,44 @@ async function applyRdaCurrentMonthFilter(page: Page, timeoutMs: number): Promis
   await acceptFilter.click();
 }
 
-async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
+async function selectRdaPickerDate(page: Page, fieldIndex: number, isoDate: string, timeoutMs: number): Promise<void> {
+  const { day } = parseIsoDateToken(isoDate);
+  const targetMonthLabel = buildPickerMonthLabel(isoDate);
+  const dayClass = `.react-datepicker__day--${String(day).padStart(3, '0')}:not(.react-datepicker__day--outside-month)`;
+  const dateButton = page.locator('button.input-date-desktop__custom-date-input').nth(fieldIndex);
+  await dateButton.click({ timeout: timeoutMs });
+
+  const popper = page.locator('.react-datepicker-popper').last();
+  const currentMonth = popper.locator('.react-datepicker__current-month');
+  const previousButton = popper.locator('button[aria-label="Previous Month"]');
+  const nextButton = popper.locator('button[aria-label="Next Month"]');
+
+  for (let attempts = 0; attempts < 24; attempts += 1) {
+    const currentLabel = normalizeSpaces((await currentMonth.textContent()) ?? '');
+    if (currentLabel === targetMonthLabel) {
+      const dayLocator = popper.locator(dayClass).first();
+      await dayLocator.click({ timeout: timeoutMs });
+      return;
+    }
+
+    const clickPrevious = comparePickerMonthLabels(currentLabel, targetMonthLabel) > 0;
+    await (clickPrevious ? previousButton : nextButton).click({ timeout: timeoutMs });
+    await page.waitForTimeout(100);
+  }
+
+  throw new Error(`Could not navigate RdA date picker to ${targetMonthLabel}`);
+}
+
+export async function applyRdaDateRangeFilter(page: Page, reportDate: string, timeoutMs: number): Promise<void> {
+  const monthStart = monthStartFromReportDate(reportDate);
+  await selectRdaPickerDate(page, 0, monthStart, timeoutMs);
+  await selectRdaPickerDate(page, 1, reportDate, timeoutMs);
+
+  const acceptFilter = await findFirstVisibleLocator(page, 'button:has-text("Aceptar filtro")', timeoutMs);
+  await acceptFilter.click();
+}
+
+export async function waitForRdaCashReportReady(page: Page, timeoutMs: number): Promise<void> {
   const startedAt = Date.now();
   let state: RdaCashReportSettleState = {
     readySince: null,
@@ -393,7 +503,11 @@ export async function runRdaReportJob(
       async () => {
         await page.goto(targetPath, { waitUntil: 'domcontentloaded', timeout: runtimeConfig.timeoutMs });
         await findFirstVisibleLocator(page, 'text=/Dep[o\\u00f3]sitos\\s+y\\s+retiros|Dep[o\\u00f3]sito\\s+total/i', runtimeConfig.timeoutMs);
-        await applyRdaCurrentMonthFilter(page, runtimeConfig.timeoutMs);
+        if (request.payload.reportDate) {
+          await applyRdaDateRangeFilter(page, request.payload.reportDate, runtimeConfig.timeoutMs);
+        } else {
+          await applyRdaCurrentMonthFilter(page, runtimeConfig.timeoutMs);
+        }
         await page
           .waitForLoadState('networkidle', {
             timeout: Math.min(runtimeConfig.timeoutMs, RDA_CASH_REPORT_NETWORK_IDLE_TIMEOUT_MS)

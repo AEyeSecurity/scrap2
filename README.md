@@ -108,6 +108,9 @@ Artefactos del modo API:
 - `AGENT_API_ENDPOINTS`: lista separada por comas para el modo `run`.
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`: habilitan persistencia y reportes.
 - `REPORT_WORKER_ENABLED`: activa o desactiva el worker de reportes ASN.
+- `MASTERCRM_QR_ADMIN_OWNER_KEYS`: owner keys con vista admin para la solapa WhatsApp QR.
+- `WHATSAPP_QR_RUNTIME=baileys`: habilita runtime WhatsApp Web QR.
+- `N8N_SQLITE_PATH`: ruta al SQLite de n8n para sincronizar credenciales RdA con `npm run sync:n8n-rda-cashiers`.
 - `FUNDS_SESSION_CACHE_ENABLED`: reutiliza sesiones de fondos entre jobs.
 - `SCRAP2_BROWSER_CONCURRENCY`: limite global de navegadores Playwright vivos; por defecto es `1` para proteger la tabla de procesos del contenedor.
 
@@ -127,6 +130,7 @@ docker run --rm `
 - Configuracion de Supabase para Docker: [docs/README_SUPABASE.md](docs/README_SUPABASE.md)
 - Meta CAPI para Click-to-WhatsApp: [docs/README_META_CAPI_CTWA.md](docs/README_META_CAPI_CTWA.md)
 - Login y registro MasterCRM: [docs/README_MASTERCRM_AUTH.md](docs/README_MASTERCRM_AUTH.md)
+- WhatsApp QR por cajero en MasterCRM: [docs/README_MASTERCRM_WHATSAPP_QR.md](docs/README_MASTERCRM_WHATSAPP_QR.md)
 - JSON listos para copiar: [docs/README_JSON_EJEMPLOS.md](docs/README_JSON_EJEMPLOS.md)
 - Funciones y flujos internos: [docs/README_FUNCIONES_Y_FLUJOS.md](docs/README_FUNCIONES_Y_FLUJOS.md)
 - Testeo y benchmark en Docker: [docs/README_TESTEO.md](docs/README_TESTEO.md)

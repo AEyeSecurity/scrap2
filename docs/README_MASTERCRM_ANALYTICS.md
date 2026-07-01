@@ -18,6 +18,7 @@ Migration:
 
 - `db/migrations/20260618_mastercrm_marketing_daily_budgets.sql`
 - `db/migrations/20260619_mastercrm_technical_retention.sql`
+- `db/migrations/20260701_mastercrm_technical_retention_preserve_snapshots.sql`
 - `db/migrations/20260619_mastercrm_ad_budget_distribution.sql`
 
 New table:
@@ -190,7 +191,6 @@ select * from public.purge_mastercrm_technical_history_v1(date '2026-06-01');
 
 It deletes only technical history before the cutoff month:
 
-- `report_daily_snapshots`
 - `report_runs`, with cascade to `report_run_items` and `report_outbox`
 - terminal `meta_conversion_outbox` rows with status `sent`, `failed` or `discarded`
 - old `landing_sessions`, keeping a 48 hour safety margin before the cutoff

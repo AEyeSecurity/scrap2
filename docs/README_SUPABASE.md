@@ -152,11 +152,11 @@ No reemplazar esas lecturas por selects simples: Supabase recorta por defecto y 
 La retencion tecnica mensual se define en:
 
 - `db/migrations/20260619_mastercrm_technical_retention.sql`
+- `db/migrations/20260701_mastercrm_technical_retention_preserve_snapshots.sql`
 - RPC `public.purge_mastercrm_technical_history_v1(date)`
 
 La purga elimina solo historial tecnico anterior al mes actual:
 
-- `report_daily_snapshots`
 - `report_runs`, con cascade a `report_run_items` y `report_outbox`
 - `meta_conversion_outbox` terminal (`sent`, `failed`, `discarded`)
 - `landing_sessions` viejas con margen de 48 horas
