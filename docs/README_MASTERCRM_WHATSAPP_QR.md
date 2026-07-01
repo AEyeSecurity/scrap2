@@ -63,6 +63,25 @@ Si una sesion quedo `connected` y la auth persistida sigue valida, el backend la
 
 Todos requieren bearer token MasterCRM y `user_id`. Un cajero solo opera su owner vinculado. Un admin por `MASTERCRM_QR_ADMIN_OWNER_KEYS` puede ver todas las sesiones y desconectar por `owner_id`.
 
+## Solapa CRM
+
+La solapa `WhatsApp QR` muestra:
+
+- estado de la sesion y datos basicos del numero conectado;
+- resumen rapido de los ultimos matches visibles (hasta 50 recientes);
+- leyenda corta de estados para uso operativo;
+- lista destacada con seleccion, filtros y tabla completa del lote visible;
+- detalle del match con origen, motivo, historial corto y copia rapida de usuario/telefono.
+
+Estados operativos del panel:
+
+- `Candidato`: parece ser ese usuario, pero todavia falta confirmarlo.
+- `Validado`: el usuario existe en RdA y falta terminar la asignacion.
+- `Asignado`: el telefono ya quedo vinculado al usuario.
+- `No existe`: el usuario no aparece en RdA.
+- `Conflicto`: ese usuario ya estaba usado por otro numero.
+- `Error`: hubo una falla y requiere revision.
+
 ## Activacion controlada
 
 1. Aplicar migracion.
