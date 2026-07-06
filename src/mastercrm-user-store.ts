@@ -478,7 +478,7 @@ interface ReportRunFinishedAtRow {
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
 const DATE_TOKEN_RE = /^\d{4}-\d{2}-\d{2}$/;
 export const SUPABASE_SELECT_PAGE_SIZE = 1000;
-const SUPABASE_IN_FILTER_CHUNK_SIZE = 500;
+const SUPABASE_IN_FILTER_CHUNK_SIZE = 200;
 
 export class MastercrmUserStoreError extends Error {
   constructor(
@@ -1296,14 +1296,6 @@ function buildDateRangeWindow(dateFrom: string, dateTo: string): {
   };
 }
 
-function isDashboardMonthFact(fact: OwnerClientMonthlyFactRow): boolean {
-  return Boolean(
-    fact.had_intake_in_month ||
-      fact.is_new_intake_in_month ||
-      fact.is_reentry_in_month
-  );
-}
-
 function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
   const monthTrail = buildMonthTrail(month);
 
@@ -1678,7 +1670,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       telefono: ownerPhone
     };
 
-    const dashboardMonthFacts = factsForSelectedMonth.filter(isDashboardMonthFact);
+    const dashboardMonthFacts = factsForSelectedMonth;
     const dashboardClientIds = new Set(dashboardMonthFacts.map((fact) => fact.client_id));
     const ownerClientLinkIds = dashboardMonthFacts
       .map((fact) => (typeof fact.link_id === 'string' && fact.link_id.length > 0 ? fact.link_id : null))

@@ -498,20 +498,20 @@ export class WhatsappQrManager {
       return null;
     }
 
-    const upsertContact = (this.options.store as any).upsertContact as
-      | ((input: {
-          sessionId?: string | null;
-          ownerId: string;
-          phoneE164: string;
-          contactName?: string | null;
-          notify?: string | null;
-          username?: string | null;
-          verifiedName?: string | null;
-          seenAt?: string;
-        }) => Promise<unknown>)
-      | undefined;
-    if (upsertContact) {
-      await upsertContact({
+    const contactStore = this.options.store as {
+      upsertContact?: (input: {
+        sessionId?: string | null;
+        ownerId: string;
+        phoneE164: string;
+        contactName?: string | null;
+        notify?: string | null;
+        username?: string | null;
+        verifiedName?: string | null;
+        seenAt?: string;
+      }) => Promise<unknown>;
+    };
+    if (typeof contactStore.upsertContact === 'function') {
+      await contactStore.upsertContact({
         sessionId: session.id,
         ownerId: owner.ownerId,
         phoneE164: phone,

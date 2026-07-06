@@ -937,6 +937,7 @@ describe('mastercrm clients dashboard', () => {
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
 
+    expect(dashboard.statsKpis.clientesTotales).toBe(2);
     expect(dashboard.clientes).toEqual([
       {
         id: 'link-pending',
@@ -956,6 +957,28 @@ describe('mastercrm clients dashboard', () => {
         cargadoMes: null,
         reportDate: null,
         isNewIntakeMes: true,
+        isReingresoMes: false,
+        assignedEnMes: false,
+        assignedDesdeBacklogMes: false
+      },
+      {
+        id: 'link-old-pending',
+        username: null,
+        telefono: '+5493735506281',
+        pagina: 'ASN',
+        estado: 'pending',
+        source: null,
+        origen: null,
+        Campana: null,
+        lastCampaign: null,
+        attribution: expectedEmptyAttribution(),
+        ownerKey: 'asnlucas10:vicky',
+        ownerLabel: 'Vicky',
+        firstSeenAt: '2026-02-13T09:30:00.000Z',
+        cargadoHoy: null,
+        cargadoMes: null,
+        reportDate: null,
+        isNewIntakeMes: false,
         isReingresoMes: false,
         assignedEnMes: false,
         assignedDesdeBacklogMes: false
@@ -1650,10 +1673,10 @@ describe('mastercrm clients dashboard', () => {
     expect(dashboard.statsKpis.intakesMes).toBe(1);
     expect(dashboard.statsKpis.reingresosMes).toBe(1);
     expect(dashboard.statsKpis.asignacionesMes).toBe(1);
-    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(0);
+    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(1);
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
-    expect(dashboard.statsKpis.clientesTotales).toBe(2);
-    expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-2', 'link-1']);
+    expect(dashboard.statsKpis.clientesTotales).toBe(3);
+    expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-2', 'link-3', 'link-1']);
   });
 
   it('paginates dashboard report snapshots beyond Supabase default limits', async () => {

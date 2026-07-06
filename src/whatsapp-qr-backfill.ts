@@ -189,6 +189,57 @@ function createEmptyState(phone: string): PhoneBackfillState {
   };
 }
 
+async function persistBackfillContact(
+  store: ReturnType<typeof createWhatsappQrStoreFromEnv>,
+  owner: WhatsappQrOwner,
+  session: WhatsappQrSessionRecord,
+  input: {
+    remoteJid: string;
+    clientPhoneE164?: string | null;
+    contactName?: string | null;
+    pushName?: string | null;
+    username?: string | null;
+    verifiedName?: string | null;
+    seenAt?: string | null;
+  }
+): Promise<string | null> {
+  const contactStore = store as {
+    upsertContact?: (payload: {
+      sessionId?: string | null;
+      ownerId: string;
+      phoneE164: string;
+      contactName?: string | null;
+      notify?: string | null;
+      username?: string | null;
+      verifiedName?: string | null;
+      seenAt?: string;
+    }) => Promise<unknown>;
+  };
+  const normalizedPhone =
+    input.clientPhoneE164?.trim() ||
+    (() => {
+      const raw = input.remoteJid.split('@')[0]?.replace(/[^0-9]/g, '');
+      return raw ? `+${raw}` : null;
+    })();
+
+  if (typeof contactStore.upsertContact !== 'function' || !normalizedPhone) {
+    return normalizedPhone ?? null;
+  }
+
+  await contactStore.upsertContact({
+    sessionId: session.id,
+    ownerId: owner.ownerId,
+    phoneE164: normalizedPhone,
+    contactName: input.contactName ?? null,
+    notify: input.pushName ?? null,
+    username: input.username ?? null,
+    verifiedName: input.verifiedName ?? null,
+    seenAt: input.seenAt ?? new Date().toISOString()
+  });
+
+  return normalizedPhone;
+}
+
 interface HistoryReplayNotification {
   time: string;
   histNotification: any;
@@ -382,15 +433,17 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
 
     const processDirect = async (event: {
       remoteJid: string;
+      clientPhoneE164?: string | null;
       contactName?: string | null;
       pushName?: string | null;
+      username?: string | null;
+      verifiedName?: string | null;
       messageTimestamp?: string | null;
     }): Promise<void> => {
-      const phone = event.remoteJid.split('@')[0]?.replace(/[^0-9]/g, '');
-      if (!phone) {
+      const normalized = await persistBackfillContact(store, owner, session, event);
+      if (!normalized) {
         return;
       }
-      const normalized = `+${phone}`;
       const state = states.get(normalized);
       if (!state) {
         return;
@@ -520,8 +573,11 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
           enqueue(() =>
             processDirect({
               remoteJid,
+              clientPhoneE164: typeof contact?.phoneNumber === 'string' ? contact.phoneNumber : null,
               contactName: extractContactName(contact),
-              pushName: contact?.notify ?? null
+              pushName: contact?.notify ?? null,
+              username: contact?.username ?? null,
+              verifiedName: contact?.verifiedName ?? null
             })
           );
         }
@@ -573,8 +629,11 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
           enqueue(() =>
             processDirect({
               remoteJid: contact.id,
+              clientPhoneE164: typeof contact?.phoneNumber === 'string' ? contact.phoneNumber : null,
               contactName,
-              pushName: contact.notify ?? null
+              pushName: contact.notify ?? null,
+              username: contact?.username ?? null,
+              verifiedName: contact?.verifiedName ?? null
             })
           );
         }
@@ -588,8 +647,11 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
           enqueue(() =>
             processDirect({
               remoteJid: contact.id,
+              clientPhoneE164: typeof contact?.phoneNumber === 'string' ? contact.phoneNumber : null,
               contactName,
-              pushName: contact.notify ?? null
+              pushName: contact.notify ?? null,
+              username: contact?.username ?? null,
+              verifiedName: contact?.verifiedName ?? null
             })
           );
         }
@@ -622,8 +684,11 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
           enqueue(() =>
             processDirect({
               remoteJid: contact.id,
+              clientPhoneE164: typeof contact?.phoneNumber === 'string' ? contact.phoneNumber : null,
               contactName,
-              pushName: contact.notify ?? null
+              pushName: contact.notify ?? null,
+              username: contact?.username ?? null,
+              verifiedName: contact?.verifiedName ?? null
             })
           );
         }
