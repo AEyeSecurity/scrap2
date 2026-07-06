@@ -67,24 +67,24 @@ export class WhatsappQrAutoAssignService {
     clientPhoneE164: string,
     reason: 'outbound_candidate' | 'contact_seen' | 'technical_error'
   ): Promise<void> {
-    const enqueueRecheck = (this.options.store as any).enqueueRecheck as
-      | ((input: {
-          ownerId: string;
-          sessionId?: string | null;
-          monthStart: string;
-          phoneE164: string;
-          reason: 'outbound_candidate' | 'contact_seen' | 'technical_error';
-          nextRunAt?: string;
-          expiresAt?: string;
-        }) => Promise<unknown>)
-      | undefined;
-    if (!enqueueRecheck) {
+    const recheckStore = this.options.store as {
+      enqueueRecheck?: (input: {
+        ownerId: string;
+        sessionId?: string | null;
+        monthStart: string;
+        phoneE164: string;
+        reason: 'outbound_candidate' | 'contact_seen' | 'technical_error';
+        nextRunAt?: string;
+        expiresAt?: string;
+      }) => Promise<unknown>;
+    };
+    if (typeof recheckStore.enqueueRecheck !== 'function') {
       return;
     }
 
     const now = new Date();
     try {
-      await enqueueRecheck({
+      await recheckStore.enqueueRecheck({
         ownerId: event.owner.ownerId,
         sessionId: event.session.id,
         monthStart: getBuenosAiresMonthStart(now),
