@@ -7,6 +7,8 @@ export type WhatsappQrStatus = 'idle' | 'waiting_qr' | 'connected' | 'disconnect
 export type WhatsappQrDirection = 'inbound' | 'outbound' | 'contact_sync';
 export type WhatsappQrMatchSource = 'contact_name' | 'outbound_message';
 export type WhatsappQrMatchStatus = 'candidate' | 'validated' | 'assigned' | 'not_found' | 'conflict' | 'error';
+export type WhatsappQrRecheckReason = 'outbound_candidate' | 'contact_seen' | 'technical_error' | 'first_load' | 'manual';
+export type WhatsappQrRecheckStatus = 'pending' | 'done' | 'expired';
 
 export interface WhatsappQrOwner {
   ownerId: string;
@@ -88,6 +90,36 @@ export interface WhatsappQrRdaCredential {
   syncedAt: string;
 }
 
+export interface WhatsappQrContactRecord {
+  id: string;
+  ownerId: string;
+  sessionId: string | null;
+  phoneE164: string;
+  contactName: string | null;
+  notify: string | null;
+  username: string | null;
+  verifiedName: string | null;
+  lastSeenAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WhatsappQrRecheckQueueRecord {
+  id: string;
+  ownerId: string;
+  sessionId: string | null;
+  monthStart: string;
+  phoneE164: string;
+  reason: WhatsappQrRecheckReason;
+  status: WhatsappQrRecheckStatus;
+  attempts: number;
+  nextRunAt: string;
+  expiresAt: string;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface UpsertWhatsappQrSessionPatch {
   status?: WhatsappQrStatus;
   phoneE164?: string | null;
@@ -143,6 +175,16 @@ export interface WhatsappQrStore {
   listStaleSessions(input: { heartbeatBefore: string; qrExpiredBefore: string }): Promise<WhatsappQrSessionRecord[]>;
   markAlerted(sessionId: string, kind: 'disconnected' | 'qr' | 'heartbeat', alertedAt: string): Promise<void>;
   recordMessage(input: RecordWhatsappQrMessageInput): Promise<WhatsappQrMessageRecord>;
+  upsertContact(input: {
+    sessionId?: string | null;
+    ownerId: string;
+    phoneE164: string;
+    contactName?: string | null;
+    notify?: string | null;
+    username?: string | null;
+    verifiedName?: string | null;
+    seenAt?: string;
+  }): Promise<WhatsappQrContactRecord>;
   createMatch(input: CreateWhatsappQrMatchInput): Promise<WhatsappQrMatchRecord>;
   updateMatch(
     id: string,
@@ -156,6 +198,27 @@ export interface WhatsappQrStore {
   listMatches(ownerIds?: string[] | null, limit?: number): Promise<WhatsappQrMatchRecord[]>;
   listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]>;
   listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]>;
+  listContactsByPhones(input: { ownerId: string; phoneE164s: string[] }): Promise<WhatsappQrContactRecord[]>;
+  enqueueRecheck(input: {
+    ownerId: string;
+    sessionId?: string | null;
+    monthStart: string;
+    phoneE164: string;
+    reason: WhatsappQrRecheckReason;
+    nextRunAt?: string;
+    expiresAt?: string;
+  }): Promise<WhatsappQrRecheckQueueRecord>;
+  listDueRechecks(input: { nowIso: string; limit: number }): Promise<WhatsappQrRecheckQueueRecord[]>;
+  updateRecheck(
+    id: string,
+    patch: {
+      status?: WhatsappQrRecheckStatus;
+      attempts?: number;
+      nextRunAt?: string;
+      expiresAt?: string;
+      lastError?: string | null;
+    }
+  ): Promise<WhatsappQrRecheckQueueRecord>;
   ignorePhoneForMonth(input: {
     ownerId: string;
     monthStart: string;
@@ -273,6 +336,40 @@ function asMatch(row: any): WhatsappQrMatchRecord {
   };
 }
 
+function asContact(row: any): WhatsappQrContactRecord {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    sessionId: row.session_id ?? null,
+    phoneE164: row.phone_e164,
+    contactName: row.contact_name ?? null,
+    notify: row.notify ?? null,
+    username: row.username ?? null,
+    verifiedName: row.verified_name ?? null,
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function asRecheck(row: any): WhatsappQrRecheckQueueRecord {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    sessionId: row.session_id ?? null,
+    monthStart: row.month_start,
+    phoneE164: row.phone_e164,
+    reason: row.reason,
+    status: row.status,
+    attempts: Number(row.attempts ?? 0),
+    nextRunAt: row.next_run_at,
+    expiresAt: row.expires_at,
+    lastError: row.last_error ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
 function asCredential(row: any): WhatsappQrRdaCredential {
   return {
     ownerId: row.owner_id,
@@ -326,6 +423,37 @@ function chunkValues<T>(values: T[], size = 500): T[][] {
   return chunks;
 }
 
+const SUPABASE_QR_PAGE_SIZE = 1000;
+
+async function selectAllSupabasePages<Row>(
+  buildQuery: () => { range(from: number, to: number): PromiseLike<{ data: Row[] | null; error: PostgrestError | null }> },
+  fallbackMessage: string
+): Promise<Row[]> {
+  const rows: Row[] = [];
+  let offset = 0;
+
+  while (true) {
+    const { data, error } = await buildQuery().range(offset, offset + SUPABASE_QR_PAGE_SIZE - 1);
+    if (error) {
+      throw mapPostgrestError(error, fallbackMessage);
+    }
+
+    const page = data ?? [];
+    rows.push(...page);
+    if (page.length < SUPABASE_QR_PAGE_SIZE) {
+      return rows;
+    }
+
+    offset += SUPABASE_QR_PAGE_SIZE;
+  }
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
 export function sanitizeWhatsappQrSessionForHttp(session: WhatsappQrSessionRecord): Omit<WhatsappQrSessionRecord, 'qrPayload'> {
   const { qrPayload: _qrPayload, ...safeSession } = session;
   return safeSession;
@@ -359,19 +487,24 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async listOwnerClientPhonesForMonth(input: { ownerId: string; monthStart: string; limit?: number }): Promise<Set<string>> {
-    const { data, error } = await this.client
-      .from('owner_client_monthly_facts')
-      .select('clients!inner(phone_e164)')
-      .eq('owner_id', input.ownerId)
-      .eq('month_start', input.monthStart)
-      .limit(input.limit ?? 5000);
-
-    if (error) {
-      throw mapPostgrestError(error, 'Could not read owner monthly client phones');
-    }
+    const data = await selectAllSupabasePages<Array<{ clients?: { phone_e164?: string | null } | { phone_e164?: string | null }[] }>[number]>(
+      () => {
+        let query = this.client
+          .from('owner_client_monthly_facts')
+          .select('client_id, clients!inner(phone_e164)')
+          .eq('owner_id', input.ownerId)
+          .eq('month_start', input.monthStart)
+          .order('client_id', { ascending: true });
+        if (input.limit) {
+          query = query.limit(input.limit);
+        }
+        return query;
+      },
+      'Could not read owner monthly client phones'
+    );
 
     const phones = new Set<string>();
-    for (const row of (data as Array<{ clients?: { phone_e164?: string | null } | { phone_e164?: string | null }[] }> | null) ?? []) {
+    for (const row of data) {
       const client = Array.isArray(row.clients) ? row.clients[0] : row.clients;
       if (client?.phone_e164) {
         phones.add(normalizePhone(client.phone_e164));
@@ -382,23 +515,28 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async listMonthClients(input: { ownerId: string; monthStart: string; limit?: number }): Promise<WhatsappQrMonthClientRecord[]> {
-    const { data, error } = await this.client
-      .from('owner_client_monthly_facts')
-      .select('client_id, link_id, clients!inner(phone_e164)')
-      .eq('owner_id', input.ownerId)
-      .eq('month_start', input.monthStart)
-      .limit(input.limit ?? 5000);
-
-    if (error) {
-      throw mapPostgrestError(error, 'Could not read owner monthly client queue');
-    }
-
-    const monthClients: WhatsappQrMonthClientRecord[] = [];
-    for (const row of ((data as Array<{
+    const data = await selectAllSupabasePages<{
       client_id?: string | null;
       link_id?: string | null;
       clients?: { phone_e164?: string | null } | { phone_e164?: string | null }[];
-    }> | null) ?? [])) {
+    }>(
+      () => {
+        let query = this.client
+          .from('owner_client_monthly_facts')
+          .select('client_id, link_id, clients!inner(phone_e164)')
+          .eq('owner_id', input.ownerId)
+          .eq('month_start', input.monthStart)
+          .order('client_id', { ascending: true });
+        if (input.limit) {
+          query = query.limit(input.limit);
+        }
+        return query;
+      },
+      'Could not read owner monthly client queue'
+    );
+
+    const monthClients: WhatsappQrMonthClientRecord[] = [];
+    for (const row of data) {
       const client = Array.isArray(row.clients) ? row.clients[0] : row.clients;
       const phone = client?.phone_e164 ? normalizePhone(client.phone_e164) : null;
       if (!row.client_id || !phone) {
@@ -447,18 +585,19 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async listIgnoredPhonesForMonth(input: { ownerId: string; monthStart: string }): Promise<Set<string>> {
-    const { data, error } = await this.client
-      .from('mastercrm_whatsapp_qr_ignored_phones')
-      .select('client_phone_e164')
-      .eq('owner_id', input.ownerId)
-      .eq('month_start', input.monthStart);
-
-    if (error) {
-      throw mapPostgrestError(error, 'Could not list ignored WhatsApp QR phones for month');
-    }
+    const data = await selectAllSupabasePages<{ client_phone_e164?: string | null }>(
+      () =>
+        this.client
+          .from('mastercrm_whatsapp_qr_ignored_phones')
+          .select('client_phone_e164')
+          .eq('owner_id', input.ownerId)
+          .eq('month_start', input.monthStart)
+          .order('created_at', { ascending: true }),
+      'Could not list ignored WhatsApp QR phones for month'
+    );
 
     return new Set(
-      (((data as Array<{ client_phone_e164?: string | null }> | null) ?? [])
+      (data
         .map((row) => row.client_phone_e164)
         .filter(Boolean) as string[]).map((phone) => normalizePhone(phone))
     );
@@ -620,6 +759,43 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     return asMessage(data);
   }
 
+  async upsertContact(input: {
+    sessionId?: string | null;
+    ownerId: string;
+    phoneE164: string;
+    contactName?: string | null;
+    notify?: string | null;
+    username?: string | null;
+    verifiedName?: string | null;
+    seenAt?: string;
+  }): Promise<WhatsappQrContactRecord> {
+    const seenAt = input.seenAt ?? new Date().toISOString();
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_contacts')
+      .upsert(
+        {
+          owner_id: input.ownerId,
+          session_id: input.sessionId ?? null,
+          phone_e164: normalizePhone(input.phoneE164),
+          contact_name: nullableText(input.contactName),
+          notify: nullableText(input.notify),
+          username: nullableText(input.username),
+          verified_name: nullableText(input.verifiedName),
+          last_seen_at: seenAt,
+          updated_at: seenAt
+        },
+        { onConflict: 'owner_id,phone_e164' }
+      )
+      .select('*')
+      .single();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not upsert WhatsApp QR contact');
+    }
+
+    return asContact(data);
+  }
+
   async createMatch(input: CreateWhatsappQrMatchInput): Promise<WhatsappQrMatchRecord> {
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_matches')
@@ -674,20 +850,24 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]> {
-    const { data, error } = await this.client
-      .from('mastercrm_whatsapp_qr_messages')
-      .select('*')
-      .eq('owner_id', input.ownerId)
-      .gte('created_at', input.createdFrom)
-      .lt('created_at', input.createdTo)
-      .order('created_at', { ascending: false })
-      .limit(input.limit ?? 5000);
+    const data = await selectAllSupabasePages<any>(
+      () => {
+        let query = this.client
+          .from('mastercrm_whatsapp_qr_messages')
+          .select('*')
+          .eq('owner_id', input.ownerId)
+          .gte('created_at', input.createdFrom)
+          .lt('created_at', input.createdTo)
+          .order('created_at', { ascending: false });
+        if (input.limit) {
+          query = query.limit(input.limit);
+        }
+        return query;
+      },
+      'Could not list WhatsApp QR messages for month'
+    );
 
-    if (error) {
-      throw mapPostgrestError(error, 'Could not list WhatsApp QR messages for month');
-    }
-
-    return ((data as any[] | null) ?? []).map(asMessage);
+    return data.map(asMessage);
   }
 
   async listMatches(ownerIds?: string[] | null, limit = 50): Promise<WhatsappQrMatchRecord[]> {
@@ -710,20 +890,135 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]> {
-    const { data, error } = await this.client
-      .from('mastercrm_whatsapp_qr_matches')
-      .select('*')
-      .eq('owner_id', input.ownerId)
-      .gte('created_at', input.createdFrom)
-      .lt('created_at', input.createdTo)
-      .order('created_at', { ascending: false })
-      .limit(input.limit ?? 5000);
+    const data = await selectAllSupabasePages<any>(
+      () => {
+        let query = this.client
+          .from('mastercrm_whatsapp_qr_matches')
+          .select('*')
+          .eq('owner_id', input.ownerId)
+          .gte('created_at', input.createdFrom)
+          .lt('created_at', input.createdTo)
+          .order('created_at', { ascending: false });
+        if (input.limit) {
+          query = query.limit(input.limit);
+        }
+        return query;
+      },
+      'Could not list WhatsApp QR matches for month'
+    );
 
-    if (error) {
-      throw mapPostgrestError(error, 'Could not list WhatsApp QR matches for month');
+    return data.map(asMatch);
+  }
+
+  async listContactsByPhones(input: { ownerId: string; phoneE164s: string[] }): Promise<WhatsappQrContactRecord[]> {
+    const phones = [...new Set(input.phoneE164s.map((phone) => normalizePhone(phone)))];
+    if (phones.length === 0) {
+      return [];
     }
 
-    return ((data as any[] | null) ?? []).map(asMatch);
+    const contacts: WhatsappQrContactRecord[] = [];
+    for (const chunk of chunkValues(phones, 100)) {
+      const { data, error } = await this.client
+        .from('mastercrm_whatsapp_qr_contacts')
+        .select('*')
+        .eq('owner_id', input.ownerId)
+        .in('phone_e164', chunk);
+
+      if (error) {
+        throw mapPostgrestError(error, 'Could not list WhatsApp QR contacts');
+      }
+
+      contacts.push(...(((data as any[] | null) ?? []).map(asContact)));
+    }
+
+    return contacts;
+  }
+
+  async enqueueRecheck(input: {
+    ownerId: string;
+    sessionId?: string | null;
+    monthStart: string;
+    phoneE164: string;
+    reason: WhatsappQrRecheckReason;
+    nextRunAt?: string;
+    expiresAt?: string;
+  }): Promise<WhatsappQrRecheckQueueRecord> {
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = input.expiresAt ?? addDays(now, 7).toISOString();
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_recheck_queue')
+      .upsert(
+        {
+          owner_id: input.ownerId,
+          session_id: input.sessionId ?? null,
+          month_start: input.monthStart,
+          phone_e164: normalizePhone(input.phoneE164),
+          reason: input.reason,
+          status: 'pending',
+          next_run_at: input.nextRunAt ?? nowIso,
+          expires_at: expiresAt,
+          last_error: null,
+          updated_at: nowIso
+        },
+        { onConflict: 'owner_id,month_start,phone_e164' }
+      )
+      .select('*')
+      .single();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not enqueue WhatsApp QR recheck');
+    }
+
+    return asRecheck(data);
+  }
+
+  async listDueRechecks(input: { nowIso: string; limit: number }): Promise<WhatsappQrRecheckQueueRecord[]> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_recheck_queue')
+      .select('*')
+      .eq('status', 'pending')
+      .lte('next_run_at', input.nowIso)
+      .order('next_run_at', { ascending: true })
+      .order('created_at', { ascending: true })
+      .limit(Math.max(1, Math.min(500, Math.trunc(input.limit))));
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not list due WhatsApp QR rechecks');
+    }
+
+    return ((data as any[] | null) ?? []).map(asRecheck);
+  }
+
+  async updateRecheck(
+    id: string,
+    patch: {
+      status?: WhatsappQrRecheckStatus;
+      attempts?: number;
+      nextRunAt?: string;
+      expiresAt?: string;
+      lastError?: string | null;
+    }
+  ): Promise<WhatsappQrRecheckQueueRecord> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_recheck_queue')
+      .update({
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.attempts !== undefined ? { attempts: patch.attempts } : {}),
+        ...(patch.nextRunAt !== undefined ? { next_run_at: patch.nextRunAt } : {}),
+        ...(patch.expiresAt !== undefined ? { expires_at: patch.expiresAt } : {}),
+        ...(patch.lastError !== undefined ? { last_error: nullableText(patch.lastError) } : {}),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not update WhatsApp QR recheck');
+    }
+
+    return asRecheck(data);
   }
 
   async ignorePhoneForMonth(input: {

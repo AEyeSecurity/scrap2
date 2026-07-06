@@ -29,8 +29,11 @@ interface RuntimeMessageEvent {
 
 interface RuntimeContactEvent {
   remoteJid?: string | null;
+  clientPhoneE164?: string | null;
   contactName?: string | null;
   pushName?: string | null;
+  username?: string | null;
+  verifiedName?: string | null;
 }
 
 interface RuntimeSession {
@@ -77,6 +80,11 @@ export interface WhatsappQrDashboard {
   queue: WhatsappQrPhoneQueueRow[];
   isAdmin: boolean;
   runtimeEnabled: boolean;
+  ownerSummaries?: Array<{
+    owner: WhatsappQrOwner;
+    session: (WhatsappQrSessionRecord & { hasRdaCredentials: boolean }) | null;
+    summary: WhatsappQrQueueSummary;
+  }>;
 }
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
@@ -102,6 +110,10 @@ function extractText(message: any): string | null {
 
 function extractContactName(contact: any): string | null {
   return contact?.name ?? contact?.notify ?? contact?.verifiedName ?? null;
+}
+
+function extractSavedContactName(contact: any): string | null {
+  return contact?.name ?? null;
 }
 
 function getBuenosAiresMonthStart(input = new Date()): string {
@@ -236,26 +248,36 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       sock.ev.on('creds.update', saveCreds);
       sock.ev.on('contacts.update', (updates: any[]) => {
         for (const contact of updates ?? []) {
-          const contactName = extractContactName(contact);
+          const contactName = extractSavedContactName(contact);
           if (contact?.id && contactName) {
             contactNames.set(contact.id, contactName);
+          }
+          if (contact?.id) {
             handlers.onContact({
               remoteJid: contact.id,
-              contactName,
-              pushName: contact.notify ?? null
+              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
+              contactName: extractSavedContactName(contact),
+              pushName: contact.notify ?? null,
+              username: contact.username ?? null,
+              verifiedName: contact.verifiedName ?? null
             }).catch((error) => this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact update processing failed'));
           }
         }
       });
       sock.ev.on('contacts.upsert', (contacts: any[]) => {
         for (const contact of contacts ?? []) {
-          const contactName = extractContactName(contact);
+          const contactName = extractSavedContactName(contact);
           if (contact?.id && contactName) {
             contactNames.set(contact.id, contactName);
+          }
+          if (contact?.id) {
             handlers.onContact({
               remoteJid: contact.id,
-              contactName,
-              pushName: contact.notify ?? null
+              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
+              contactName: extractSavedContactName(contact),
+              pushName: contact.notify ?? null,
+              username: contact.username ?? null,
+              verifiedName: contact.verifiedName ?? null
             }).catch((error) => this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact upsert processing failed'));
           }
         }
@@ -339,13 +361,18 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       });
       sock.ev.on('messaging-history.set', async (payload: any) => {
         for (const contact of payload.contacts ?? []) {
-          const contactName = extractContactName(contact);
+          const contactName = extractSavedContactName(contact);
           if (contact?.id && contactName) {
             contactNames.set(contact.id, contactName);
+          }
+          if (contact?.id) {
             await handlers.onContact({
               remoteJid: contact.id,
-              contactName,
-              pushName: contact.notify ?? null
+              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
+              contactName: extractSavedContactName(contact),
+              pushName: contact.notify ?? null,
+              username: contact.username ?? null,
+              verifiedName: contact.verifiedName ?? null
             });
           }
         }
@@ -465,6 +492,40 @@ export class WhatsappQrManager {
     return phones.has(phone);
   }
 
+  private async persistContact(owner: WhatsappQrOwner, session: WhatsappQrSessionRecord, contact: RuntimeContactEvent): Promise<string | null> {
+    const phone = contact.clientPhoneE164 ?? normalizeWhatsappJidPhone(contact.remoteJid);
+    if (!phone) {
+      return null;
+    }
+
+    const upsertContact = (this.options.store as any).upsertContact as
+      | ((input: {
+          sessionId?: string | null;
+          ownerId: string;
+          phoneE164: string;
+          contactName?: string | null;
+          notify?: string | null;
+          username?: string | null;
+          verifiedName?: string | null;
+          seenAt?: string;
+        }) => Promise<unknown>)
+      | undefined;
+    if (upsertContact) {
+      await upsertContact({
+        sessionId: session.id,
+        ownerId: owner.ownerId,
+        phoneE164: phone,
+        contactName: contact.contactName,
+        notify: contact.pushName,
+        username: contact.username,
+        verifiedName: contact.verifiedName,
+        seenAt: new Date().toISOString()
+      });
+    }
+
+    return phone;
+  }
+
   private ownerFromSession(session: WhatsappQrSessionRecord): WhatsappQrOwner {
     return {
       ownerId: session.ownerId,
@@ -565,7 +626,8 @@ export class WhatsappQrManager {
             });
           },
           onContact: async (contact) => {
-            if (!(await this.isMonthlyClient(owner, contact.remoteJid))) {
+            const phone = await this.persistContact(owner, currentSession, contact);
+            if (!(await this.isMonthlyClient(owner, contact.remoteJid, phone))) {
               return;
             }
             await this.options.autoAssignService.processMessage({
@@ -573,6 +635,7 @@ export class WhatsappQrManager {
               session: currentSession,
               direction: 'contact_sync',
               remoteJid: contact.remoteJid,
+              clientPhoneE164: phone,
               contactName: contact.contactName,
               pushName: contact.pushName,
               text: null
@@ -648,7 +711,7 @@ export class WhatsappQrManager {
   }
 
   async getDashboard(owner: WhatsappQrOwner, isAdmin: boolean, month: string): Promise<WhatsappQrDashboard> {
-    const ownerIds = isAdmin ? null : [owner.ownerId];
+    const ownerIds = [owner.ownerId];
     const monthWindow = buildWhatsappQrMonthWindow(month);
     const [sessions, credentialOwnerIds, monthClients, messages, matches, ignoredPhones] = await Promise.all([
       this.options.store.listSessions(ownerIds),
@@ -688,6 +751,91 @@ export class WhatsappQrManager {
       queue,
       isAdmin,
       runtimeEnabled: this.runtimeEnabled
+    };
+  }
+
+  async getAdminOverview(owner: WhatsappQrOwner, month: string): Promise<WhatsappQrDashboard> {
+    const monthWindow = buildWhatsappQrMonthWindow(month);
+    const sessions = await this.options.store.listSessions(null);
+    const ownerById = new Map<string, WhatsappQrOwner>();
+    ownerById.set(owner.ownerId, owner);
+    for (const session of sessions) {
+      ownerById.set(session.ownerId, this.ownerFromSession(session));
+    }
+
+    const ownerIds = [...ownerById.keys()];
+    const credentialOwnerIds = await this.options.store.listCredentialOwnerIds(ownerIds);
+    const safeSessions = sessions.map((session) => ({
+      ...session,
+      hasRdaCredentials: credentialOwnerIds.has(session.ownerId)
+    }));
+    const sessionByOwnerId = new Map(safeSessions.map((session) => [session.ownerId, session]));
+    const ownerSummaries = [];
+    let totalPhones = 0;
+    let assigned = 0;
+    let review = 0;
+    let ignored = 0;
+    let noSignal = 0;
+    let detectedUnassigned = 0;
+    let notFound = 0;
+    let conflict = 0;
+    let technicalError = 0;
+
+    for (const selectedOwner of ownerById.values()) {
+      const [monthClients, messages, matches, ignoredPhones] = await Promise.all([
+        this.options.store.listMonthClients({
+          ownerId: selectedOwner.ownerId,
+          monthStart: monthWindow.monthStartDate
+        }),
+        this.options.store.listMessagesForMonth({
+          ownerId: selectedOwner.ownerId,
+          createdFrom: monthWindow.startedAtIso,
+          createdTo: monthWindow.endedAtIso
+        }),
+        this.options.store.listMatchesForMonth({
+          ownerId: selectedOwner.ownerId,
+          createdFrom: monthWindow.startedAtIso,
+          createdTo: monthWindow.endedAtIso
+        }),
+        this.options.store.listIgnoredPhonesForMonth({
+          ownerId: selectedOwner.ownerId,
+          monthStart: monthWindow.monthStartDate
+        })
+      ]);
+      const built = buildWhatsappQrPhoneQueue({ monthClients, messages, matches, ignoredPhones });
+      ownerSummaries.push({
+        owner: selectedOwner,
+        session: sessionByOwnerId.get(selectedOwner.ownerId) ?? null,
+        summary: built.summary
+      });
+      totalPhones += built.summary.totalPhones;
+      assigned += built.summary.assigned;
+      review += built.summary.review;
+      ignored += built.summary.ignored;
+      noSignal += built.summary.noSignal;
+      detectedUnassigned += built.summary.detectedUnassigned;
+      notFound += built.summary.notFound;
+      conflict += built.summary.conflict;
+      technicalError += built.summary.technicalError;
+    }
+
+    return {
+      sessions: safeSessions,
+      summary: {
+        totalPhones,
+        assigned,
+        review,
+        ignored,
+        noSignal,
+        detectedUnassigned,
+        notFound,
+        conflict,
+        technicalError
+      },
+      queue: [],
+      isAdmin: true,
+      runtimeEnabled: this.runtimeEnabled,
+      ownerSummaries
     };
   }
 

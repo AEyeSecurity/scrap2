@@ -16,8 +16,20 @@ export function extractUsernameFromOutboundMessage(text: string | null | undefin
     return null;
   }
 
-  const match = text.match(/^\s*usuario\s*:\s*([^\s\r\n]+)/im);
-  return match?.[1] ? normalizeCandidateUsername(match[1]) : null;
+  const patterns = [
+    /^\s*-?\s*usuario\s*:\s*([^\s\r\n]+)/im,
+    /^\s*crear\s+usuario\s+([a-z0-9][a-z0-9._-]{2,63})\b/im
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const username = match?.[1] ? normalizeCandidateUsername(match[1]) : null;
+    if (username) {
+      return username;
+    }
+  }
+
+  return null;
 }
 
 export function extractUsernameFromContactName(contactName: string | null | undefined): string | null {

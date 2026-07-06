@@ -109,6 +109,7 @@ import type {
   ServerConfig
 } from './types';
 import { WhatsappQrManager } from './whatsapp-qr-manager';
+import { WhatsappQrRecheckWorker } from './whatsapp-qr-recheck-worker';
 import { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
 import {
   createWhatsappQrStoreFromEnv,
@@ -159,6 +160,10 @@ interface ServerDependencies {
   retentionWorkerEnabled?: boolean;
   retentionRunOnStart?: boolean;
   retentionPollMs?: number;
+  whatsappQrRecheckWorkerEnabled?: boolean;
+  whatsappQrRecheckRunOnStart?: boolean;
+  whatsappQrRecheckPollMs?: number;
+  whatsappQrRecheckBatchSize?: number;
 }
 
 interface ValidationIssue {
@@ -515,7 +520,9 @@ const mastercrmWhatsappQrStatusBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
     month: z.string().optional(),
-    mes: z.string().optional()
+    mes: z.string().optional(),
+    scope: z.enum(['own', 'owner', 'all']).optional(),
+    owner_id: z.string().optional()
   })
   .passthrough();
 
@@ -867,13 +874,13 @@ function mastercrmLinkedOwnerToWhatsappQrOwner(owner: MastercrmLinkedOwnerRecord
   };
 }
 
-function whatsappQrOwnerToResponse(owner: MastercrmLinkedOwnerRecord): Record<string, unknown> {
+function whatsappQrOwnerToResponse(owner: MastercrmLinkedOwnerRecord | WhatsappQrOwner): Record<string, unknown> {
   return {
     ownerId: owner.ownerId,
     ownerKey: owner.ownerKey,
     ownerLabel: owner.ownerLabel,
     pagina: owner.pagina,
-    telefono: owner.telefono
+    telefono: 'telefono' in owner ? owner.telefono ?? null : null
   };
 }
 
@@ -912,15 +919,29 @@ function whatsappQrSessionToResponse(session: WhatsappQrSessionRecord): Record<s
 
 function whatsappQrDashboardToResponse(
   dashboard: Awaited<ReturnType<WhatsappQrManager['getDashboard']>>,
-  linkedOwner: MastercrmLinkedOwnerRecord
+  linkedOwner: MastercrmLinkedOwnerRecord,
+  options?: {
+    scope?: 'own' | 'owner' | 'all';
+    selectedOwner?: WhatsappQrOwner;
+    availableOwners?: WhatsappQrOwner[];
+  }
 ): Record<string, unknown> {
   return {
     linkedOwner: whatsappQrOwnerToResponse(linkedOwner),
+    selectedOwner: whatsappQrOwnerToResponse(options?.selectedOwner ?? mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner)),
+    availableOwners: (options?.availableOwners ?? [mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner)]).map(whatsappQrOwnerToResponse),
+    scope: options?.scope ?? 'own',
     isAdmin: dashboard.isAdmin,
     runtimeEnabled: dashboard.runtimeEnabled,
     sessions: dashboard.sessions.map(whatsappQrSessionToResponse),
     summary: dashboard.summary,
-    queue: dashboard.queue
+    queue: dashboard.queue,
+    ownerSummaries:
+      dashboard.ownerSummaries?.map((item) => ({
+        owner: whatsappQrOwnerToResponse(item.owner),
+        session: item.session ? whatsappQrSessionToResponse(item.session) : null,
+        summary: item.summary
+      })) ?? []
   };
 }
 
@@ -1370,7 +1391,7 @@ function parseMastercrmWhatsappQrPayload(body: unknown): {
 }
 
 function parseMastercrmWhatsappQrStatusPayload(body: unknown): {
-  data?: { userId: number; month: string };
+  data?: { userId: number; month: string; scope: 'own' | 'owner' | 'all'; ownerId?: string };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmWhatsappQrStatusBodySchema.safeParse(body);
@@ -1383,6 +1404,11 @@ function parseMastercrmWhatsappQrStatusPayload(body: unknown): {
   const issues: ValidationIssue[] = [];
   const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
   const rawMonth = resolveAliasStringField(parsed.data, ['month', 'mes'], 'month', issues);
+  const scope = parsed.data.scope ?? 'own';
+  const ownerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues, { required: false });
+  if (scope === 'owner' && !ownerId) {
+    issues.push({ path: 'owner_id', message: 'owner_id is required when scope=owner' });
+  }
   let month: string | undefined;
   if (rawMonth) {
     try {
@@ -1396,7 +1422,7 @@ function parseMastercrmWhatsappQrStatusPayload(body: unknown): {
     return { issues };
   }
 
-  return { data: { userId, month }, issues };
+  return { data: { userId, month, scope, ...(ownerId ? { ownerId } : {}) }, issues };
 }
 
 function parseMastercrmWhatsappQrAssignPayload(body: unknown): {
@@ -1770,6 +1796,7 @@ export function createServer(
   let reportWorker: ReportRunWorker | null = null;
   let metaWorker: MetaConversionsWorker | null = null;
   let retentionWorker: MastercrmRetentionWorker | null = null;
+  let whatsappQrRecheckWorker: WhatsappQrRecheckWorker | null = null;
   const asnUserExistsChecker = dependencies?.asnUserExistsChecker ?? assertAsnUserExists;
   const rdaUserExistsChecker = dependencies?.rdaUserExistsChecker ?? assertRdaUserExists;
   const hasSupabaseConfig = Boolean(
@@ -1821,6 +1848,14 @@ export function createServer(
     dependencies?.retentionRunOnStart ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_RUN_ON_START) ?? true);
   const retentionPollMs =
     dependencies?.retentionPollMs ?? parsePositiveIntegerEnv(process.env.MASTERCRM_RETENTION_POLL_MS, 86_400_000);
+  const whatsappQrRecheckWorkerEnabled =
+    dependencies?.whatsappQrRecheckWorkerEnabled ?? (parseBooleanEnv(process.env.WHATSAPP_QR_RECHECK_ENABLED) ?? false);
+  const whatsappQrRecheckRunOnStart =
+    dependencies?.whatsappQrRecheckRunOnStart ?? (parseBooleanEnv(process.env.WHATSAPP_QR_RECHECK_RUN_ON_START) ?? true);
+  const whatsappQrRecheckPollMs =
+    dependencies?.whatsappQrRecheckPollMs ?? parsePositiveIntegerEnv(process.env.WHATSAPP_QR_RECHECK_POLL_MS, 300_000);
+  const whatsappQrRecheckBatchSize =
+    dependencies?.whatsappQrRecheckBatchSize ?? parsePositiveIntegerEnv(process.env.WHATSAPP_QR_RECHECK_BATCH_SIZE, 100);
   const mastercrmQrAdminOwnerKeys = resolveMastercrmQrAdminOwnerKeys();
   const shouldStartWhatsappQrManager =
     Boolean(dependencies?.whatsappQrManager) || process.env.WHATSAPP_QR_RUNTIME?.trim().toLowerCase() === 'baileys';
@@ -2268,6 +2303,26 @@ export function createServer(
       retentionWorker.start();
     } catch (error) {
       logger.error({ error }, 'MasterCRM technical retention worker could not start');
+    }
+  }
+
+  if (whatsappQrRecheckWorkerEnabled) {
+    try {
+      whatsappQrRecheckWorker = new WhatsappQrRecheckWorker(
+        getWhatsappQrStore(),
+        getPlayerPhoneStore(),
+        rdaUserExistsChecker,
+        appConfig,
+        logger,
+        {
+          runOnStart: whatsappQrRecheckRunOnStart,
+          pollMs: whatsappQrRecheckPollMs,
+          batchSize: whatsappQrRecheckBatchSize
+        }
+      );
+      whatsappQrRecheckWorker.start();
+    } catch (error) {
+      logger.error({ error }, 'WhatsApp QR recheck worker could not start');
     }
   }
 
@@ -3039,8 +3094,54 @@ export function createServer(
         return;
       }
 
-      const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
-      return reply.code(200).send(whatsappQrDashboardToResponse(dashboard, qrOwner.linkedOwner));
+      const sessions = await getWhatsappQrStore().listSessions(qrOwner.isAdmin ? null : [qrOwner.owner.ownerId]);
+      const availableOwnersMap = new Map<string, WhatsappQrOwner>();
+      availableOwnersMap.set(qrOwner.owner.ownerId, qrOwner.owner);
+      for (const sessionRow of sessions) {
+        availableOwnersMap.set(sessionRow.ownerId, whatsappQrSessionOwner(sessionRow));
+      }
+      const availableOwners = [...availableOwnersMap.values()].sort((left, right) =>
+        left.ownerLabel.localeCompare(right.ownerLabel)
+      );
+
+      if (!qrOwner.isAdmin && (parsed.data.scope === 'all' || parsed.data.ownerId !== undefined)) {
+        return reply.code(403).send({
+          message: 'No tenes permiso para ver otros cajeros QR',
+          code: 'WHATSAPP_QR_OWNER_FORBIDDEN'
+        });
+      }
+
+      if (parsed.data.scope === 'all') {
+        const dashboard = await getWhatsappQrManager().getAdminOverview(qrOwner.owner, parsed.data.month);
+        return reply.code(200).send(
+          whatsappQrDashboardToResponse(dashboard as Awaited<ReturnType<WhatsappQrManager['getDashboard']>>, qrOwner.linkedOwner, {
+            scope: 'all',
+            selectedOwner: qrOwner.owner,
+            availableOwners
+          })
+        );
+      }
+
+      let selectedOwner = qrOwner.owner;
+      if (parsed.data.scope === 'owner') {
+        const targetOwner = availableOwnersMap.get(parsed.data.ownerId!);
+        if (!targetOwner) {
+          return reply.code(404).send({
+            message: 'No se encontro el cajero QR solicitado',
+            code: 'WHATSAPP_QR_OWNER_NOT_FOUND'
+          });
+        }
+        selectedOwner = targetOwner;
+      }
+
+      const dashboard = await getWhatsappQrManager().getDashboard(selectedOwner, qrOwner.isAdmin, parsed.data.month);
+      return reply.code(200).send(
+        whatsappQrDashboardToResponse(dashboard, qrOwner.linkedOwner, {
+          scope: parsed.data.scope,
+          selectedOwner,
+          availableOwners
+        })
+      );
     } catch (error) {
       const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
       if (mappedError) {
@@ -4072,6 +4173,9 @@ export function createServer(
     }
     if (retentionWorker) {
       await retentionWorker.stop();
+    }
+    if (whatsappQrRecheckWorker) {
+      await whatsappQrRecheckWorker.stop();
     }
     if (cachedWhatsappQrManager) {
       await cachedWhatsappQrManager.stop();

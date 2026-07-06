@@ -918,6 +918,22 @@ Authorization: Bearer {SUPABASE_PAT}
 Content-Type: application/json
 ```
 
+Migracion aplicada el 2026-07-06:
+
+- `db/migrations/20260706_mastercrm_whatsapp_qr_contacts_recheck.sql`
+- crea `mastercrm_whatsapp_qr_contacts`
+- crea `mastercrm_whatsapp_qr_recheck_queue`
+- habilita la relectura eficiente de contactos QR por 7 dias para mensajes salientes, contactos agendados, primera carga y errores tecnicos.
+
+Despues de aplicar esa migracion se puede activar:
+
+```env
+WHATSAPP_QR_RECHECK_ENABLED=true
+WHATSAPP_QR_RECHECK_RUN_ON_START=true
+WHATSAPP_QR_RECHECK_POLL_MS=300000
+WHATSAPP_QR_RECHECK_BATCH_SIZE=100
+```
+
 ## Pruebas recomendadas
 
 Tests:

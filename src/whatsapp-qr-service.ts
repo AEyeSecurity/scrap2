@@ -44,8 +44,59 @@ export interface WhatsappQrAutoAssignOptions {
   rdaUserExistsChecker: (input: AssertRdaUserExistsInput) => Promise<void>;
 }
 
+function getBuenosAiresMonthStart(input = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires',
+    year: 'numeric',
+    month: '2-digit'
+  }).formatToParts(input);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  return year && month ? `${year}-${month}-01` : input.toISOString().slice(0, 7) + '-01';
+}
+
+function addMinutes(date: Date, minutes: number): Date {
+  return new Date(date.getTime() + minutes * 60_000);
+}
+
 export class WhatsappQrAutoAssignService {
   constructor(private readonly options: WhatsappQrAutoAssignOptions) {}
+
+  private async enqueueRecheck(
+    event: WhatsappQrMessageEvent,
+    clientPhoneE164: string,
+    reason: 'outbound_candidate' | 'contact_seen' | 'technical_error'
+  ): Promise<void> {
+    const enqueueRecheck = (this.options.store as any).enqueueRecheck as
+      | ((input: {
+          ownerId: string;
+          sessionId?: string | null;
+          monthStart: string;
+          phoneE164: string;
+          reason: 'outbound_candidate' | 'contact_seen' | 'technical_error';
+          nextRunAt?: string;
+          expiresAt?: string;
+        }) => Promise<unknown>)
+      | undefined;
+    if (!enqueueRecheck) {
+      return;
+    }
+
+    const now = new Date();
+    try {
+      await enqueueRecheck({
+        ownerId: event.owner.ownerId,
+        sessionId: event.session.id,
+        monthStart: getBuenosAiresMonthStart(now),
+        phoneE164: clientPhoneE164,
+        reason,
+        nextRunAt: addMinutes(now, reason === 'technical_error' ? 60 : 15).toISOString(),
+        expiresAt: addMinutes(now, 7 * 24 * 60).toISOString()
+      });
+    } catch (error) {
+      this.options.logger.warn({ error, ownerKey: event.owner.ownerKey, clientPhoneE164 }, 'Could not enqueue QR recheck');
+    }
+  }
 
   async processMessage(event: WhatsappQrMessageEvent): Promise<WhatsappQrProcessResult> {
     const clientPhoneE164 = event.clientPhoneE164 ?? normalizeWhatsappJidPhone(event.remoteJid);
@@ -82,6 +133,12 @@ export class WhatsappQrAutoAssignService {
       return { message, match: null };
     }
 
+    await this.enqueueRecheck(
+      event,
+      clientPhoneE164,
+      matchSource === 'outbound_message' ? 'outbound_candidate' : 'contact_seen'
+    );
+
     let match = await this.options.store.createMatch({
       sessionId: event.session.id,
       ownerId: event.owner.ownerId,
@@ -99,6 +156,7 @@ export class WhatsappQrAutoAssignService {
         status: 'error',
         errorMessage: error instanceof Error ? error.message : 'rda_credentials_unavailable'
       });
+      await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
     }
 
@@ -107,6 +165,7 @@ export class WhatsappQrAutoAssignService {
         status: 'error',
         errorMessage: 'missing_rda_credentials'
       });
+      await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
     }
 
@@ -132,6 +191,7 @@ export class WhatsappQrAutoAssignService {
         status: 'error',
         errorMessage: error instanceof Error ? error.message : 'rda_validation_failed'
       });
+      await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
     }
 
@@ -165,6 +225,7 @@ export class WhatsappQrAutoAssignService {
         rdaValidatedAt: validatedAt,
         errorMessage: error instanceof Error ? error.message : 'assignment_failed'
       });
+      await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
     }
   }

@@ -170,6 +170,83 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         }
       ]
     })),
+    getAdminOverview: vi.fn(async (owner) => ({
+      isAdmin: true,
+      runtimeEnabled: true,
+      sessions: [
+        {
+          id: 'session-admin',
+          ownerId: owner.ownerId,
+          ownerKey: owner.ownerKey,
+          ownerLabel: owner.ownerLabel,
+          pagina: owner.pagina,
+          status: 'connected',
+          runtimeSessionId: 'runtime-admin',
+          phoneE164: '+5493513333333',
+          qrPayload: null,
+          qrDataUrl: null,
+          qrExpiresAt: null,
+          lastHeartbeatAt: '2026-06-30T12:00:00.000Z',
+          lastConnectedAt: '2026-06-30T12:00:00.000Z',
+          lastDisconnectedAt: null,
+          lastError: null,
+          botGroupKey: null,
+          createdAt: '2026-06-30T12:00:00.000Z',
+          updatedAt: '2026-06-30T12:00:00.000Z',
+          hasRdaCredentials: true
+        },
+        {
+          id: 'session-lea',
+          ownerId: 'owner-lea',
+          ownerKey: 'luqui10:lear',
+          ownerLabel: 'Lea Riqueza',
+          pagina: 'RdA',
+          status: 'connected',
+          runtimeSessionId: 'runtime-lea',
+          phoneE164: '+5493514444444',
+          qrPayload: null,
+          qrDataUrl: null,
+          qrExpiresAt: null,
+          lastHeartbeatAt: '2026-06-30T12:00:00.000Z',
+          lastConnectedAt: '2026-06-30T12:00:00.000Z',
+          lastDisconnectedAt: null,
+          lastError: null,
+          botGroupKey: null,
+          createdAt: '2026-06-30T12:00:00.000Z',
+          updatedAt: '2026-06-30T12:00:00.000Z',
+          hasRdaCredentials: false
+        }
+      ],
+      summary: {
+        totalPhones: 4,
+        assigned: 2,
+        review: 2,
+        ignored: 0,
+        noSignal: 1,
+        detectedUnassigned: 1,
+        notFound: 0,
+        conflict: 0,
+        technicalError: 0
+      },
+      queue: [],
+      ownerSummaries: [
+        {
+          owner,
+          session: null,
+          summary: {
+            totalPhones: 3,
+            assigned: 2,
+            review: 1,
+            ignored: 0,
+            noSignal: 0,
+            detectedUnassigned: 1,
+            notFound: 0,
+            conflict: 0,
+            technicalError: 0
+          }
+        }
+      ]
+    })),
     connect: vi.fn(async (owner) => ({
       id: 'session-connect',
       ownerId: owner.ownerId,
@@ -242,6 +319,51 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         syncedAt: '2026-06-30T12:00:00.000Z'
       })),
       ignorePhoneForMonth: vi.fn(async () => undefined),
+      listSessions: vi.fn(async (ownerIds?: string[] | null) => {
+        const rows = [
+          {
+            id: 'session-admin',
+            ownerId: 'owner-admin',
+            ownerKey: 'luqui10:luqui10',
+            ownerLabel: 'Luqui10',
+            pagina: 'RdA',
+            status: 'connected',
+            runtimeSessionId: 'runtime-admin',
+            phoneE164: '+5493513333333',
+            qrPayload: null,
+            qrDataUrl: null,
+            qrExpiresAt: null,
+            lastHeartbeatAt: '2026-06-30T12:00:00.000Z',
+            lastConnectedAt: '2026-06-30T12:00:00.000Z',
+            lastDisconnectedAt: null,
+            lastError: null,
+            botGroupKey: null,
+            createdAt: '2026-06-30T12:00:00.000Z',
+            updatedAt: '2026-06-30T12:00:00.000Z'
+          },
+          {
+            id: 'session-lea',
+            ownerId: 'owner-lea',
+            ownerKey: 'luqui10:lear',
+            ownerLabel: 'Lea Riqueza',
+            pagina: 'RdA',
+            status: 'connected',
+            runtimeSessionId: 'runtime-lea',
+            phoneE164: '+5493514444444',
+            qrPayload: null,
+            qrDataUrl: null,
+            qrExpiresAt: null,
+            lastHeartbeatAt: '2026-06-30T12:00:00.000Z',
+            lastConnectedAt: '2026-06-30T12:00:00.000Z',
+            lastDisconnectedAt: null,
+            lastError: null,
+            botGroupKey: null,
+            createdAt: '2026-06-30T12:00:00.000Z',
+            updatedAt: '2026-06-30T12:00:00.000Z'
+          }
+        ];
+        return ownerIds && ownerIds.length > 0 ? rows.filter((row) => ownerIds.includes(row.ownerId)) : rows;
+      }),
       getSessionByOwner: vi.fn(async (ownerId: string) => ({
         id: 'session-target',
         ownerId,
@@ -313,12 +435,86 @@ describe('WhatsApp QR CRM routes', () => {
       await app.close();
 
       expect(response.statusCode).toBe(200);
-      expect(response.json().isAdmin).toBe(true);
+      const body = response.json();
+      expect(body.isAdmin).toBe(true);
+      expect(body.scope).toBe('own');
+      expect(body.sessions).toEqual([expect.objectContaining({ ownerId: 'owner-admin' })]);
+      expect(body.availableOwners).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ ownerId: 'owner-admin' }),
+          expect.objectContaining({ ownerId: 'owner-lea' })
+        ])
+      );
       expect(whatsappQrManager.getDashboard).toHaveBeenCalledWith(
         expect.objectContaining({ ownerId: 'owner-admin' }),
         true,
         '2026-07'
       );
+    });
+  });
+
+  it('lets QR admins switch to another owner explicitly', async () => {
+    await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
+      const { app, whatsappQrManager } = buildApp();
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/status',
+        headers: authHeader(2, 'luqui'),
+        payload: { user_id: 2, month: '2026-07', scope: 'owner', owner_id: 'owner-lea' }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        scope: 'owner',
+        selectedOwner: { ownerId: 'owner-lea', ownerKey: 'luqui10:lear' },
+        sessions: [{ ownerId: 'owner-lea' }]
+      });
+      expect(whatsappQrManager.getDashboard).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'owner-lea', ownerKey: 'luqui10:lear' }),
+        true,
+        '2026-07'
+      );
+    });
+  });
+
+  it('returns admin overview without a mixed operational queue', async () => {
+    await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
+      const { app, whatsappQrManager } = buildApp();
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/status',
+        headers: authHeader(2, 'luqui'),
+        payload: { user_id: 2, month: '2026-07', scope: 'all' }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        scope: 'all',
+        queue: [],
+        ownerSummaries: [expect.objectContaining({ owner: expect.objectContaining({ ownerId: 'owner-admin' }) })]
+      });
+      expect(whatsappQrManager.getAdminOverview).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'owner-admin' }),
+        '2026-07'
+      );
+    });
+  });
+
+  it('blocks non-admin QR users from selecting other owners', async () => {
+    await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
+      const { app, whatsappQrManager } = buildApp();
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/status',
+        headers: authHeader(1, 'juan'),
+        payload: { user_id: 1, month: '2026-07', scope: 'owner', owner_id: 'owner-lea' }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(403);
+      expect(whatsappQrManager.getDashboard).not.toHaveBeenCalled();
     });
   });
 

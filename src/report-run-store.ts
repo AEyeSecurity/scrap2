@@ -100,6 +100,7 @@ export interface ReportRunStore {
   completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   failRunItem(lease: ReportRunLease, error: string): Promise<void>;
   upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
+  enqueueWhatsappQrRecheckFromSnapshot?(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   refreshRunStatus(runId: string): Promise<ReportRunRecord>;
   createOutboxEntry(runId: string): Promise<void>;
   getRunById(runId: string): Promise<ReportRunRecord>;
@@ -133,6 +134,16 @@ function normalizeDate(value: string): string {
   }
 
   return normalized;
+}
+
+function getMonthStartFromReportDate(reportDate: string): string {
+  return `${reportDate.slice(0, 7)}-01`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
 }
 
 function normalizeText(value: string, label: string): string {
@@ -445,6 +456,44 @@ export class SupabaseReportRunStore implements ReportRunStore {
     if (error) {
       throw mapPostgrestError(error, 'Could not upsert report daily snapshot');
     }
+  }
+
+  async enqueueWhatsappQrRecheckFromSnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
+    if (lease.pagina !== 'RdA' || !Number.isFinite(result.cargadoNumero) || result.cargadoNumero <= 0) {
+      return;
+    }
+
+    const { data: clientData, error: clientError } = await this.client
+      .from('clients')
+      .select('phone_e164')
+      .eq('id', lease.clientId)
+      .maybeSingle();
+
+    if (clientError || typeof clientData?.phone_e164 !== 'string' || !clientData.phone_e164) {
+      return;
+    }
+
+    const now = new Date();
+    await this.client
+      .from('mastercrm_whatsapp_qr_recheck_queue')
+      .upsert(
+        {
+          owner_id: lease.ownerId,
+          session_id: null,
+          month_start: getMonthStartFromReportDate(lease.reportDate),
+          phone_e164: clientData.phone_e164,
+          reason: 'first_load',
+          status: 'pending',
+          next_run_at: now.toISOString(),
+          expires_at: addDays(now, 7).toISOString(),
+          last_error: null,
+          updated_at: now.toISOString()
+        },
+        {
+          onConflict: 'owner_id,month_start,phone_e164',
+          ignoreDuplicates: true
+        }
+      );
   }
 
   async refreshRunStatus(runId: string): Promise<ReportRunRecord> {

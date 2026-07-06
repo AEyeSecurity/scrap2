@@ -136,6 +136,7 @@ export class ReportRunWorker {
       const result = await this.executor(lease);
       await this.store.completeRunItem(lease, result);
       await this.store.upsertDailySnapshot(lease, result);
+      await this.store.enqueueWhatsappQrRecheckFromSnapshot?.(lease, result);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn({ error: message, runId: lease.runId, username: lease.username }, 'Report item failed');

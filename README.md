@@ -110,6 +110,7 @@ Artefactos del modo API:
 - `REPORT_WORKER_ENABLED`: activa o desactiva el worker de reportes ASN.
 - `MASTERCRM_QR_ADMIN_OWNER_KEYS`: owner keys con vista admin para la solapa WhatsApp QR.
 - `WHATSAPP_QR_RUNTIME=baileys`: habilita runtime WhatsApp Web QR.
+- `WHATSAPP_QR_RECHECK_ENABLED`: activa la relectura acotada de contactos QR pendientes; requiere `mastercrm_whatsapp_qr_contacts` y `mastercrm_whatsapp_qr_recheck_queue`.
 - `N8N_SQLITE_PATH`: ruta al SQLite de n8n para sincronizar credenciales RdA con `npm run sync:n8n-rda-cashiers`.
 - `FUNDS_SESSION_CACHE_ENABLED`: reutiliza sesiones de fondos entre jobs.
 - `SCRAP2_BROWSER_CONCURRENCY`: limite global de navegadores Playwright vivos; por defecto es `1` para proteger la tabla de procesos del contenedor.

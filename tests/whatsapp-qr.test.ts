@@ -142,6 +142,8 @@ Contrase\u00f1a: secreto
 
 https://reydeases.com/`)
     ).toBe('player_123');
+    expect(extractUsernameFromOutboundMessage('- Usuario: Andrea1201 - Contrase\u00f1a: secreto')).toBe('andrea1201');
+    expect(extractUsernameFromOutboundMessage('Crear usuario 3Rosa648')).toBe('3rosa648');
     expect(normalizeWhatsappJidPhone('5493511234567@s.whatsapp.net')).toBe('+5493511234567');
     expect(normalizeWhatsappJidPhone('5493516549344:5@s.whatsapp.net')).toBe('+5493516549344');
     expect(normalizeWhatsappJidPhone('171606005538987@lid')).toBeNull();
@@ -258,6 +260,40 @@ describe('WhatsApp QR autoassign', () => {
     expect(result.message?.direction).toBe('contact_sync');
     expect(result.match?.source).toBe('contact_name');
     expect(result.match?.status).toBe('assigned');
+  });
+
+  it('does not autoassign generic push names without a saved contact name', async () => {
+    const store = new FakeWhatsappQrStore();
+    const assignUsernameByPhone = vi.fn(async () => ({
+      previousUsername: null,
+      currentUsername: 'juan',
+      overwritten: false,
+      createdClient: false,
+      createdLink: false,
+      movedFromPhone: null,
+      deletedOldPhone: false
+    }));
+    const service = new WhatsappQrAutoAssignService({
+      appConfig,
+      logger,
+      store: store as WhatsappQrStore,
+      playerPhoneStore: { assignUsernameByPhone } as any,
+      rdaUserExistsChecker: vi.fn(async () => undefined)
+    });
+
+    const result = await service.processMessage({
+      owner,
+      session,
+      direction: 'contact_sync',
+      remoteJid: '5493511234567@s.whatsapp.net',
+      contactName: null,
+      pushName: 'Juan'
+    });
+
+    expect(result.match).toBeNull();
+    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+    expect(store.messages[0]?.pushName).toBe('Juan');
+    expect(store.messages[0]?.candidateUsername).toBeNull();
   });
 });
 
