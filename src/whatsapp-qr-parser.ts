@@ -40,6 +40,21 @@ export function extractUsernameFromContactName(contactName: string | null | unde
   return normalizeCandidateUsername(contactName);
 }
 
+export function resolveMessageRemoteJid(
+  key: { remoteJid?: string | null; remoteJidAlt?: string | null } | null | undefined
+): string | null {
+  const jid = key?.remoteJid ?? null;
+  if (!jid) {
+    return null;
+  }
+  if (!jid.endsWith('@lid')) {
+    return jid;
+  }
+
+  const alt = key?.remoteJidAlt ?? null;
+  return alt && !alt.endsWith('@lid') ? alt : null;
+}
+
 export function normalizeWhatsappJidPhone(value: string | null | undefined): string | null {
   if (!value) {
     return null;

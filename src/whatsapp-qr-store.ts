@@ -106,9 +106,18 @@ export interface WhatsappQrContactRecord {
   notify: string | null;
   username: string | null;
   verifiedName: string | null;
+  firstMessageAt: string | null;
+  firstMessageDirection: 'inbound' | 'outbound' | null;
+  intakeRecordedAt: string | null;
   lastSeenAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface WhatsappQrChatState {
+  firstMessageAt: string;
+  firstMessageDirection: 'inbound' | 'outbound';
+  intakeRecordedAt: string | null;
 }
 
 export interface WhatsappQrRecheckQueueRecord {
@@ -208,6 +217,13 @@ export interface WhatsappQrStore {
     verifiedName?: string | null;
     seenAt?: string;
   }): Promise<WhatsappQrContactRecord>;
+  recordChatMessage(input: {
+    ownerId: string;
+    phoneE164: string;
+    messageAt: string;
+    direction: 'inbound' | 'outbound';
+  }): Promise<WhatsappQrChatState>;
+  markIntakeRecorded(input: { ownerId: string; phoneE164: string }): Promise<string | null>;
   createMatch(input: CreateWhatsappQrMatchInput): Promise<WhatsappQrMatchRecord>;
   updateMatch(
     id: string,
@@ -387,6 +403,9 @@ function asContact(row: any): WhatsappQrContactRecord {
     notify: row.notify ?? null,
     username: row.username ?? null,
     verifiedName: row.verified_name ?? null,
+    firstMessageAt: row.first_message_at ?? null,
+    firstMessageDirection: row.first_message_direction ?? null,
+    intakeRecordedAt: row.intake_recorded_at ?? null,
     lastSeenAt: row.last_seen_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -856,6 +875,44 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
 
     return asContact(data);
+  }
+
+  async recordChatMessage(input: {
+    ownerId: string;
+    phoneE164: string;
+    messageAt: string;
+    direction: 'inbound' | 'outbound';
+  }): Promise<WhatsappQrChatState> {
+    const { data, error } = await this.client.rpc('record_whatsapp_qr_chat_message_v1', {
+      p_owner_id: input.ownerId,
+      p_phone_e164: normalizePhone(input.phoneE164),
+      p_message_at: input.messageAt,
+      p_direction: input.direction
+    });
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not record WhatsApp QR chat message');
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    return {
+      firstMessageAt: row.first_message_at,
+      firstMessageDirection: row.first_message_direction,
+      intakeRecordedAt: row.intake_recorded_at ?? null
+    };
+  }
+
+  async markIntakeRecorded(input: { ownerId: string; phoneE164: string }): Promise<string | null> {
+    const { data, error } = await this.client.rpc('mark_whatsapp_qr_intake_recorded_v1', {
+      p_owner_id: input.ownerId,
+      p_phone_e164: normalizePhone(input.phoneE164)
+    });
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not mark WhatsApp QR intake');
+    }
+
+    return (data as string | null) ?? null;
   }
 
   async createMatch(input: CreateWhatsappQrMatchInput): Promise<WhatsappQrMatchRecord> {

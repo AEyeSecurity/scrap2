@@ -9,6 +9,7 @@ import { createPlayerPhoneStoreFromEnv } from './player-phone-store';
 import { fetchRdaAgentId, resolveRdaUserByApi } from './rda-user-api';
 import { resolveSiteAppConfig } from './site-profile';
 import { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
+import { resolveMessageRemoteJid } from './whatsapp-qr-parser';
 import {
   createWhatsappQrStoreFromEnv,
   type WhatsappQrMatchStatus,
@@ -606,7 +607,7 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
 
       const sock = baileys.default({
         auth: state,
-        printQRInTerminal: false,
+        syncFullHistory: true,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
       });
 
@@ -658,7 +659,7 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
       });
       sock.ev.on('messages.upsert', (payload: any) => {
         for (const item of payload.messages ?? []) {
-          const remoteJid = item.key?.remoteJid ?? null;
+          const remoteJid = resolveMessageRemoteJid(item.key);
           if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast' || !item.key?.fromMe) {
             continue;
           }
@@ -693,7 +694,7 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
           );
         }
         for (const item of payload.messages ?? []) {
-          const remoteJid = item.key?.remoteJid ?? null;
+          const remoteJid = resolveMessageRemoteJid(item.key);
           if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast' || !item.key?.fromMe) {
             continue;
           }

@@ -1928,6 +1928,7 @@ export function createServer(
         playerPhoneStore: getPlayerPhoneStore(),
         rdaUserExistsChecker
       }),
+      playerPhoneStore: getPlayerPhoneStore(),
       telegramAlerts: getTelegramAlertSender(),
       logger
     });

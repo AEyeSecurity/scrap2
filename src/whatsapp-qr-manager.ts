@@ -9,14 +9,17 @@ import {
   type WhatsappQrPhoneQueueRow,
   type WhatsappQrQueueSummary
 } from './whatsapp-qr-dashboard';
-import type {
-  WhatsappQrContactRecord,
-  UpsertWhatsappQrSessionPatch,
-  WhatsappQrOwner,
-  WhatsappQrSessionRecord,
-  WhatsappQrStore
+import {
+  ownerContextFromWhatsappQrOwner,
+  type WhatsappQrChatState,
+  type WhatsappQrContactRecord,
+  type UpsertWhatsappQrSessionPatch,
+  type WhatsappQrOwner,
+  type WhatsappQrSessionRecord,
+  type WhatsappQrStore
 } from './whatsapp-qr-store';
-import { normalizeWhatsappJidPhone } from './whatsapp-qr-parser';
+import type { PlayerPhoneStore } from './player-phone-store';
+import { normalizeWhatsappJidPhone, resolveMessageRemoteJid } from './whatsapp-qr-parser';
 
 interface RuntimeMessageEvent {
   direction: 'inbound' | 'outbound';
@@ -67,6 +70,7 @@ interface WhatsappQrRuntime {
 export interface WhatsappQrManagerOptions {
   store: WhatsappQrStore;
   autoAssignService: WhatsappQrAutoAssignService;
+  playerPhoneStore: PlayerPhoneStore;
   telegramAlerts: TelegramAlertSender;
   logger: Logger;
   runtime?: WhatsappQrRuntime;
@@ -256,45 +260,87 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
 
       sock = baileys.default({
         auth: state,
-        printQRInTerminal: false,
+        syncFullHistory: true,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
       });
 
+      const resolveLidToPn = async (jid: string): Promise<string | null> => {
+        try {
+          const pn = await sock?.signalRepository?.lidMapping?.getPNForLID?.(jid);
+          return typeof pn === 'string' && pn.includes('@') ? pn : null;
+        } catch {
+          return null;
+        }
+      };
+
+      const emitContact = async (contact: any): Promise<void> => {
+        if (!contact?.id) {
+          return;
+        }
+        let phone = normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id);
+        if (!phone && typeof contact.id === 'string' && contact.id.endsWith('@lid')) {
+          phone = normalizeWhatsappJidPhone(await resolveLidToPn(contact.id));
+        }
+        const contactName = extractSavedContactName(contact);
+        if (phone && contactName) {
+          contactNames.set(phone, contactName);
+        }
+        await handlers.onContact({
+          remoteJid: contact.id,
+          clientPhoneE164: phone,
+          contactName,
+          pushName: contact.notify ?? null,
+          username: contact.username ?? null,
+          verifiedName: contact.verifiedName ?? null
+        });
+      };
+
+      const emitMessage = async (item: any, isHistory: boolean): Promise<void> => {
+        const rawJid = item.key?.remoteJid ?? null;
+        if (!rawJid || rawJid.endsWith('@g.us') || rawJid === 'status@broadcast') {
+          return;
+        }
+        let remoteJid = resolveMessageRemoteJid(item.key);
+        if (!remoteJid && rawJid.endsWith('@lid')) {
+          remoteJid = await resolveLidToPn(rawJid);
+        }
+        if (!remoteJid) {
+          this.logger.warn({ ownerKey: owner.ownerKey, rawJid }, 'QR message dropped: unresolved @lid');
+          return;
+        }
+        const phone = normalizeWhatsappJidPhone(remoteJid);
+        const timestampValue = item.messageTimestamp;
+        const timestamp =
+          typeof timestampValue === 'number'
+            ? new Date(timestampValue * 1000).toISOString()
+            : timestampValue?.low
+              ? new Date(Number(timestampValue.low) * 1000).toISOString()
+              : null;
+        await handlers.onMessage({
+          direction: item.key?.fromMe ? 'outbound' : 'inbound',
+          remoteJid,
+          messageId: item.key?.id ?? null,
+          contactName: phone ? (contactNames.get(phone) ?? null) : null,
+          pushName: item.pushName ?? null,
+          text: extractText(item),
+          messageTimestamp: timestamp,
+          isHistory
+        });
+      };
+
       sock.ev.on('creds.update', saveCreds);
-      sock.ev.on('contacts.update', (updates: any[]) => {
+      sock.ev.on('contacts.update', async (updates: any[]) => {
         for (const contact of updates ?? []) {
-          const contactName = extractSavedContactName(contact);
-          if (contact?.id && contactName) {
-            contactNames.set(contact.id, contactName);
-          }
-          if (contact?.id) {
-            handlers.onContact({
-              remoteJid: contact.id,
-              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
-              contactName: extractSavedContactName(contact),
-              pushName: contact.notify ?? null,
-              username: contact.username ?? null,
-              verifiedName: contact.verifiedName ?? null
-            }).catch((error) => this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact update processing failed'));
-          }
+          await emitContact(contact).catch((error) =>
+            this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact update processing failed')
+          );
         }
       });
-      sock.ev.on('contacts.upsert', (contacts: any[]) => {
+      sock.ev.on('contacts.upsert', async (contacts: any[]) => {
         for (const contact of contacts ?? []) {
-          const contactName = extractSavedContactName(contact);
-          if (contact?.id && contactName) {
-            contactNames.set(contact.id, contactName);
-          }
-          if (contact?.id) {
-            handlers.onContact({
-              remoteJid: contact.id,
-              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
-              contactName: extractSavedContactName(contact),
-              pushName: contact.notify ?? null,
-              username: contact.username ?? null,
-              verifiedName: contact.verifiedName ?? null
-            }).catch((error) => this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact upsert processing failed'));
-          }
+          await emitContact(contact).catch((error) =>
+            this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact upsert processing failed')
+          );
         }
       });
       sock.ev.on('connection.update', async (update: any) => {
@@ -350,71 +396,17 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       });
       sock.ev.on('messages.upsert', async (payload: any) => {
         for (const item of payload.messages ?? []) {
-          const remoteJid = item.key?.remoteJid ?? null;
-          if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') {
-            continue;
-          }
-          const direction = item.key?.fromMe ? 'outbound' : 'inbound';
-          const timestampValue = item.messageTimestamp;
-          const timestamp =
-            typeof timestampValue === 'number'
-              ? new Date(timestampValue * 1000).toISOString()
-              : timestampValue?.low
-                ? new Date(Number(timestampValue.low) * 1000).toISOString()
-                : null;
-          await handlers.onMessage({
-            direction,
-            remoteJid,
-            messageId: item.key?.id ?? null,
-            contactName: contactNames.get(remoteJid) ?? null,
-            pushName: item.pushName ?? null,
-            text: extractText(item),
-            messageTimestamp: timestamp
-          });
+          await emitMessage(item, false);
         }
         await handlers.onHeartbeat();
       });
       sock.ev.on('messaging-history.set', async (payload: any) => {
         for (const contact of payload.contacts ?? []) {
-          const contactName = extractSavedContactName(contact);
-          if (contact?.id && contactName) {
-            contactNames.set(contact.id, contactName);
-          }
-          if (contact?.id) {
-            await handlers.onContact({
-              remoteJid: contact.id,
-              clientPhoneE164: normalizeWhatsappJidPhone(contact.phoneNumber ?? contact.id),
-              contactName: extractSavedContactName(contact),
-              pushName: contact.notify ?? null,
-              username: contact.username ?? null,
-              verifiedName: contact.verifiedName ?? null
-            });
-          }
+          await emitContact(contact);
         }
 
         for (const item of payload.messages ?? []) {
-          const remoteJid = item.key?.remoteJid ?? null;
-          if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') {
-            continue;
-          }
-          const direction = item.key?.fromMe ? 'outbound' : 'inbound';
-          const timestampValue = item.messageTimestamp;
-          const timestamp =
-            typeof timestampValue === 'number'
-              ? new Date(timestampValue * 1000).toISOString()
-              : timestampValue?.low
-                ? new Date(Number(timestampValue.low) * 1000).toISOString()
-                : null;
-          await handlers.onMessage({
-            direction,
-            remoteJid,
-            messageId: item.key?.id ?? null,
-            contactName: contactNames.get(remoteJid) ?? null,
-            pushName: item.pushName ?? null,
-            text: extractText(item),
-            messageTimestamp: timestamp,
-            isHistory: true
-          });
+          await emitMessage(item, true);
         }
         await handlers.onHeartbeat();
       });
@@ -465,7 +457,8 @@ export class WhatsappQrManager {
   private readonly authRootDir: string;
   private alertTimer: NodeJS.Timeout | null = null;
   private readonly runtimeEnabled: boolean;
-  private readonly monthlyPhoneCache = new Map<string, { monthStart: string; loadedAt: number; phones: Set<string> }>();
+  private readonly chatStateCache = new Map<string, { state: WhatsappQrChatState; loadedAt: number }>();
+  private readonly ignoredPhoneCache = new Map<string, { monthStart: string; loadedAt: number; phones: Set<string> }>();
   private startPromise: Promise<void> | null = null;
   private started = false;
 
@@ -526,33 +519,107 @@ export class WhatsappQrManager {
       );
   }
 
-  private async getMonthlyPhones(owner: WhatsappQrOwner): Promise<Set<string>> {
-    const monthStart = resolveWhatsappQrMonthStart();
-    const cached = this.monthlyPhoneCache.get(owner.ownerId);
-    if (cached && cached.monthStart === monthStart && Date.now() - cached.loadedAt < 300_000) {
-      return cached.phones;
-    }
-
-    const phones = await this.options.store.listOwnerClientPhonesForMonth({
-      ownerId: owner.ownerId,
-      monthStart
-    });
-    this.monthlyPhoneCache.set(owner.ownerId, {
-      monthStart,
-      loadedAt: Date.now(),
-      phones
-    });
-    return phones;
+  private chatStateKey(ownerId: string, phoneE164: string): string {
+    return `${ownerId}:${phoneE164}`;
   }
 
-  private async isMonthlyClient(owner: WhatsappQrOwner, remoteJid?: string | null, clientPhoneE164?: string | null): Promise<boolean> {
-    const phone = clientPhoneE164 ?? normalizeWhatsappJidPhone(remoteJid);
-    if (!phone) {
+  private isCurrentMonthChat(state: WhatsappQrChatState | null | undefined): state is WhatsappQrChatState {
+    if (!state?.firstMessageAt) {
       return false;
     }
 
-    const phones = await this.getMonthlyPhones(owner);
-    return phones.has(phone);
+    return getBuenosAiresMonthStart(new Date(state.firstMessageAt)) === resolveWhatsappQrMonthStart();
+  }
+
+  private async recordChatMessage(
+    owner: WhatsappQrOwner,
+    phoneE164: string,
+    message: RuntimeMessageEvent
+  ): Promise<WhatsappQrChatState | null> {
+    const messageAt = message.messageTimestamp ?? new Date().toISOString();
+    const key = this.chatStateKey(owner.ownerId, phoneE164);
+    const cached = this.chatStateCache.get(key);
+    if (cached && Date.now() - cached.loadedAt < 300_000 && messageAt >= cached.state.firstMessageAt) {
+      return cached.state;
+    }
+
+    try {
+      const state = await this.options.store.recordChatMessage({
+        ownerId: owner.ownerId,
+        phoneE164,
+        messageAt,
+        direction: message.direction
+      });
+      this.chatStateCache.set(key, { state, loadedAt: Date.now() });
+      return state;
+    } catch (error) {
+      this.options.logger.warn({ error, ownerKey: owner.ownerKey, phoneE164 }, 'Could not record QR chat message');
+      return cached?.state ?? null;
+    }
+  }
+
+  private async getChatState(owner: WhatsappQrOwner, phoneE164: string): Promise<WhatsappQrChatState | null> {
+    const key = this.chatStateKey(owner.ownerId, phoneE164);
+    const cached = this.chatStateCache.get(key);
+    if (cached && Date.now() - cached.loadedAt < 300_000) {
+      return cached.state;
+    }
+
+    const [contact] = await this.options.store.listContactsByPhones({
+      ownerId: owner.ownerId,
+      phoneE164s: [phoneE164]
+    });
+    if (!contact?.firstMessageAt || !contact.firstMessageDirection) {
+      return null;
+    }
+
+    const state: WhatsappQrChatState = {
+      firstMessageAt: contact.firstMessageAt,
+      firstMessageDirection: contact.firstMessageDirection,
+      intakeRecordedAt: contact.intakeRecordedAt
+    };
+    this.chatStateCache.set(key, { state, loadedAt: Date.now() });
+    return state;
+  }
+
+  private async isIgnoredPhone(owner: WhatsappQrOwner, phoneE164: string): Promise<boolean> {
+    const monthStart = resolveWhatsappQrMonthStart();
+    const cached = this.ignoredPhoneCache.get(owner.ownerId);
+    if (cached && cached.monthStart === monthStart && Date.now() - cached.loadedAt < 300_000) {
+      return cached.phones.has(phoneE164);
+    }
+
+    const phones = await this.options.store.listIgnoredPhonesForMonth({ ownerId: owner.ownerId, monthStart });
+    this.ignoredPhoneCache.set(owner.ownerId, { monthStart, loadedAt: Date.now(), phones });
+    return phones.has(phoneE164);
+  }
+
+  private async maybeRecordIntake(
+    owner: WhatsappQrOwner,
+    session: WhatsappQrSessionRecord,
+    phoneE164: string,
+    state: WhatsappQrChatState
+  ): Promise<void> {
+    if (state.intakeRecordedAt || state.firstMessageDirection !== 'inbound') {
+      return;
+    }
+    if (await this.isIgnoredPhone(owner, phoneE164)) {
+      return;
+    }
+
+    try {
+      await this.options.playerPhoneStore.intakePendingCliente({
+        pagina: owner.pagina,
+        telefono: phoneE164,
+        ownerContext: ownerContextFromWhatsappQrOwner(owner, session.phoneE164),
+        sourceContext: { receivedAt: state.firstMessageAt }
+      });
+      const recordedAt = await this.options.store.markIntakeRecorded({ ownerId: owner.ownerId, phoneE164 });
+      state.intakeRecordedAt = recordedAt ?? new Date().toISOString();
+      this.options.logger.info({ ownerKey: owner.ownerKey, phoneE164 }, 'WhatsApp QR intake recorded');
+    } catch (error) {
+      this.options.logger.warn({ error, ownerKey: owner.ownerKey, phoneE164 }, 'WhatsApp QR intake failed');
+    }
   }
 
   private async persistContact(owner: WhatsappQrOwner, session: WhatsappQrSessionRecord, contact: RuntimeContactEvent): Promise<string | null> {
@@ -680,20 +747,32 @@ export class WhatsappQrManager {
             });
           },
           onMessage: async (message) => {
-            if (message.isHistory && !(await this.isMonthlyClient(owner, message.remoteJid))) {
+            const phone = normalizeWhatsappJidPhone(message.remoteJid);
+            if (!phone) {
               return;
             }
+            const state = await this.recordChatMessage(owner, phone, message);
+            if (!this.isCurrentMonthChat(state)) {
+              return;
+            }
+            await this.maybeRecordIntake(owner, currentSession, phone, state);
             await this.options.autoAssignService.processMessage({
               owner,
               session: currentSession,
-              ...message
+              ...message,
+              clientPhoneE164: phone
             });
           },
           onContact: async (contact) => {
             const phone = await this.persistContact(owner, currentSession, contact);
-            if (!(await this.isMonthlyClient(owner, contact.remoteJid, phone))) {
+            if (!phone) {
               return;
             }
+            const state = await this.getChatState(owner, phone);
+            if (!this.isCurrentMonthChat(state)) {
+              return;
+            }
+            await this.maybeRecordIntake(owner, currentSession, phone, state);
             await this.options.autoAssignService.processMessage({
               owner,
               session: currentSession,
