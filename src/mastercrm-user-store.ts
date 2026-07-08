@@ -1969,7 +1969,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
           firstSeenAt: linkFirstSeenById.get(fact.link_id) ?? client?.created_at ?? null,
           cargadoHoy: snapshot?.cargadoHoy ?? null,
           cargadoMes: snapshot?.cargadoMes ?? null,
-          reportDate: snapshot?.reportDate ?? reportDate,
+          reportDate: snapshot?.reportDate ?? null,
           isNewIntakeMes: fact.is_new_intake_in_month,
           isReingresoMes: fact.is_reentry_in_month,
           assignedEnMes: fact.had_assignment_in_month,

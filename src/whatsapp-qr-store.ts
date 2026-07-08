@@ -554,6 +554,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
           .select('client_id, clients!inner(phone_e164)')
           .eq('owner_id', input.ownerId)
           .eq('month_start', input.monthStart)
+          .eq('is_new_intake_in_month', true)
           .order('client_id', { ascending: true });
         if (input.limit) {
           query = query.limit(input.limit);
@@ -586,6 +587,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
           .select('client_id, link_id, clients!inner(phone_e164)')
           .eq('owner_id', input.ownerId)
           .eq('month_start', input.monthStart)
+          .eq('is_new_intake_in_month', true)
           .order('client_id', { ascending: true });
         if (input.limit) {
           query = query.limit(input.limit);
