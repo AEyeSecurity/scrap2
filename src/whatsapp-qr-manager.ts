@@ -459,6 +459,7 @@ export class WhatsappQrManager {
   private readonly runtimeEnabled: boolean;
   private readonly chatStateCache = new Map<string, { state: WhatsappQrChatState; loadedAt: number }>();
   private readonly ignoredPhoneCache = new Map<string, { monthStart: string; loadedAt: number; phones: Set<string> }>();
+  private readonly intakeInFlight = new Set<string>();
   private startPromise: Promise<void> | null = null;
   private started = false;
 
@@ -603,11 +604,17 @@ export class WhatsappQrManager {
     if (state.intakeRecordedAt || state.firstMessageDirection !== 'inbound') {
       return;
     }
-    if (await this.isIgnoredPhone(owner, phoneE164)) {
+
+    const inFlightKey = this.chatStateKey(owner.ownerId, phoneE164);
+    if (this.intakeInFlight.has(inFlightKey)) {
       return;
     }
+    this.intakeInFlight.add(inFlightKey);
 
     try {
+      if (await this.isIgnoredPhone(owner, phoneE164)) {
+        return;
+      }
       await this.options.playerPhoneStore.intakePendingCliente({
         pagina: owner.pagina,
         telefono: phoneE164,
@@ -619,6 +626,8 @@ export class WhatsappQrManager {
       this.options.logger.info({ ownerKey: owner.ownerKey, phoneE164 }, 'WhatsApp QR intake recorded');
     } catch (error) {
       this.options.logger.warn({ error, ownerKey: owner.ownerKey, phoneE164 }, 'WhatsApp QR intake failed');
+    } finally {
+      this.intakeInFlight.delete(inFlightKey);
     }
   }
 

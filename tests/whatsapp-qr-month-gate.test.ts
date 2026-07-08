@@ -164,6 +164,22 @@ describe('WhatsappQrManager month gate + intake', () => {
     expect(store.markIntakeRecorded).toHaveBeenCalledTimes(1);
   });
 
+  it('records a single intake for concurrent messages of the same chat', async () => {
+    const { handlers, intakePendingCliente } = await startManager();
+    intakePendingCliente.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return { cajeroId: 'c', jugadorId: 'j', linkId: 'l', estado: 'pending', ownerId: owner.ownerId };
+    });
+
+    await Promise.all([
+      handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' }),
+      handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'buenas' }),
+      handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'usuario?' })
+    ]);
+
+    expect(intakePendingCliente).toHaveBeenCalledTimes(1);
+  });
+
   it('skips chats whose first message is from a previous month', async () => {
     const { handlers, processMessage, intakePendingCliente } = await startManager({
       recordChatMessage: vi.fn(async () => ({
