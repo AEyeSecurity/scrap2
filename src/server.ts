@@ -935,6 +935,19 @@ function whatsappQrDashboardToResponse(
     runtimeEnabled: dashboard.runtimeEnabled,
     sessions: dashboard.sessions.map(whatsappQrSessionToResponse),
     summary: dashboard.summary,
+    coverage: dashboard.coverage
+      ? {
+          portfolioTotal: dashboard.coverage.portfolioTotal,
+          contactsSeenCount: dashboard.coverage.contactsSeenCount,
+          contactsSeenPct: dashboard.coverage.contactsSeenPct,
+          signalDetectedCount: dashboard.coverage.signalDetectedCount,
+          signalDetectedPct: dashboard.coverage.signalDetectedPct,
+          assignedCount: dashboard.coverage.assignedCount,
+          assignedPct: dashboard.coverage.assignedPct,
+          noSignalCount: dashboard.coverage.noSignalCount,
+          noSignalPct: dashboard.coverage.noSignalPct
+        }
+      : null,
     queue: dashboard.queue,
     ownerSummaries:
       dashboard.ownerSummaries?.map((item) => ({
@@ -2816,6 +2829,23 @@ export function createServer(
           clientesConReporte: dashboard.statsKpis.clientesConReporte,
           promedioCargaGeneralArs: dashboard.statsKpis.promedioCargaGeneralArs,
           tasaActivacionPct: dashboard.statsKpis.tasaActivacionPct
+        },
+        monthlyFlowKpis: {
+          intakesMes: dashboard.monthlyFlowKpis.intakesMes,
+          reingresosMes: dashboard.monthlyFlowKpis.reingresosMes,
+          asignacionesMes: dashboard.monthlyFlowKpis.asignacionesMes,
+          asignacionesBacklogMes: dashboard.monthlyFlowKpis.asignacionesBacklogMes,
+          tasaIntakeAsignacionPct: dashboard.monthlyFlowKpis.tasaIntakeAsignacionPct
+        },
+        closingPortfolioKpis: {
+          clientesTotales: dashboard.closingPortfolioKpis.clientesTotales,
+          asignados: dashboard.closingPortfolioKpis.asignados,
+          pendientes: dashboard.closingPortfolioKpis.pendientes,
+          cargadoHoyArs: dashboard.closingPortfolioKpis.cargadoHoyArs,
+          cargadoMesArs: dashboard.closingPortfolioKpis.cargadoMesArs,
+          clientesConReporte: dashboard.closingPortfolioKpis.clientesConReporte,
+          promedioCargaGeneralArs: dashboard.closingPortfolioKpis.promedioCargaGeneralArs,
+          tasaActivacionPct: dashboard.closingPortfolioKpis.tasaActivacionPct
         },
         charts: {
           monthlyTrend: dashboard.charts.monthlyTrend.map((point) => ({

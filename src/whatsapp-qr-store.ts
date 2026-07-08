@@ -7,8 +7,15 @@ export type WhatsappQrStatus = 'idle' | 'waiting_qr' | 'connected' | 'disconnect
 export type WhatsappQrDirection = 'inbound' | 'outbound' | 'contact_sync';
 export type WhatsappQrMatchSource = 'contact_name' | 'outbound_message';
 export type WhatsappQrMatchStatus = 'candidate' | 'validated' | 'assigned' | 'not_found' | 'conflict' | 'error';
-export type WhatsappQrRecheckReason = 'outbound_candidate' | 'contact_seen' | 'technical_error' | 'first_load' | 'manual';
+export type WhatsappQrRecheckReason =
+  | 'outbound_candidate'
+  | 'contact_seen'
+  | 'technical_error'
+  | 'first_load'
+  | 'manual'
+  | 'backfill_no_signal';
 export type WhatsappQrRecheckStatus = 'pending' | 'done' | 'expired';
+export type WhatsappQrBackfillRunStatus = 'running' | 'completed' | 'failed';
 
 export interface WhatsappQrOwner {
   ownerId: string;
@@ -120,6 +127,22 @@ export interface WhatsappQrRecheckQueueRecord {
   updatedAt: string;
 }
 
+export interface WhatsappQrBackfillRunRecord {
+  id: string;
+  ownerId: string;
+  sessionId: string | null;
+  monthStart: string;
+  triggerSource: string;
+  status: WhatsappQrBackfillRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  lastCompletedAt: string | null;
+  lastError: string | null;
+  summaryJson: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface UpsertWhatsappQrSessionPatch {
   status?: WhatsappQrStatus;
   phoneE164?: string | null;
@@ -199,6 +222,24 @@ export interface WhatsappQrStore {
   listMessagesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMessageRecord[]>;
   listMatchesForMonth(input: { ownerId: string; createdFrom: string; createdTo: string; limit?: number }): Promise<WhatsappQrMatchRecord[]>;
   listContactsByPhones(input: { ownerId: string; phoneE164s: string[] }): Promise<WhatsappQrContactRecord[]>;
+  getLatestBackfillRun(input: { ownerId: string; monthStart: string }): Promise<WhatsappQrBackfillRunRecord | null>;
+  createBackfillRun(input: {
+    ownerId: string;
+    sessionId?: string | null;
+    monthStart: string;
+    triggerSource: string;
+    startedAt?: string;
+  }): Promise<WhatsappQrBackfillRunRecord>;
+  updateBackfillRun(
+    id: string,
+    patch: {
+      status?: WhatsappQrBackfillRunStatus;
+      finishedAt?: string | null;
+      lastCompletedAt?: string | null;
+      lastError?: string | null;
+      summaryJson?: Record<string, unknown> | null;
+    }
+  ): Promise<WhatsappQrBackfillRunRecord>;
   enqueueRecheck(input: {
     ownerId: string;
     sessionId?: string | null;
@@ -365,6 +406,25 @@ function asRecheck(row: any): WhatsappQrRecheckQueueRecord {
     nextRunAt: row.next_run_at,
     expiresAt: row.expires_at,
     lastError: row.last_error ?? null,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function asBackfillRun(row: any): WhatsappQrBackfillRunRecord {
+  return {
+    id: row.id,
+    ownerId: row.owner_id,
+    sessionId: row.session_id ?? null,
+    monthStart: row.month_start,
+    triggerSource: row.trigger_source,
+    status: row.status,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at ?? null,
+    lastCompletedAt: row.last_completed_at ?? null,
+    lastError: row.last_error ?? null,
+    summaryJson:
+      row.summary_json && typeof row.summary_json === 'object' && !Array.isArray(row.summary_json) ? row.summary_json : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -932,6 +992,83 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
 
     return contacts;
+  }
+
+  async getLatestBackfillRun(input: { ownerId: string; monthStart: string }): Promise<WhatsappQrBackfillRunRecord | null> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_backfill_runs')
+      .select('*')
+      .eq('owner_id', input.ownerId)
+      .eq('month_start', input.monthStart)
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read latest WhatsApp QR backfill run');
+    }
+
+    return data ? asBackfillRun(data) : null;
+  }
+
+  async createBackfillRun(input: {
+    ownerId: string;
+    sessionId?: string | null;
+    monthStart: string;
+    triggerSource: string;
+    startedAt?: string;
+  }): Promise<WhatsappQrBackfillRunRecord> {
+    const startedAt = input.startedAt ?? new Date().toISOString();
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_backfill_runs')
+      .insert({
+        owner_id: input.ownerId,
+        session_id: input.sessionId ?? null,
+        month_start: input.monthStart,
+        trigger_source: nullableText(input.triggerSource) ?? 'auto',
+        status: 'running',
+        started_at: startedAt,
+        updated_at: startedAt
+      })
+      .select('*')
+      .single();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not create WhatsApp QR backfill run');
+    }
+
+    return asBackfillRun(data);
+  }
+
+  async updateBackfillRun(
+    id: string,
+    patch: {
+      status?: WhatsappQrBackfillRunStatus;
+      finishedAt?: string | null;
+      lastCompletedAt?: string | null;
+      lastError?: string | null;
+      summaryJson?: Record<string, unknown> | null;
+    }
+  ): Promise<WhatsappQrBackfillRunRecord> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_backfill_runs')
+      .update({
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.finishedAt !== undefined ? { finished_at: patch.finishedAt } : {}),
+        ...(patch.lastCompletedAt !== undefined ? { last_completed_at: patch.lastCompletedAt } : {}),
+        ...(patch.lastError !== undefined ? { last_error: nullableText(patch.lastError) } : {}),
+        ...(patch.summaryJson !== undefined ? { summary_json: patch.summaryJson } : {}),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not update WhatsApp QR backfill run');
+    }
+
+    return asBackfillRun(data);
   }
 
   async enqueueRecheck(input: {

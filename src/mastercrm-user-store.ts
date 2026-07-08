@@ -153,6 +153,25 @@ export interface MastercrmStatsKpisRecord {
   tasaActivacionPct: number | null;
 }
 
+export interface MastercrmMonthlyFlowKpisRecord {
+  intakesMes: number;
+  reingresosMes: number;
+  asignacionesMes: number;
+  asignacionesBacklogMes: number;
+  tasaIntakeAsignacionPct: number | null;
+}
+
+export interface MastercrmClosingPortfolioKpisRecord {
+  clientesTotales: number;
+  asignados: number;
+  pendientes: number;
+  cargadoHoyArs: number | null;
+  cargadoMesArs: number | null;
+  clientesConReporte: number;
+  promedioCargaGeneralArs: number | null;
+  tasaActivacionPct: number | null;
+}
+
 export interface MastercrmOwnerSummary {
   totalClients: number;
   assignedClients: number;
@@ -244,6 +263,8 @@ export interface MastercrmClientsDashboardRecord {
   financialInputs: MastercrmOwnerFinancialInputsRecord;
   primaryKpis: MastercrmPrimaryKpisRecord;
   statsKpis: MastercrmStatsKpisRecord;
+  monthlyFlowKpis: MastercrmMonthlyFlowKpisRecord;
+  closingPortfolioKpis: MastercrmClosingPortfolioKpisRecord;
   charts: MastercrmDashboardChartsRecord;
   clientes: MastercrmOwnerClientRecord[];
 }
@@ -1298,6 +1319,21 @@ function buildDateRangeWindow(dateFrom: string, dateTo: string): {
 
 function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
   const monthTrail = buildMonthTrail(month);
+  const statsKpis: MastercrmStatsKpisRecord = {
+    clientesTotales: 0,
+    asignados: 0,
+    pendientes: 0,
+    cargadoHoyArs: null,
+    cargadoMesArs: null,
+    intakesMes: 0,
+    reingresosMes: 0,
+    asignacionesMes: 0,
+    asignacionesBacklogMes: 0,
+    tasaIntakeAsignacionPct: null,
+    clientesConReporte: 0,
+    promedioCargaGeneralArs: null,
+    tasaActivacionPct: null
+  };
 
   return {
     linkedOwner: null,
@@ -1314,20 +1350,23 @@ function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
       costoPorLeadRealArs: null,
       conversionAsignadoPct: null
     },
-    statsKpis: {
-      clientesTotales: 0,
-      asignados: 0,
-      pendientes: 0,
-      cargadoHoyArs: null,
-      cargadoMesArs: null,
-      intakesMes: 0,
-      reingresosMes: 0,
-      asignacionesMes: 0,
-      asignacionesBacklogMes: 0,
-      tasaIntakeAsignacionPct: null,
-      clientesConReporte: 0,
-      promedioCargaGeneralArs: null,
-      tasaActivacionPct: null
+    statsKpis,
+    monthlyFlowKpis: {
+      intakesMes: statsKpis.intakesMes,
+      reingresosMes: statsKpis.reingresosMes,
+      asignacionesMes: statsKpis.asignacionesMes,
+      asignacionesBacklogMes: statsKpis.asignacionesBacklogMes,
+      tasaIntakeAsignacionPct: statsKpis.tasaIntakeAsignacionPct
+    },
+    closingPortfolioKpis: {
+      clientesTotales: statsKpis.clientesTotales,
+      asignados: statsKpis.asignados,
+      pendientes: statsKpis.pendientes,
+      cargadoHoyArs: statsKpis.cargadoHoyArs,
+      cargadoMesArs: statsKpis.cargadoMesArs,
+      clientesConReporte: statsKpis.clientesConReporte,
+      promedioCargaGeneralArs: statsKpis.promedioCargaGeneralArs,
+      tasaActivacionPct: statsKpis.tasaActivacionPct
     },
     charts: {
       monthlyTrend: monthTrail.map((point) => ({
@@ -1864,6 +1903,21 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       gananciaEstimadaArs !== null && adSpendArs !== null && adSpendArs > 0
         ? roundTo(((gananciaEstimadaArs - adSpendArs) / adSpendArs) * 100)
         : null;
+    const statsKpis: MastercrmStatsKpisRecord = {
+      clientesTotales: totalClients,
+      asignados: assignedClients,
+      pendientes: pendingClients,
+      cargadoHoyArs: cargadoHoyTotal,
+      cargadoMesArs: cargadoMesTotal,
+      intakesMes,
+      reingresosMes,
+      asignacionesMes,
+      asignacionesBacklogMes,
+      tasaIntakeAsignacionPct,
+      clientesConReporte,
+      promedioCargaGeneralArs,
+      tasaActivacionPct
+    };
 
     const clientes: MastercrmOwnerClientRecord[] = dashboardMonthFacts
       .map((fact) => {
@@ -1928,20 +1982,23 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         costoPorLeadRealArs,
         conversionAsignadoPct
       },
-      statsKpis: {
-        clientesTotales: totalClients,
-        asignados: assignedClients,
-        pendientes: pendingClients,
-        cargadoHoyArs: cargadoHoyTotal,
-        cargadoMesArs: cargadoMesTotal,
-        intakesMes,
-        reingresosMes,
-        asignacionesMes,
-        asignacionesBacklogMes,
-        tasaIntakeAsignacionPct,
-        clientesConReporte,
-        promedioCargaGeneralArs,
-        tasaActivacionPct
+      statsKpis,
+      monthlyFlowKpis: {
+        intakesMes: statsKpis.intakesMes,
+        reingresosMes: statsKpis.reingresosMes,
+        asignacionesMes: statsKpis.asignacionesMes,
+        asignacionesBacklogMes: statsKpis.asignacionesBacklogMes,
+        tasaIntakeAsignacionPct: statsKpis.tasaIntakeAsignacionPct
+      },
+      closingPortfolioKpis: {
+        clientesTotales: statsKpis.clientesTotales,
+        asignados: statsKpis.asignados,
+        pendientes: statsKpis.pendientes,
+        cargadoHoyArs: statsKpis.cargadoHoyArs,
+        cargadoMesArs: statsKpis.cargadoMesArs,
+        clientesConReporte: statsKpis.clientesConReporte,
+        promedioCargaGeneralArs: statsKpis.promedioCargaGeneralArs,
+        tasaActivacionPct: statsKpis.tasaActivacionPct
       },
       charts: {
         monthlyTrend

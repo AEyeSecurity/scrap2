@@ -924,6 +924,10 @@ Migracion aplicada el 2026-07-06:
 - crea `mastercrm_whatsapp_qr_contacts`
 - crea `mastercrm_whatsapp_qr_recheck_queue`
 - habilita la relectura eficiente de contactos QR por 7 dias para mensajes salientes, contactos agendados, primera carga y errores tecnicos.
+- `db/migrations/20260706_mastercrm_whatsapp_qr_auto_backfill_runs.sql`
+- crea `mastercrm_whatsapp_qr_backfill_runs`
+- agrega `backfill_no_signal` al check de `mastercrm_whatsapp_qr_recheck_queue.reason`
+- habilita auditoria y throttle del auto-backfill mensual QR por owner+mes.
 
 Despues de aplicar esa migracion se puede activar:
 
@@ -933,6 +937,13 @@ WHATSAPP_QR_RECHECK_RUN_ON_START=true
 WHATSAPP_QR_RECHECK_POLL_MS=300000
 WHATSAPP_QR_RECHECK_BATCH_SIZE=100
 ```
+
+Corrida inicial controlada ejecutada el 2026-07-06 solo para `luqui10:luqui10`:
+
+- resultado persistido: `completed`
+- `rechecksEnqueued = 463`
+- `noSignalRows = 463`
+- la reapertura manual contra una sesion viva devolvio `stream:error conflict type=replaced`, por lo que la estrategia correcta en produccion es dejar que el auto-backfill corra al conectar o reanudar la sesion principal, no levantar un segundo socket paralelo.
 
 ## Pruebas recomendadas
 

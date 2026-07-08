@@ -143,6 +143,8 @@ Si el usuario existe y esta activo, responde un JSON con:
   "financialInputs": {},
   "primaryKpis": {},
   "statsKpis": {},
+  "monthlyFlowKpis": {},
+  "closingPortfolioKpis": {},
   "charts": {},
   "clientes": []
 }
@@ -153,9 +155,19 @@ Esta ruta ya lee datos reales persistidos en Supabase a partir de snapshots diar
 Requiere `Authorization: Bearer <access_token>`. El `user_id` pedido debe
 coincidir con el usuario del token; de lo contrario responde `403`.
 
-La lista `clientes` es independiente entre meses. Para el `month` pedido solo
-devuelve clientes que tuvieron intake o reingreso en ese mes; no hereda clientes
-de meses anteriores por seguir `assigned` o `pending` en la cartera.
+Semantica actual:
+
+- la base de `clientes` para cada `month` es la cartera mensual persistida en `owner_client_monthly_facts`;
+- por eso, con julio seleccionado, `Clientes` puede mostrar filas originadas en abril, mayo o junio si siguen en cartera al cierre de julio;
+- la UI separa esa cartera en subviews explicitas:
+  - `Cartera del mes`
+  - `Nuevos del mes`
+  - `Reingresos`
+  - `Asignados desde backlog`
+- `monthlyFlowKpis` agrupa solo flujo del mes (`intakesMes`, `reingresosMes`, `asignacionesMes`, `asignacionesBacklogMes`, `tasaIntakeAsignacionPct`);
+- `closingPortfolioKpis` agrupa cierre de cartera (`clientesTotales`, `asignados`, `pendientes`, `clientesConReporte`, `cargadoMesArs`, `cargadoHoyArs`, `promedioCargaGeneralArs`, `tasaActivacionPct`).
+
+La grilla cambia por subview, pero los KPIs quedan fijos al mes seleccionado y no se recalculan por cada subview.
 
 ### `POST /mastercrm-link-cashier`
 

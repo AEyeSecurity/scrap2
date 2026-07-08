@@ -2,6 +2,7 @@ import { access, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from 'pino';
 import type { TelegramAlertSender } from './telegram-alerts';
+import { WhatsappQrAutoBackfillRunner } from './whatsapp-qr-auto-backfill';
 import type { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
 import {
   buildWhatsappQrPhoneQueue,
@@ -9,6 +10,7 @@ import {
   type WhatsappQrQueueSummary
 } from './whatsapp-qr-dashboard';
 import type {
+  WhatsappQrContactRecord,
   UpsertWhatsappQrSessionPatch,
   WhatsappQrOwner,
   WhatsappQrSessionRecord,
@@ -78,6 +80,7 @@ export interface WhatsappQrDashboard {
   sessions: Array<WhatsappQrSessionRecord & { hasRdaCredentials: boolean }>;
   summary: WhatsappQrQueueSummary;
   queue: WhatsappQrPhoneQueueRow[];
+  coverage?: WhatsappQrCoverageSummary | null;
   isAdmin: boolean;
   runtimeEnabled: boolean;
   ownerSummaries?: Array<{
@@ -85,6 +88,18 @@ export interface WhatsappQrDashboard {
     session: (WhatsappQrSessionRecord & { hasRdaCredentials: boolean }) | null;
     summary: WhatsappQrQueueSummary;
   }>;
+}
+
+export interface WhatsappQrCoverageSummary {
+  portfolioTotal: number;
+  contactsSeenCount: number;
+  contactsSeenPct: number;
+  signalDetectedCount: number;
+  signalDetectedPct: number;
+  assignedCount: number;
+  assignedPct: number;
+  noSignalCount: number;
+  noSignalPct: number;
 }
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
@@ -443,6 +458,7 @@ export function buildWhatsappQrRuntimeFromEnv(logger: Logger): WhatsappQrRuntime
 
 export class WhatsappQrManager {
   private readonly runtimeSessions = new Map<string, RuntimeSession>();
+  private readonly autoBackfillRunner: WhatsappQrAutoBackfillRunner;
   private readonly qrTtlMs: number;
   private readonly heartbeatStaleMs: number;
   private readonly alertPollMs: number;
@@ -461,6 +477,53 @@ export class WhatsappQrManager {
       options.authRootDir ??
       (process.env.WHATSAPP_QR_AUTH_DIR?.trim() || join(process.cwd(), 'artifacts', 'whatsapp-qr-auth'));
     this.runtimeEnabled = process.env.WHATSAPP_QR_RUNTIME?.trim().toLowerCase() === 'baileys' || Boolean(options.runtime);
+    this.autoBackfillRunner = new WhatsappQrAutoBackfillRunner(options.store, options.logger, {
+      authRootDir: this.authRootDir
+    });
+  }
+
+  private toCoverageCountPct(count: number, total: number): number {
+    if (total <= 0) {
+      return 0;
+    }
+
+    return Number(((count / total) * 100).toFixed(2));
+  }
+
+  private async buildCoverageSummary(
+    ownerId: string,
+    monthClients: Array<{ phoneE164: string; assignedUsername: string | null }>,
+    allRows: WhatsappQrPhoneQueueRow[]
+  ): Promise<WhatsappQrCoverageSummary> {
+    const phones = [...new Set(monthClients.map((row) => row.phoneE164))];
+    const contacts: WhatsappQrContactRecord[] =
+      phones.length > 0 ? await this.options.store.listContactsByPhones({ ownerId, phoneE164s: phones }) : [];
+    const contactPhones = new Set(contacts.map((contact) => contact.phoneE164));
+    const portfolioTotal = monthClients.length;
+    const contactsSeenCount = monthClients.filter((row) => contactPhones.has(row.phoneE164)).length;
+    const signalDetectedCount = allRows.filter((row) => Boolean(row.suggestedUsername)).length;
+    const assignedCount = allRows.filter((row) => Boolean(row.assignedUsername)).length;
+    const noSignalCount = allRows.filter((row) => row.status === 'review' && row.reviewReason === 'no_signal').length;
+
+    return {
+      portfolioTotal,
+      contactsSeenCount,
+      contactsSeenPct: this.toCoverageCountPct(contactsSeenCount, portfolioTotal),
+      signalDetectedCount,
+      signalDetectedPct: this.toCoverageCountPct(signalDetectedCount, portfolioTotal),
+      assignedCount,
+      assignedPct: this.toCoverageCountPct(assignedCount, portfolioTotal),
+      noSignalCount,
+      noSignalPct: this.toCoverageCountPct(noSignalCount, portfolioTotal)
+    };
+  }
+
+  private queueAutoBackfill(owner: WhatsappQrOwner, session: WhatsappQrSessionRecord, triggerSource: string): void {
+    this.autoBackfillRunner
+      .run(owner, session, triggerSource)
+      .catch((error) =>
+        this.options.logger.warn({ error, ownerKey: owner.ownerKey, triggerSource }, 'WhatsApp QR auto-backfill failed')
+      );
   }
 
   private async getMonthlyPhones(owner: WhatsappQrOwner): Promise<Set<string>> {
@@ -596,6 +659,7 @@ export class WhatsappQrManager {
               disconnectedAlertedAt: null,
               heartbeatAlertedAt: null
             });
+            this.queueAutoBackfill(owner, currentSession, options.resumeOnly ? 'resume_connected' : 'connect_connected');
           },
           onDisconnected: async (errorMessage) => {
             currentSession = await this.options.store.updateSession(currentSession.id, {
@@ -645,6 +709,9 @@ export class WhatsappQrManager {
         { resumeOnly: options.resumeOnly }
       );
       this.runtimeSessions.set(currentSession.id, runtimeSession);
+      if (currentSession.status === 'connected') {
+        this.queueAutoBackfill(owner, currentSession, options.resumeOnly ? 'resume_attached' : 'connect_attached');
+      }
       return currentSession;
     } catch (error) {
       currentSession = await this.options.store.updateSession(currentSession.id, {
@@ -735,12 +802,13 @@ export class WhatsappQrManager {
         monthStart: monthWindow.monthStartDate
       })
     ]);
-    const { summary, queue } = buildWhatsappQrPhoneQueue({
+    const { summary, queue, allRows } = buildWhatsappQrPhoneQueue({
       monthClients,
       messages,
       matches,
       ignoredPhones
     });
+    const coverage = await this.buildCoverageSummary(owner.ownerId, monthClients, allRows);
 
     return {
       sessions: sessions.map((session) => ({
@@ -749,6 +817,7 @@ export class WhatsappQrManager {
       })),
       summary,
       queue,
+      coverage,
       isAdmin,
       runtimeEnabled: this.runtimeEnabled
     };

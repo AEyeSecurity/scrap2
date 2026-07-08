@@ -612,6 +612,23 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
       promedioCargaGeneralArs: null,
       tasaActivacionPct: null
     },
+    monthlyFlowKpis: {
+      intakesMes: 0,
+      reingresosMes: 0,
+      asignacionesMes: 0,
+      asignacionesBacklogMes: 0,
+      tasaIntakeAsignacionPct: null
+    },
+    closingPortfolioKpis: {
+      clientesTotales: 0,
+      asignados: 0,
+      pendientes: 0,
+      cargadoHoyArs: null,
+      cargadoMesArs: null,
+      clientesConReporte: 0,
+      promedioCargaGeneralArs: null,
+      tasaActivacionPct: null
+    },
     charts: {
       monthlyTrend: []
     },
@@ -1199,6 +1216,57 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
       charts: {
         monthlyTrend: [
           { month: '2025-10', reportDate: null, cargadoMesArs: null },
@@ -1304,6 +1372,57 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
       charts: {
         monthlyTrend: [
           { month: '2025-10', reportDate: null, cargadoMesArs: null },
@@ -1377,6 +1496,23 @@ describe('server routes', () => {
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100
       },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
       charts: {
         monthlyTrend: [
           { month: '2025-10', reportDate: null, cargadoMesArs: null },
@@ -1446,6 +1582,23 @@ describe('server routes', () => {
         asignacionesMes: 2,
         asignacionesBacklogMes: 1,
         tasaIntakeAsignacionPct: 50,
+        clientesConReporte: 2,
+        promedioCargaGeneralArs: 1866.67,
+        tasaActivacionPct: 100
+      },
+      monthlyFlowKpis: {
+        intakesMes: 4,
+        reingresosMes: 1,
+        asignacionesMes: 2,
+        asignacionesBacklogMes: 1,
+        tasaIntakeAsignacionPct: 50
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 3,
+        asignados: 2,
+        pendientes: 1,
+        cargadoHoyArs: 1200,
+        cargadoMesArs: 5600,
         clientesConReporte: 2,
         promedioCargaGeneralArs: 1866.67,
         tasaActivacionPct: 100

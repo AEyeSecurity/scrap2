@@ -11,6 +11,7 @@ Aplicar la migracion:
 ```powershell
 db/migrations/20260630_mastercrm_whatsapp_qr.sql
 db/migrations/20260701_mastercrm_whatsapp_qr_ignored_phones.sql
+db/migrations/20260706_mastercrm_whatsapp_qr_auto_backfill_runs.sql
 ```
 
 Crea:
@@ -20,6 +21,7 @@ Crea:
 - `mastercrm_whatsapp_qr_matches`
 - `mastercrm_rda_credentials`
 - `mastercrm_whatsapp_qr_ignored_phones`
+- `mastercrm_whatsapp_qr_backfill_runs`
 
 La API usa service role. El CRM no expone claves RdA ni `qr_payload`; solo muestra `qr_data_url`, estado, heartbeat y matches.
 
@@ -32,12 +34,17 @@ WHATSAPP_QR_AUTH_DIR=artifacts/whatsapp-qr-auth
 WHATSAPP_QR_TTL_MS=90000
 WHATSAPP_QR_HEARTBEAT_STALE_MS=180000
 WHATSAPP_QR_ALERT_POLL_MS=60000
+WHATSAPP_QR_RECHECK_ENABLED=true
+WHATSAPP_QR_RECHECK_RUN_ON_START=true
+WHATSAPP_QR_RECHECK_POLL_MS=300000
+WHATSAPP_QR_RECHECK_BATCH_SIZE=100
 
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_ALERT_CHAT_ID=
 ```
 
 Si existen variables `SUPERBOT_TELEGRAM_BOT_TOKEN` y `SUPERBOT_TELEGRAM_ALERT_CHAT_ID`, tambien se usan como fallback. No hardcodear tokens.
+El auto-backfill mensual se dispara en background cuando la sesion queda `connected`; no requiere una variable aparte.
 
 ## Sync n8n -> backend
 
@@ -67,16 +74,29 @@ Si una sesion quedo `connected` y la auth persistida sigue valida, el backend la
 
 Todos requieren bearer token MasterCRM y `user_id`. `status` y `assign` tambien requieren `month` en formato `YYYY-MM`. Un cajero solo opera su owner vinculado. Un admin por `MASTERCRM_QR_ADMIN_OWNER_KEYS` puede ver todas las sesiones y desconectar por `owner_id`.
 
+`status` tambien acepta:
+
+- `scope = own | owner | all`
+- `owner_id` cuando un admin quiere abrir otro cajero puntual
+
+El default es `scope = own`, incluso para admins, para no mezclar la cola operativa diaria entre cajeros.
+
 ## Solapa CRM
 
 La solapa `WhatsApp QR` muestra:
 
 - estado de la sesion y datos basicos del numero conectado;
+- bloque de cobertura contra la cartera del mes (`contactos vistos`, `senal detectada`, `asignados`, `sin senal`);
 - resumen mensual por telefono del mes seleccionado en la app;
 - una cola operativa de revision con una fila real por telefono;
 - detalle por telefono con senal por contacto, senal por mensaje, ultimo intento y error;
 - accion manual `Validar y asignar` usando credenciales RdA ya sincronizadas.
 - accion manual `Ignorar` por telefono y mes para sacar casos no-RdA de la cola operativa.
+
+En modo admin:
+
+- `Lucas10`, `Lea Riqueza` y `Todos` se muestran separados;
+- `Todos` es una vista agregada de monitoreo, no una cola mezclada para operar.
 
 Estados operativos del panel:
 
@@ -93,9 +113,18 @@ La fuente de verdad del panel ya no es el ultimo match crudo. El estado visible 
 - asignacion real actual del owner;
 - senales QR mas recientes por contacto o mensaje.
 
+Ademas:
+
+- al conectar o reanudar una sesion, el backend corre un backfill mensual del mes actual en `America/Argentina/Buenos_Aires`;
+- la corrida se audita en `mastercrm_whatsapp_qr_backfill_runs`;
+- el backfill se throttlea a una vez cada 6 horas por `owner + month_start`;
+- al terminar, se encolan rechecks inmediatos para todos los `no_signal` del mes, incluidos los ignorados;
+- la cola de recheck vence a los 7 dias.
+
 No hay limite de `50` ni paginacion en v1. La respuesta de `status` devuelve:
 
 - `summary`: totales del mes (`totalPhones`, `assigned`, `review`, `ignored` y breakdown por motivo);
+- `coverage`: cobertura sobre toda la cartera mensual (`portfolioTotal`, `contactsSeenCount/Pct`, `signalDetectedCount/Pct`, `assignedCount/Pct`, `noSignalCount/Pct`);
 - `queue`: filas operativas por telefono con `assignedUsername`, `suggestedUsername`, `contactCandidateUsername`, `outboundCandidateUsername`, `primarySignalSource`, `lastSignalAt`, `lastAttemptAt` y `lastError`.
 
 ## Activacion controlada
@@ -107,3 +136,7 @@ No hay limite de `50` ni paginacion en v1. La respuesta de `status` devuelve:
 5. Levantar backend con `WHATSAPP_QR_RUNTIME=baileys`.
 6. Entrar al CRM y abrir `WhatsApp QR`.
 7. Conectar un cajero de prueba y validar match por contacto o mensaje saliente.
+
+## Nota operativa
+
+Si se intenta correr un backfill manual en paralelo a una sesion que ya esta viva en otro proceso, WhatsApp puede responder `stream:error conflict type=replaced`. En ese caso la via correcta es dejar que el backend haga el auto-backfill al conectar o reanudar la sesion principal.

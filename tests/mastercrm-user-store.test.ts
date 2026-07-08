@@ -815,6 +815,23 @@ describe('mastercrm clients dashboard', () => {
         promedioCargaGeneralArs: null,
         tasaActivacionPct: null
       },
+      monthlyFlowKpis: {
+        intakesMes: 0,
+        reingresosMes: 0,
+        asignacionesMes: 0,
+        asignacionesBacklogMes: 0,
+        tasaIntakeAsignacionPct: null
+      },
+      closingPortfolioKpis: {
+        clientesTotales: 0,
+        asignados: 0,
+        pendientes: 0,
+        cargadoHoyArs: null,
+        cargadoMesArs: null,
+        clientesConReporte: 0,
+        promedioCargaGeneralArs: null,
+        tasaActivacionPct: null
+      },
       charts: {
         monthlyTrend: [
           { month: '2025-10', reportDate: null, cargadoMesArs: null },

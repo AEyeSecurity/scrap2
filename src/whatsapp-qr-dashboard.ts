@@ -117,6 +117,7 @@ export function buildWhatsappQrPhoneQueue(input: {
 }): {
   summary: WhatsappQrQueueSummary;
   queue: WhatsappQrPhoneQueueRow[];
+  allRows: WhatsappQrPhoneQueueRow[];
 } {
   const ignoredPhones = input.ignoredPhones ?? new Set<string>();
   const messagesByPhone = new Map<string, WhatsappQrMessageRecord[]>();
@@ -227,5 +228,5 @@ export function buildWhatsappQrPhoneQueue(input: {
     technicalError: queue.filter((row) => row.reviewReason === 'technical_error').length
   };
 
-  return { summary, queue };
+  return { summary, queue, allRows };
 }
