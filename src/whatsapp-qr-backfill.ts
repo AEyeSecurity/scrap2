@@ -608,6 +608,7 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
       const sock = baileys.default({
         auth: state,
         syncFullHistory: true,
+        shouldSyncHistoryMessage: () => true,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
       });
 

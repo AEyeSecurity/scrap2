@@ -261,6 +261,8 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       sock = baileys.default({
         auth: state,
         syncFullHistory: true,
+        // El default de rc13 descarta los chunks FULL; sin esto el historial baja pero no se procesa.
+        shouldSyncHistoryMessage: () => true,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
       });
 
