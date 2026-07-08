@@ -57,6 +57,7 @@ export interface UpsertMastercrmOwnerFinancialsInput {
 }
 
 export type MastercrmAnalyticsChannel = 'landing' | 'meta_ctwa';
+export type MastercrmAnalyticsClientChannel = MastercrmAnalyticsChannel | 'organic';
 export type MastercrmMarketingBudgetLevel = 'ad';
 
 export interface GetMastercrmAnalyticsInput {
@@ -331,7 +332,7 @@ export interface MastercrmAnalyticsClientRecord {
   username: string | null;
   telefono: string | null;
   estado: 'assigned' | 'pending';
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmAnalyticsClientChannel;
   campaignKey: string;
   campaignName: string;
   adKey: string;
@@ -344,6 +345,7 @@ export interface MastercrmAnalyticsClientRecord {
 export interface MastercrmAnalyticsAuditRecord {
   unknownLeads: number;
   landingUnmatchedLeads: number;
+  organicLeads: number;
   excludedLeads: number;
   reentryLeads: number;
   missingBudgetCampaigns: number;
@@ -855,6 +857,10 @@ function pickFirstAttributionEvent(rows: OwnerClientEventRow[]): OwnerClientEven
   const attributedRows = rows.filter((row) => attributionFromSourceContext(extractMetaSourceContext(row.payload)).kind !== 'unknown');
   const candidates = attributedRows.length > 0 ? attributedRows : rows;
   return [...candidates].sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at))[0] ?? null;
+}
+
+function pickFirstChronologicalEvent(rows: OwnerClientEventRow[]): OwnerClientEventRow | null {
+  return [...rows].sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at))[0] ?? null;
 }
 
 interface AnalyticsAttributionShape {
@@ -1406,6 +1412,7 @@ function buildEmptyAnalytics(
     audit: {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
+      organicLeads: 0,
       excludedLeads: 0,
       reentryLeads: 0,
       missingBudgetCampaigns: 0,
@@ -1688,11 +1695,15 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       'Could not read owner monthly client snapshots'
     );
 
-    const monthlyTrendSnapshots = await selectAllSupabasePages<{ report_date: string; cargado_mes: number | string | null }>(
+    const monthlyTrendSnapshots = await selectAllSupabasePages<{
+      client_id: string | null;
+      report_date: string;
+      cargado_mes: number | string | null;
+    }>(
       () =>
         this.client
           .from('report_daily_snapshots')
-          .select('report_date, cargado_mes')
+          .select('client_id, report_date, cargado_mes')
           .eq('owner_id', owner.id)
           .gte('report_date', monthTrail[0]?.monthStartDate ?? monthWindow.monthStartDate)
           .lt('report_date', monthWindow.nextMonthStartDate)
@@ -1708,8 +1719,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       pagina: owner.pagina,
       telefono: ownerPhone
     };
+    const factsForTrendMonths = factsForSelectedMonth;
 
-    const dashboardMonthFacts = factsForSelectedMonth;
+    const dashboardMonthFacts = factsForSelectedMonth.filter((fact) => fact.is_new_intake_in_month);
     const dashboardClientIds = new Set(dashboardMonthFacts.map((fact) => fact.client_id));
     const ownerClientLinkIds = dashboardMonthFacts
       .map((fact) => (typeof fact.link_id === 'string' && fact.link_id.length > 0 ? fact.link_id : null))
@@ -1843,10 +1855,26 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const financialSettings = financialSettingsResult.data as OwnerFinancialSettingsRow | null;
     const adSpendRow = adSpendResult.data as OwnerMonthlyAdSpendRow | null;
     const monthlyTrendByMonth = new Map<string, { reportDate: string; cargadoMesArs: number }>();
+    const newClientIdsByMonth = new Map<string, Set<string>>();
+
+    for (const fact of factsForTrendMonths) {
+      if (!fact.is_new_intake_in_month) {
+        continue;
+      }
+
+      const monthToken = fact.month_start.slice(0, 7);
+      const clientIds = newClientIdsByMonth.get(monthToken) ?? new Set<string>();
+      clientIds.add(fact.client_id);
+      newClientIdsByMonth.set(monthToken, clientIds);
+    }
 
     for (const snapshot of monthlyTrendSnapshots) {
       const monthToken = snapshot.report_date.slice(0, 7);
       if (!monthTrail.some((point) => point.month === monthToken)) {
+        continue;
+      }
+      const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
+      if (!clientId || !newClientIdsByMonth.get(monthToken)?.has(clientId)) {
         continue;
       }
 
@@ -2226,9 +2254,12 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const campaigns = new Map<string, MutableCampaignAnalytics>();
     const ads = new Map<string, MutableAdAnalytics>();
     const clients: MastercrmAnalyticsClientRecord[] = [];
+    const organicSummary = makeMutableMetrics();
+    const includeOrganicInSummary = requestedChannel === 'all' && !campaignFilter && !adFilter;
     const audit: MastercrmAnalyticsAuditRecord = {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
+      organicLeads: 0,
       excludedLeads: 0,
       reentryLeads: 0,
       missingBudgetCampaigns: 0,
@@ -2237,7 +2268,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     };
 
     for (const [clientId, clientEvents] of eventsByClientId.entries()) {
-      const firstEvent = pickFirstAttributionEvent(clientEvents);
+      const firstEvent = pickFirstChronologicalEvent(clientEvents);
       if (!firstEvent) {
         continue;
       }
@@ -2255,21 +2286,48 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         continue;
       }
 
-      const attribution = attributionFromSourceContext(extractMetaSourceContext(firstEvent.payload));
-      if (attribution.kind === 'unknown') {
-        audit.unknownLeads += 1;
-        audit.excludedLeads += 1;
-        continue;
-      }
-      if (attribution.kind === 'landing_unmatched') {
-        audit.landingUnmatchedLeads += 1;
-        audit.excludedLeads += 1;
-        continue;
-      }
-
+      const attributionEvent = pickFirstAttributionEvent(clientEvents) ?? firstEvent;
+      const attribution = attributionFromSourceContext(extractMetaSourceContext(attributionEvent.payload));
       const analyticsAttribution = buildAnalyticsAttribution(attribution);
       if (!analyticsAttribution) {
-        audit.excludedLeads += 1;
+        if (attribution.kind === 'landing_unmatched') {
+          audit.landingUnmatchedLeads += 1;
+        } else {
+          audit.unknownLeads += 1;
+        }
+        audit.organicLeads += 1;
+
+        const fact = factByClientId.get(clientId);
+        const client = unwrapSingleRelation(fact?.clients);
+        const revenueArs = revenueByClientId.get(clientId) ?? 0;
+        const isAssigned = fact?.status_at_month_end === 'assigned';
+        const isDepositor = revenueArs > 0;
+
+        if (includeOrganicInSummary) {
+          organicSummary.leads += 1;
+          organicSummary.revenueArs = roundTo(organicSummary.revenueArs + revenueArs);
+          organicSummary.assigned += isAssigned ? 1 : 0;
+          organicSummary.depositors += isDepositor ? 1 : 0;
+        } else {
+          audit.excludedLeads += 1;
+        }
+
+        if (includeOrganicInSummary) {
+          clients.push({
+            clientId,
+            username: fact?.username_at_month_end ?? usernameByClientId.get(clientId) ?? null,
+            telefono: client?.phone_e164 ?? null,
+            estado: fact?.status_at_month_end ?? 'pending',
+            channel: 'organic',
+            campaignKey: '',
+            campaignName: 'Sin atribucion',
+            adKey: '',
+            adName: 'Sin atribucion',
+            linkUrl: null,
+            acquiredAt: firstEvent.occurred_at,
+            revenueArs
+          });
+        }
         continue;
       }
 
@@ -2461,6 +2519,12 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       summaryMutable.leads += channel.leads;
       summaryMutable.assigned += channel.assigned;
       summaryMutable.depositors += channel.depositors;
+    }
+    if (includeOrganicInSummary) {
+      summaryMutable.revenueArs = roundTo(summaryMutable.revenueArs + organicSummary.revenueArs);
+      summaryMutable.leads += organicSummary.leads;
+      summaryMutable.assigned += organicSummary.assigned;
+      summaryMutable.depositors += organicSummary.depositors;
     }
 
     return {

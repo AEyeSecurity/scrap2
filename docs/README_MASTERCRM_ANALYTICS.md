@@ -7,8 +7,8 @@ This document covers the CRM analytics model added for the executive dashboard a
 Navigation:
 
 - `Pagina Principal`: executive summary for the linked cashier.
-- `Clientes`: operational client view that previously lived under statistics.
-- `Estadisticas`: deep marketing analytics with filters, campaign/ad rankings, budget editor and audit panels.
+- `Clientes`: new-client view for the selected month.
+- `Estadisticas`: deep marketing analytics for new clients, with filters, campaign/ad rankings, budget editor and audit panels.
 
 The implementation does not use generated images or Docker image generation. Charts are rendered by the frontend with React/CSS/SVG.
 
@@ -20,10 +20,12 @@ Migration:
 - `db/migrations/20260619_mastercrm_technical_retention.sql`
 - `db/migrations/20260701_mastercrm_technical_retention_preserve_snapshots.sql`
 - `db/migrations/20260619_mastercrm_ad_budget_distribution.sql`
+- `db/migrations/20260708_mastercrm_new_client_monthly_facts.sql`
 
-New table:
+Tables:
 
 - `public.owner_marketing_daily_budgets`
+- `public.owner_new_client_monthly_facts`
 
 Main columns:
 
@@ -44,6 +46,8 @@ daily_budget_ars * inclusive_days(overlap(active_from/active_to, date_from/date_
 ```
 
 Campaign investment is calculated as the sum of the campaign's ad budgets. Campaign-level budget rows are not supported and are deleted by `20260619_mastercrm_ad_budget_distribution.sql`.
+
+`owner_new_client_monthly_facts` stores durable monthly facts for clients whose first intake belongs to the closed month. The retention worker refreshes these facts before technical history is purged, so closed monthly new-client KPIs survive even when old report runs are deleted.
 
 ## Backend endpoints
 
@@ -149,9 +153,9 @@ Payload:
 
 ## Attribution and revenue rules
 
-- Only `landing` and `meta_ctwa` are included in ROI/ROAS.
-- `unknown` is excluded and counted in audit as `Sin dato`.
-- `landing_unmatched` is excluded and counted separately.
+- CRM visible KPIs use only new clients: the client's first chronological `intake` must be inside the selected month or range.
+- Backlog, old portfolio clients and reentries are excluded from visible CRM KPIs and campaign/ad ROI.
+- `unknown` and `landing_unmatched` new clients count as organic in the global summary when no campaign/ad filter is active; they do not appear in campaign/ad rankings.
 - Attribution is first acquisition per cashier and client. Later intakes are counted as reentries in audit, not duplicated as new ROI leads.
 - `cargado_mes` is treated as a monthly snapshot, not as a daily additive value.
 - Range revenue is calculated from snapshot deltas inside each month.
@@ -214,6 +218,13 @@ MASTERCRM_RETENTION_POLL_MS=86400000
 ```
 
 The worker calculates the cutoff as the first day of the current month in `America/Argentina/Buenos_Aires`.
+Before purging, it calls:
+
+```sql
+select public.refresh_mastercrm_closed_new_client_monthly_facts_v1(date '2026-08-01');
+```
+
+That closes all new-client months from July 2026 onward before the cutoff.
 If the purge fails, it logs the error and the API keeps running.
 
 ## Operational checks
@@ -224,15 +235,15 @@ Before pushing a CRM analytics change:
 2. Run backend tests and build:
    - `npm test`
    - `npm run build`
-3. Verify `/mastercrm-analytics` for `luqui10` and range `2026-06-01` to `2026-06-19` includes `3Miriam776` under `Reino Dorado` / `120250708847350471`.
+3. Verify `/mastercrm-clients` for `luqui10` and July 2026 returns only new clients; current expected production data is 1 new client and ARS 0 load.
 4. Run frontend checks:
    - `npm run build`
    - `npm run lint`
 5. Login to the local CRM with a real user and verify:
    - `Pagina Principal` loads the executive dashboard.
-   - `Clientes` keeps the operational client view.
-   - `Estadisticas` loads range/channel/campaign/ad filters.
+   - `Clientes` lists only new clients for the selected month.
+   - `Estadisticas` loads range/channel/campaign/ad filters and keeps campaign/ad rows limited to attributed new clients.
    - Individual ad budget save changes ROI/ROAS and deleting the test budget returns investment to zero.
    - Selecting 2+ ads from one channel and saving a distributed budget creates individual ad budget rows whose daily sum matches the entered total.
-   - `Sin dato`, `Landing sin match`, reentries, missing budgets and negative adjustments appear in audit.
+   - `Sin dato`, `Landing sin match`, organic leads, missing budgets and negative adjustments appear in audit.
    - No unnecessary Docker images or generated image assets are created.

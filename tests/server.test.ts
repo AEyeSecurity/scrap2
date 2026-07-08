@@ -682,6 +682,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     audit: {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
+      organicLeads: 0,
       excludedLeads: 0,
       reentryLeads: 0,
       missingBudgetCampaigns: 0,

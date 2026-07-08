@@ -28,6 +28,7 @@ export interface MastercrmTechnicalPurgeRecord {
 
 export interface MastercrmRetentionStore {
   purgeTechnicalHistory(cutoffDate: string): Promise<MastercrmTechnicalPurgeRecord>;
+  closeNewClientMonthlyFacts(cutoffDate: string): Promise<number>;
 }
 
 export interface MastercrmRetentionWorkerOptions {
@@ -96,6 +97,18 @@ export function getBuenosAiresCurrentMonthStartDate(now = new Date()): string {
 class SupabaseMastercrmRetentionStore implements MastercrmRetentionStore {
   constructor(private readonly client: SupabaseClient) {}
 
+  async closeNewClientMonthlyFacts(cutoffDate: string): Promise<number> {
+    const { data, error } = await this.client.rpc('refresh_mastercrm_closed_new_client_monthly_facts_v1', {
+      p_cutoff_date: cutoffDate
+    });
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not close MasterCRM new client monthly facts');
+    }
+
+    return toNonNegativeInteger(data as number | string | null | undefined);
+  }
+
   async purgeTechnicalHistory(cutoffDate: string): Promise<MastercrmTechnicalPurgeRecord> {
     const { data, error } = await this.client.rpc('purge_mastercrm_technical_history_v1', {
       p_cutoff_date: cutoffDate
@@ -150,8 +163,9 @@ export class MastercrmRetentionWorker {
     this.running = true;
     const cutoffDate = getBuenosAiresCurrentMonthStartDate(this.options.now?.() ?? new Date());
     try {
+      const closedFacts = await this.store.closeNewClientMonthlyFacts(cutoffDate);
       const result = await this.store.purgeTechnicalHistory(cutoffDate);
-      this.logger.info({ cutoffDate, result }, 'MasterCRM technical retention purge completed');
+      this.logger.info({ cutoffDate, closedFacts, result }, 'MasterCRM technical retention purge completed');
     } catch (error) {
       this.logger.error({ error, cutoffDate }, 'MasterCRM technical retention purge failed');
     } finally {

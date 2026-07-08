@@ -48,8 +48,46 @@ describe('mastercrm retention', () => {
     expect(rpc).toHaveBeenCalledWith('purge_mastercrm_technical_history_v1', { p_cutoff_date: '2026-06-01' });
   });
 
+  it('calls the new client monthly close RPC before technical purge', async () => {
+    const rpc = vi
+      .fn()
+      .mockResolvedValueOnce({ data: 12, error: null })
+      .mockResolvedValueOnce({
+        data: {
+          cutoff_date: '2026-07-01',
+          report_runs_deleted: 0,
+          report_run_items_deleted: 0,
+          report_outbox_deleted: 0,
+          meta_conversion_outbox_deleted: 0,
+          landing_sessions_deleted: 0
+        },
+        error: null
+      });
+    const store = createMastercrmRetentionStore({ rpc } as never);
+    const logger = createLogger();
+    const worker = new MastercrmRetentionWorker(store, logger as never, {
+      runOnStart: false,
+      pollMs: 86_400_000,
+      now: () => new Date('2026-07-08T15:00:00.000Z')
+    });
+
+    await expect(worker.runOnce()).resolves.toBeUndefined();
+
+    expect(rpc).toHaveBeenNthCalledWith(1, 'refresh_mastercrm_closed_new_client_monthly_facts_v1', {
+      p_cutoff_date: '2026-07-01'
+    });
+    expect(rpc).toHaveBeenNthCalledWith(2, 'purge_mastercrm_technical_history_v1', {
+      p_cutoff_date: '2026-07-01'
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ cutoffDate: '2026-07-01', closedFacts: 12 }),
+      'MasterCRM technical retention purge completed'
+    );
+  });
+
   it('logs retention worker failures without throwing', async () => {
     const store: MastercrmRetentionStore = {
+      closeNewClientMonthlyFacts: vi.fn().mockResolvedValue(0),
       purgeTechnicalHistory: vi.fn().mockRejectedValue(new Error('database unavailable'))
     };
     const logger = createLogger();
@@ -61,6 +99,7 @@ describe('mastercrm retention', () => {
 
     await expect(worker.runOnce()).resolves.toBeUndefined();
 
+    expect(store.closeNewClientMonthlyFacts).toHaveBeenCalledWith('2026-06-01');
     expect(store.purgeTechnicalHistory).toHaveBeenCalledWith('2026-06-01');
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({

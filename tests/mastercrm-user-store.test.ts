@@ -954,7 +954,7 @@ describe('mastercrm clients dashboard', () => {
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
 
-    expect(dashboard.statsKpis.clientesTotales).toBe(2);
+    expect(dashboard.statsKpis.clientesTotales).toBe(1);
     expect(dashboard.clientes).toEqual([
       {
         id: 'link-pending',
@@ -974,28 +974,6 @@ describe('mastercrm clients dashboard', () => {
         cargadoMes: null,
         reportDate: null,
         isNewIntakeMes: true,
-        isReingresoMes: false,
-        assignedEnMes: false,
-        assignedDesdeBacklogMes: false
-      },
-      {
-        id: 'link-old-pending',
-        username: null,
-        telefono: '+5493735506281',
-        pagina: 'ASN',
-        estado: 'pending',
-        source: null,
-        origen: null,
-        Campana: null,
-        lastCampaign: null,
-        attribution: expectedEmptyAttribution(),
-        ownerKey: 'asnlucas10:vicky',
-        ownerLabel: 'Vicky',
-        firstSeenAt: '2026-02-13T09:30:00.000Z',
-        cargadoHoy: null,
-        cargadoMes: null,
-        reportDate: null,
-        isNewIntakeMes: false,
         isReingresoMes: false,
         assignedEnMes: false,
         assignedDesdeBacklogMes: false
@@ -1402,7 +1380,7 @@ describe('mastercrm clients dashboard', () => {
       estimatedProfitArs: 500,
       roiPct: 455.56,
       roas: 11.11,
-      leads: 2,
+      leads: 4,
       depositors: 1
     });
     expect(analytics.campaigns[0]).toMatchObject({
@@ -1421,7 +1399,8 @@ describe('mastercrm clients dashboard', () => {
     expect(analytics.audit).toMatchObject({
       unknownLeads: 1,
       landingUnmatchedLeads: 1,
-      excludedLeads: 2,
+      organicLeads: 2,
+      excludedLeads: 0,
       reentryLeads: 1,
       missingBudgetCampaigns: 0
     });
@@ -1688,12 +1667,12 @@ describe('mastercrm clients dashboard', () => {
     const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-03' });
 
     expect(dashboard.statsKpis.intakesMes).toBe(1);
-    expect(dashboard.statsKpis.reingresosMes).toBe(1);
+    expect(dashboard.statsKpis.reingresosMes).toBe(0);
     expect(dashboard.statsKpis.asignacionesMes).toBe(1);
-    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(1);
+    expect(dashboard.statsKpis.asignacionesBacklogMes).toBe(0);
     expect(dashboard.statsKpis.tasaIntakeAsignacionPct).toBe(100);
-    expect(dashboard.statsKpis.clientesTotales).toBe(3);
-    expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-2', 'link-3', 'link-1']);
+    expect(dashboard.statsKpis.clientesTotales).toBe(1);
+    expect(dashboard.clientes.map((cliente) => cliente.id)).toEqual(['link-1']);
   });
 
   it('paginates dashboard report snapshots beyond Supabase default limits', async () => {
@@ -1893,11 +1872,11 @@ describe('mastercrm clients dashboard', () => {
 
     expect(dashboard.charts.monthlyTrend).toEqual([
       { month: '2025-10', reportDate: null, cargadoMesArs: null },
-      { month: '2025-11', reportDate: '2025-11-29', cargadoMesArs: 15000 },
-      { month: '2025-12', reportDate: '2025-12-31', cargadoMesArs: 14000 },
-      { month: '2026-01', reportDate: '2026-01-31', cargadoMesArs: 30000 },
-      { month: '2026-02', reportDate: '2026-02-15', cargadoMesArs: 22000 },
-      { month: '2026-03', reportDate: '2026-03-16', cargadoMesArs: 50000 }
+      { month: '2025-11', reportDate: null, cargadoMesArs: null },
+      { month: '2025-12', reportDate: null, cargadoMesArs: null },
+      { month: '2026-01', reportDate: null, cargadoMesArs: null },
+      { month: '2026-02', reportDate: null, cargadoMesArs: null },
+      { month: '2026-03', reportDate: null, cargadoMesArs: null }
     ]);
   });
 });
