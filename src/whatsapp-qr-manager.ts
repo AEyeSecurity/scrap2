@@ -108,6 +108,15 @@ export interface WhatsappQrCoverageSummary {
 
 const MONTH_TOKEN_RE = /^\d{4}-\d{2}$/;
 
+function readBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) {
+    return defaultValue;
+  }
+
+  return ['1', 'true', 'yes', 'si', 'sí', 'on'].includes(value);
+}
+
 function safeRuntimeSessionId(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
@@ -237,6 +246,15 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
     let reconnectAttempts = 0;
     let reconnectTimer: NodeJS.Timeout | null = null;
     const resumeOnly = options.resumeOnly === true;
+    const syncFullHistory = readBooleanEnv('WHATSAPP_QR_SYNC_FULL_HISTORY', false);
+
+    const runEventTask = async (label: string, task: () => Promise<void>): Promise<void> => {
+      try {
+        await task();
+      } catch (error) {
+        this.logger.warn({ error, ownerKey: owner.ownerKey }, `WhatsApp QR ${label} failed`);
+      }
+    };
 
     const clearReconnectTimer = () => {
       if (reconnectTimer) {
@@ -260,9 +278,8 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
 
       sock = baileys.default({
         auth: state,
-        syncFullHistory: true,
-        // El default de rc13 descarta los chunks FULL; sin esto el historial baja pero no se procesa.
-        shouldSyncHistoryMessage: () => true,
+        syncFullHistory,
+        shouldSyncHistoryMessage: () => syncFullHistory,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
       });
 
@@ -331,86 +348,92 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       };
 
       sock.ev.on('creds.update', saveCreds);
-      sock.ev.on('contacts.update', async (updates: any[]) => {
-        for (const contact of updates ?? []) {
-          await emitContact(contact).catch((error) =>
-            this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact update processing failed')
-          );
-        }
+      sock.ev.on('contacts.update', (updates: any[]) => {
+        void runEventTask('contact update processing', async () => {
+          for (const contact of updates ?? []) {
+            await emitContact(contact);
+          }
+        });
       });
-      sock.ev.on('contacts.upsert', async (contacts: any[]) => {
-        for (const contact of contacts ?? []) {
-          await emitContact(contact).catch((error) =>
-            this.logger.warn({ error, ownerKey: owner.ownerKey }, 'QR contact upsert processing failed')
-          );
-        }
+      sock.ev.on('contacts.upsert', (contacts: any[]) => {
+        void runEventTask('contact upsert processing', async () => {
+          for (const contact of contacts ?? []) {
+            await emitContact(contact);
+          }
+        });
       });
-      sock.ev.on('connection.update', async (update: any) => {
-        if (update.qr) {
-          if (resumeOnly) {
-            stopped = true;
-            clearReconnectTimer();
-            await notifyDisconnected('qr_auth_state_invalid');
-            try {
-              sock.end?.(new Error('Stored WhatsApp QR auth requires a new QR'));
-            } catch {
-              sock.ws?.close?.();
+      sock.ev.on('connection.update', (update: any) => {
+        void runEventTask('connection update processing', async () => {
+          if (update.qr) {
+            if (resumeOnly) {
+              stopped = true;
+              clearReconnectTimer();
+              await notifyDisconnected('qr_auth_state_invalid');
+              try {
+                sock.end?.(new Error('Stored WhatsApp QR auth requires a new QR'));
+              } catch {
+                sock.ws?.close?.();
+              }
+              return;
             }
-            return;
+            reconnectAttempts = 0;
+            await handlers.onQr(update.qr, await toQrDataUrl(update.qr));
           }
-          reconnectAttempts = 0;
-          await handlers.onQr(update.qr, await toQrDataUrl(update.qr));
-        }
-        if (update.connection === 'open') {
-          reconnectAttempts = 0;
-          const phone = normalizeWhatsappJidPhone(sock.user?.id ?? null);
-          await handlers.onConnected(phone);
-        }
-        if (update.connection === 'close') {
-          const statusCode =
-            Number(update.lastDisconnect?.error?.output?.statusCode) ||
-            Number(update.lastDisconnect?.error?.data?.statusCode) ||
-            null;
-          const message =
-            update.lastDisconnect?.error?.message ??
-            update.lastDisconnect?.error?.output?.payload?.message ??
-            'connection_closed';
+          if (update.connection === 'open') {
+            reconnectAttempts = 0;
+            const phone = normalizeWhatsappJidPhone(sock.user?.id ?? null);
+            await handlers.onConnected(phone);
+          }
+          if (update.connection === 'close') {
+            const statusCode =
+              Number(update.lastDisconnect?.error?.output?.statusCode) ||
+              Number(update.lastDisconnect?.error?.data?.statusCode) ||
+              null;
+            const message =
+              update.lastDisconnect?.error?.message ??
+              update.lastDisconnect?.error?.output?.payload?.message ??
+              'connection_closed';
 
-          if (!stopped && statusCode !== baileys.DisconnectReason.loggedOut) {
-            reconnectAttempts += 1;
-            const delayMs = Math.min(15_000, Math.max(1_000, reconnectAttempts * 1_500));
-            this.logger.warn(
-              { ownerKey: owner.ownerKey, statusCode, reconnectAttempts, delayMs, message },
-              'WhatsApp QR socket closed; restarting runtime'
-            );
-            clearReconnectTimer();
-            reconnectTimer = setTimeout(() => {
-              startSocket().catch((error) => {
-                this.logger.error({ error, ownerKey: owner.ownerKey }, 'WhatsApp QR socket restart failed');
-              });
-            }, delayMs);
-            reconnectTimer.unref?.();
-            return;
+            if (!stopped && statusCode !== baileys.DisconnectReason.loggedOut) {
+              reconnectAttempts += 1;
+              const delayMs = Math.min(15_000, Math.max(1_000, reconnectAttempts * 1_500));
+              this.logger.warn(
+                { ownerKey: owner.ownerKey, statusCode, reconnectAttempts, delayMs, message },
+                'WhatsApp QR socket closed; restarting runtime'
+              );
+              clearReconnectTimer();
+              reconnectTimer = setTimeout(() => {
+                startSocket().catch((error) => {
+                  this.logger.error({ error, ownerKey: owner.ownerKey }, 'WhatsApp QR socket restart failed');
+                });
+              }, delayMs);
+              reconnectTimer.unref?.();
+              return;
+            }
+
+            await notifyDisconnected(message);
+          }
+        });
+      });
+      sock.ev.on('messages.upsert', (payload: any) => {
+        void runEventTask('message upsert processing', async () => {
+          for (const item of payload.messages ?? []) {
+            await emitMessage(item, false);
+          }
+          await handlers.onHeartbeat();
+        });
+      });
+      sock.ev.on('messaging-history.set', (payload: any) => {
+        void runEventTask('history sync processing', async () => {
+          for (const contact of payload.contacts ?? []) {
+            await emitContact(contact);
           }
 
-          await notifyDisconnected(message);
-        }
-      });
-      sock.ev.on('messages.upsert', async (payload: any) => {
-        for (const item of payload.messages ?? []) {
-          await emitMessage(item, false);
-        }
-        await handlers.onHeartbeat();
-      });
-      sock.ev.on('messaging-history.set', async (payload: any) => {
-        for (const contact of payload.contacts ?? []) {
-          await emitContact(contact);
-        }
-
-        for (const item of payload.messages ?? []) {
-          await emitMessage(item, true);
-        }
-        await handlers.onHeartbeat();
+          for (const item of payload.messages ?? []) {
+            await emitMessage(item, true);
+          }
+          await handlers.onHeartbeat();
+        });
       });
     };
 
@@ -708,91 +731,120 @@ export class WhatsappQrManager {
 
     const runtime = this.options.runtime ?? buildWhatsappQrRuntimeFromEnv(this.options.logger);
     let currentSession = session;
+    const runRuntimeHandler = async (label: string, task: () => Promise<void>): Promise<void> => {
+      try {
+        await task();
+      } catch (error) {
+        this.options.logger.warn({ error, ownerKey: owner.ownerKey, sessionId: currentSession.id }, `WhatsApp QR ${label} failed`);
+      }
+    };
     try {
       const runtimeSession = await runtime.start(
         owner,
         currentSession.runtimeSessionId,
         {
           onQr: async (qrPayload, qrDataUrl) => {
-            currentSession = await this.options.store.updateSession(currentSession.id, {
-              status: 'waiting_qr',
-              qrPayload,
-              qrDataUrl,
-              qrExpiresAt: new Date(Date.now() + this.qrTtlMs).toISOString(),
-              lastHeartbeatAt: new Date().toISOString(),
-              lastError: null,
-              qrAlertedAt: null
+            await runRuntimeHandler('QR state update', async () => {
+              currentSession = await this.options.store.updateSession(currentSession.id, {
+                status: 'waiting_qr',
+                qrPayload,
+                qrDataUrl,
+                qrExpiresAt: new Date(Date.now() + this.qrTtlMs).toISOString(),
+                lastHeartbeatAt: new Date().toISOString(),
+                lastError: null,
+                qrAlertedAt: null
+              });
             });
           },
           onConnected: async (phoneE164) => {
-            currentSession = await this.options.store.updateSession(currentSession.id, {
-              status: 'connected',
-              phoneE164,
-              qrPayload: null,
-              qrDataUrl: null,
-              qrExpiresAt: null,
-              lastConnectedAt: new Date().toISOString(),
-              lastHeartbeatAt: new Date().toISOString(),
-              lastError: null,
-              disconnectedAlertedAt: null,
-              heartbeatAlertedAt: null
+            await runRuntimeHandler('connected state update', async () => {
+              currentSession = await this.options.store.updateSession(currentSession.id, {
+                status: 'connected',
+                phoneE164,
+                qrPayload: null,
+                qrDataUrl: null,
+                qrExpiresAt: null,
+                lastConnectedAt: new Date().toISOString(),
+                lastHeartbeatAt: new Date().toISOString(),
+                lastError: null,
+                disconnectedAlertedAt: null,
+                heartbeatAlertedAt: null
+              });
+              this.queueAutoBackfill(owner, currentSession, options.resumeOnly ? 'resume_connected' : 'connect_connected');
             });
-            this.queueAutoBackfill(owner, currentSession, options.resumeOnly ? 'resume_connected' : 'connect_connected');
           },
           onDisconnected: async (errorMessage) => {
-            currentSession = await this.options.store.updateSession(currentSession.id, {
-              status: 'disconnected',
-              qrPayload: null,
-              qrDataUrl: null,
-              qrExpiresAt: null,
-              lastDisconnectedAt: new Date().toISOString(),
-              lastError: errorMessage,
-              disconnectedAlertedAt: null
+            await runRuntimeHandler('disconnected state update', async () => {
+              try {
+                currentSession = await this.options.store.updateSession(currentSession.id, {
+                  status: 'disconnected',
+                  qrPayload: null,
+                  qrDataUrl: null,
+                  qrExpiresAt: null,
+                  lastDisconnectedAt: new Date().toISOString(),
+                  lastError: errorMessage,
+                  disconnectedAlertedAt: null
+                });
+              } finally {
+                this.runtimeSessions.delete(currentSession.id);
+              }
             });
-            this.runtimeSessions.delete(currentSession.id);
           },
           onHeartbeat: async () => {
-            currentSession = await this.options.store.updateSession(currentSession.id, {
-              lastHeartbeatAt: new Date().toISOString(),
-              heartbeatAlertedAt: null
+            await runRuntimeHandler('heartbeat update', async () => {
+              const heartbeatAt = new Date().toISOString();
+              if (typeof this.options.store.touchSessionHeartbeat === 'function') {
+                await this.options.store.touchSessionHeartbeat(currentSession.id, heartbeatAt);
+                currentSession = { ...currentSession, lastHeartbeatAt: heartbeatAt, updatedAt: heartbeatAt };
+                return;
+              }
+
+              currentSession = await this.options.store.updateSession(currentSession.id, {
+                lastHeartbeatAt: heartbeatAt,
+                heartbeatAlertedAt: null
+              });
             });
           },
           onMessage: async (message) => {
-            const phone = normalizeWhatsappJidPhone(message.remoteJid);
-            if (!phone) {
-              return;
-            }
-            const state = await this.recordChatMessage(owner, phone, message);
-            if (!this.isCurrentMonthChat(state)) {
-              return;
-            }
-            await this.maybeRecordIntake(owner, currentSession, phone, state);
-            await this.options.autoAssignService.processMessage({
-              owner,
-              session: currentSession,
-              ...message,
-              clientPhoneE164: phone
+            await runRuntimeHandler('message processing', async () => {
+              const phone = normalizeWhatsappJidPhone(message.remoteJid);
+              if (!phone) {
+                return;
+              }
+              const state = await this.recordChatMessage(owner, phone, message);
+              if (!this.isCurrentMonthChat(state)) {
+                return;
+              }
+              await this.maybeRecordIntake(owner, currentSession, phone, state);
+              await this.options.autoAssignService.processMessage({
+                owner,
+                session: currentSession,
+                ...message,
+                clientPhoneE164: phone
+              });
             });
           },
           onContact: async (contact) => {
-            const phone = await this.persistContact(owner, currentSession, contact);
-            if (!phone) {
-              return;
-            }
-            const state = await this.getChatState(owner, phone);
-            if (!this.isCurrentMonthChat(state)) {
-              return;
-            }
-            await this.maybeRecordIntake(owner, currentSession, phone, state);
-            await this.options.autoAssignService.processMessage({
-              owner,
-              session: currentSession,
-              direction: 'contact_sync',
-              remoteJid: contact.remoteJid,
-              clientPhoneE164: phone,
-              contactName: contact.contactName,
-              pushName: contact.pushName,
-              text: null
+            await runRuntimeHandler('contact processing', async () => {
+              const phone = await this.persistContact(owner, currentSession, contact);
+              if (!phone) {
+                return;
+              }
+              const state = await this.getChatState(owner, phone);
+              if (!this.isCurrentMonthChat(state)) {
+                return;
+              }
+              await this.maybeRecordIntake(owner, currentSession, phone, state);
+              await this.options.autoAssignService.processMessage({
+                owner,
+                session: currentSession,
+                direction: 'contact_sync',
+                remoteJid: contact.remoteJid,
+                clientPhoneE164: phone,
+                contactName: contact.contactName,
+                pushName: contact.pushName,
+                text: null
+              });
             });
           }
         },

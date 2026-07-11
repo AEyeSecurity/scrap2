@@ -204,6 +204,7 @@ export interface WhatsappQrStore {
   listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]>;
   upsertSession(owner: WhatsappQrOwner, patch?: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
   updateSession(id: string, patch: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
+  touchSessionHeartbeat?(id: string, heartbeatAt?: string): Promise<void>;
   listStaleSessions(input: { heartbeatBefore: string; qrExpiredBefore: string }): Promise<WhatsappQrSessionRecord[]>;
   markAlerted(sessionId: string, kind: 'disconnected' | 'qr' | 'heartbeat', alertedAt: string): Promise<void>;
   recordMessage(input: RecordWhatsappQrMessageInput): Promise<WhatsappQrMessageRecord>;
@@ -503,6 +504,26 @@ function chunkValues<T>(values: T[], size = 500): T[][] {
 }
 
 const SUPABASE_QR_PAGE_SIZE = 1000;
+const SESSION_SELECT = [
+  'id',
+  'owner_id',
+  'owner_key',
+  'owner_label',
+  'pagina',
+  'status',
+  'runtime_session_id',
+  'phone_e164',
+  'qr_payload',
+  'qr_data_url',
+  'qr_expires_at',
+  'last_heartbeat_at',
+  'last_connected_at',
+  'last_disconnected_at',
+  'last_error',
+  'bot_group_key',
+  'created_at',
+  'updated_at'
+].join(', ');
 
 async function selectAllSupabasePages<Row>(
   buildQuery: () => { range(from: number, to: number): PromiseLike<{ data: Row[] | null; error: PostgrestError | null }> },
@@ -687,7 +708,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   async getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null> {
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_sessions')
-      .select('*')
+      .select(SESSION_SELECT)
       .eq('owner_id', ownerId)
       .maybeSingle();
 
@@ -701,7 +722,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   async listReconnectableSessions(): Promise<WhatsappQrSessionRecord[]> {
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_sessions')
-      .select('*')
+      .select(SESSION_SELECT)
       .eq('status', 'connected')
       .order('updated_at', { ascending: false });
 
@@ -715,7 +736,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   async listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]> {
     let query = this.client
       .from('mastercrm_whatsapp_qr_sessions')
-      .select('*')
+      .select(SESSION_SELECT)
       .order('updated_at', { ascending: false });
 
     if (ownerIds && ownerIds.length > 0) {
@@ -744,7 +765,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_sessions')
       .upsert(row, { onConflict: 'owner_id' })
-      .select('*')
+      .select(SESSION_SELECT)
       .single();
 
     if (error) {
@@ -759,7 +780,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       .from('mastercrm_whatsapp_qr_sessions')
       .update(sessionPatchToRow(patch))
       .eq('id', id)
-      .select('*')
+      .select(SESSION_SELECT)
       .single();
 
     if (error) {
@@ -769,23 +790,38 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     return asSession(data);
   }
 
+  async touchSessionHeartbeat(id: string, heartbeatAt = new Date().toISOString()): Promise<void> {
+    const { error } = await this.client
+      .from('mastercrm_whatsapp_qr_sessions')
+      .update({
+        last_heartbeat_at: heartbeatAt,
+        heartbeat_alerted_at: null,
+        updated_at: heartbeatAt
+      })
+      .eq('id', id);
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not update WhatsApp QR session heartbeat');
+    }
+  }
+
   async listStaleSessions(input: { heartbeatBefore: string; qrExpiredBefore: string }): Promise<WhatsappQrSessionRecord[]> {
     const [heartbeat, qr, disconnected] = await Promise.all([
       this.client
         .from('mastercrm_whatsapp_qr_sessions')
-        .select('*')
+        .select(SESSION_SELECT)
         .eq('status', 'connected')
         .lt('last_heartbeat_at', input.heartbeatBefore)
         .is('heartbeat_alerted_at', null),
       this.client
         .from('mastercrm_whatsapp_qr_sessions')
-        .select('*')
+        .select(SESSION_SELECT)
         .eq('status', 'waiting_qr')
         .lt('qr_expires_at', input.qrExpiredBefore)
         .is('qr_alerted_at', null),
       this.client
         .from('mastercrm_whatsapp_qr_sessions')
-        .select('*')
+        .select(SESSION_SELECT)
         .eq('status', 'disconnected')
         .is('disconnected_alerted_at', null)
     ]);

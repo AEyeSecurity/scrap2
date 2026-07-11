@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WhatsappQrManager } from '../src/whatsapp-qr-manager';
+import { buildWhatsappQrRuntimeFromEnv, WhatsappQrManager } from '../src/whatsapp-qr-manager';
 import type { WhatsappQrOwner, WhatsappQrSessionRecord } from '../src/whatsapp-qr-store';
 
 const owner: WhatsappQrOwner = {
@@ -50,6 +50,135 @@ afterEach(async () => {
     await rm(tempRootDir, { recursive: true, force: true });
     tempRootDir = null;
   }
+});
+
+describe('WhatsappQrManager runtime hardening', () => {
+  it('does not reject heartbeat when Supabase heartbeat update fails', async () => {
+    const session = buildSession('session-connected', 'connected');
+    let handlers: any = null;
+    const logger = createLogger();
+    const touchSessionHeartbeat = vi.fn(async () => {
+      throw new Error('exceed_egress_quota');
+    });
+
+    const manager = new WhatsappQrManager({
+      store: {
+        upsertSession: vi.fn(async () => session),
+        updateSession: vi.fn(),
+        touchSessionHeartbeat
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: logger as any,
+      runtime: {
+        start: vi.fn(async (_owner, _runtimeSessionId, runtimeHandlers) => {
+          handlers = runtimeHandlers;
+          return { stop: vi.fn(async () => undefined) };
+        })
+      },
+      alertPollMs: 60_000
+    });
+
+    await manager.connect(owner);
+
+    await expect(handlers.onHeartbeat()).resolves.toBeUndefined();
+    expect(touchSessionHeartbeat).toHaveBeenCalledWith(session.id, expect.any(String));
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.any(Error), ownerKey: owner.ownerKey, sessionId: session.id }),
+      'WhatsApp QR heartbeat update failed'
+    );
+  });
+
+  it('does not reject contact processing when Supabase contact persistence fails', async () => {
+    const session = buildSession('session-connected', 'connected');
+    let handlers: any = null;
+    const logger = createLogger();
+
+    const manager = new WhatsappQrManager({
+      store: {
+        upsertSession: vi.fn(async () => session),
+        updateSession: vi.fn(),
+        upsertContact: vi.fn(async () => {
+          throw new Error('exceed_egress_quota');
+        })
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: logger as any,
+      runtime: {
+        start: vi.fn(async (_owner, _runtimeSessionId, runtimeHandlers) => {
+          handlers = runtimeHandlers;
+          return { stop: vi.fn(async () => undefined) };
+        })
+      },
+      alertPollMs: 60_000
+    });
+
+    await manager.connect(owner);
+
+    await expect(
+      handlers.onContact({
+        remoteJid: '5493516549344@s.whatsapp.net',
+        clientPhoneE164: '+5493516549344',
+        contactName: 'Cliente Test'
+      })
+    ).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.any(Error), ownerKey: owner.ownerKey, sessionId: session.id }),
+      'WhatsApp QR contact processing failed'
+    );
+  });
+
+  it('uses WHATSAPP_QR_SYNC_FULL_HISTORY=false by default for Baileys runtime', async () => {
+    const previousRuntime = process.env.WHATSAPP_QR_RUNTIME;
+    const previousSync = process.env.WHATSAPP_QR_SYNC_FULL_HISTORY;
+    const previousAuthDir = process.env.WHATSAPP_QR_AUTH_DIR;
+    const baileysDefault = vi.fn(() => ({
+      ev: { on: vi.fn() },
+      end: vi.fn(),
+      ws: { close: vi.fn() }
+    }));
+    vi.doMock('@whiskeysockets/baileys', () => ({
+      default: baileysDefault,
+      useMultiFileAuthState: vi.fn(async () => ({ state: {}, saveCreds: vi.fn() })),
+      DisconnectReason: { loggedOut: 401 }
+    }));
+
+    try {
+      process.env.WHATSAPP_QR_RUNTIME = 'baileys';
+      delete process.env.WHATSAPP_QR_SYNC_FULL_HISTORY;
+      tempRootDir = await mkdtemp(join(tmpdir(), 'qr-runtime-'));
+      process.env.WHATSAPP_QR_AUTH_DIR = tempRootDir;
+      const runtime = buildWhatsappQrRuntimeFromEnv(createLogger() as any);
+      await runtime.start(
+        owner,
+        'session-env',
+        {
+          onQr: vi.fn(),
+          onConnected: vi.fn(),
+          onDisconnected: vi.fn(),
+          onHeartbeat: vi.fn(),
+          onMessage: vi.fn(),
+          onContact: vi.fn()
+        },
+        { resumeOnly: true }
+      );
+
+      const config = baileysDefault.mock.calls[0][0];
+      expect(config.syncFullHistory).toBe(false);
+      expect(config.shouldSyncHistoryMessage()).toBe(false);
+    } finally {
+      if (previousRuntime === undefined) delete process.env.WHATSAPP_QR_RUNTIME;
+      else process.env.WHATSAPP_QR_RUNTIME = previousRuntime;
+      if (previousSync === undefined) delete process.env.WHATSAPP_QR_SYNC_FULL_HISTORY;
+      else process.env.WHATSAPP_QR_SYNC_FULL_HISTORY = previousSync;
+      if (previousAuthDir === undefined) delete process.env.WHATSAPP_QR_AUTH_DIR;
+      else process.env.WHATSAPP_QR_AUTH_DIR = previousAuthDir;
+      vi.doUnmock('@whiskeysockets/baileys');
+    }
+  });
 });
 
 async function createAuthState(session: WhatsappQrSessionRecord): Promise<string> {

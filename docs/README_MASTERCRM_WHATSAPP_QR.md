@@ -31,6 +31,7 @@ La API usa service role. El CRM no expone claves RdA ni `qr_payload`; solo muest
 MASTERCRM_QR_ADMIN_OWNER_KEYS=luqui10:luqui10
 WHATSAPP_QR_RUNTIME=baileys
 WHATSAPP_QR_AUTH_DIR=artifacts/whatsapp-qr-auth
+WHATSAPP_QR_SYNC_FULL_HISTORY=false
 WHATSAPP_QR_TTL_MS=90000
 WHATSAPP_QR_HEARTBEAT_STALE_MS=180000
 WHATSAPP_QR_ALERT_POLL_MS=60000
@@ -44,6 +45,7 @@ TELEGRAM_ALERT_CHAT_ID=
 ```
 
 Si existen variables `SUPERBOT_TELEGRAM_BOT_TOKEN` y `SUPERBOT_TELEGRAM_ALERT_CHAT_ID`, tambien se usan como fallback. No hardcodear tokens.
+`WHATSAPP_QR_SYNC_FULL_HISTORY=false` deja el runtime diario leyendo eventos nuevos y evita re-sincronizaciones completas innecesarias. Los backfills siguen siendo corridas controladas del backend.
 El auto-backfill mensual se dispara en background cuando la sesion queda `connected`; no requiere una variable aparte.
 
 ## Sync n8n -> backend
