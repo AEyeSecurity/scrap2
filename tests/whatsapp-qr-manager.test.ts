@@ -168,7 +168,7 @@ describe('WhatsappQrManager runtime hardening', () => {
 
       const config = baileysDefault.mock.calls[0][0];
       expect(config.syncFullHistory).toBe(false);
-      expect(config.shouldSyncHistoryMessage()).toBe(false);
+      expect(config.shouldSyncHistoryMessage).toBeUndefined();
     } finally {
       if (previousRuntime === undefined) delete process.env.WHATSAPP_QR_RUNTIME;
       else process.env.WHATSAPP_QR_RUNTIME = previousRuntime;

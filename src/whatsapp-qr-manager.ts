@@ -276,12 +276,16 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
         return;
       }
 
-      sock = baileys.default({
+      const socketConfig: Record<string, unknown> = {
         auth: state,
         syncFullHistory,
-        shouldSyncHistoryMessage: () => syncFullHistory,
         browser: ['MasterCRM', 'Chrome', '1.0.0']
-      });
+      };
+      if (syncFullHistory) {
+        socketConfig.shouldSyncHistoryMessage = () => true;
+      }
+
+      sock = baileys.default(socketConfig);
 
       const resolveLidToPn = async (jid: string): Promise<string | null> => {
         try {
