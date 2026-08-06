@@ -656,6 +656,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
       dateFrom: input.dateFrom,
       dateTo: input.dateTo,
       channel: input.channel ?? 'all',
+      transport: input.transport ?? 'all',
       campaignKey: input.campaignKey ?? null,
       adKey: input.adKey ?? null
     },
@@ -674,7 +675,18 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
       leadToDepositorPct: null,
       averageRevenueArs: null
     },
+    funnel: {
+      uniqueChats: 0,
+      newClients: 0,
+      detectedUsers: 0,
+      assigned: 0,
+      withReport: 0,
+      depositors: 0,
+      loadArs: 0,
+      reportCoveragePct: null
+    },
     channels: [],
+    transports: [],
     campaigns: [],
     ads: [],
     clients: [],
@@ -1704,6 +1716,7 @@ describe('server routes', () => {
         date_from: '2026-06-01',
         date_to: '2026-06-18',
         channel: 'landing',
+        transport: 'whatsapp_qr',
         campaign_key: 'TESTEO V2'
       }
     });
@@ -1715,6 +1728,7 @@ describe('server routes', () => {
         dateFrom: '2026-06-01',
         dateTo: '2026-06-18',
         channel: 'landing',
+        transport: 'whatsapp_qr',
         campaignKey: 'TESTEO V2'
       }
     ]);
@@ -1722,6 +1736,7 @@ describe('server routes', () => {
       dateFrom: '2026-06-01',
       dateTo: '2026-06-18',
       channel: 'landing',
+      transport: 'whatsapp_qr',
       campaignKey: 'TESTEO V2',
       adKey: null
     });
@@ -3146,6 +3161,7 @@ describe('server routes', () => {
         },
         eventTime: '2026-03-17T09:58:00.000Z',
         sourceContext: {
+          intakeTransport: 'n8n_webhook',
           ctwaClid: 'clid-123',
           referralSourceId: '6904268485256',
           referralSourceUrl: 'https://fb.me/8cuWQu6gD',
@@ -3177,6 +3193,7 @@ describe('server routes', () => {
         ownerLabel: 'Lucas 10'
       },
       sourceContext: {
+        intakeTransport: 'n8n_webhook',
         ctwaClid: 'clid-123',
         referralSourceId: '6904268485256',
         referralSourceUrl: 'https://fb.me/8cuWQu6gD',
@@ -3202,6 +3219,7 @@ describe('server routes', () => {
           ownerLabel: 'Lucas 10'
         },
         sourceContext: {
+          intakeTransport: 'n8n_webhook',
           ctwaClid: 'clid-123',
           referralSourceId: '6904268485256',
           referralSourceUrl: 'https://fb.me/8cuWQu6gD',
@@ -3386,6 +3404,7 @@ describe('server routes', () => {
           actorPhone: '+5493516549344'
         },
         sourceContext: {
+          intakeTransport: 'n8n_webhook',
           ctwaClid: 'clid-123',
           referralSourceId: 'source-123',
           referralSourceUrl: 'https://fb.me/ad',
@@ -3412,6 +3431,7 @@ describe('server routes', () => {
           actorPhone: '+5493516549344'
         },
         sourceContext: {
+          intakeTransport: 'n8n_webhook',
           ctwaClid: 'clid-123',
           referralSourceId: 'source-123',
           referralSourceUrl: 'https://fb.me/ad',
@@ -3694,6 +3714,7 @@ describe('server routes', () => {
         ownerLabel: 'Vicky'
       },
       sourceContext: {
+        intakeTransport: 'n8n_webhook',
         messageSid: 'SM456'
       }
     });
@@ -3746,6 +3767,7 @@ describe('server routes', () => {
         ownerLabel: 'Lucas10'
       },
       sourceContext: {
+        intakeTransport: 'n8n_webhook',
         ctwaClid: 'explicit-clid',
         referralSourceType: 'ad',
         waId: '5493515747477',

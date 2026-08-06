@@ -57,13 +57,13 @@
             {
               "id": "259da328-f653-4d74-99d6-55d7a80684fd",
               "name": "agente",
-              "value": "elpity24",
+              "value": "={{ $env.RDA_REPORT_AGENT_USERNAME }}",
               "type": "string"
             },
             {
               "id": "65c311fd-7f39-4caf-8e71-3cdcc3950be8",
               "name": "contrasena_agente",
-              "value": "<clave RdA guardada en n8n>",
+              "value": "={{ $env.RDA_REPORT_AGENT_PASSWORD }}",
               "type": "string"
             },
             {
@@ -101,6 +101,8 @@
       "parameters": {
         "method": "POST",
         "url": "={{ $json.baseUrl + '/reports/rda/run' }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, agente: $json.agente, contrasena_agente: $json.contrasena_agente, reportDate: $json.reportDate }) }}",
@@ -135,6 +137,8 @@
       "parameters": {
         "method": "GET",
         "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}
       },
       "id": "60b44fcf-a9d8-4709-a9b6-f6d22a4f8051",
@@ -172,6 +176,8 @@
       "parameters": {
         "method": "GET",
         "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos RdA Luqui10').item.json.itemsLimit + '&offset=0' }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}
       },
       "id": "f5c36cad-0f99-487f-b3c8-fd956a4ee2e3",
@@ -228,6 +234,24 @@
               "name": "failedItems",
               "value": "={{ $('HTTP - Estado corrida RdA').item.json.failedItems }}",
               "type": "number"
+            },
+            {
+              "id": "ccfbdb4e-cf40-4372-9da9-d10a247752cc",
+              "name": "platformAuthFailures",
+              "value": "={{ ($json.items || []).filter(item => String(item.lastError || '').startsWith('PLATFORM_AUTH_FAILED')).length }}",
+              "type": "number"
+            },
+            {
+              "id": "fdddfd62-c10c-458a-ab3c-729bd400bc4c",
+              "name": "reportDateUnavailable",
+              "value": "={{ ($json.items || []).filter(item => String(item.lastError || '').includes('REPORT_DATE_UNAVAILABLE')).length }}",
+              "type": "number"
+            },
+            {
+              "id": "498f699a-652c-4692-b0ba-0c6ea24ff133",
+              "name": "errorCodes",
+              "value": "={{ [...new Set(($json.items || []).map(item => String(item.lastError || '').split(':')[0]).filter(Boolean))] }}",
+              "type": "array"
             },
             {
               "id": "fed9aaf2-a954-4cc7-a5b5-8ae5b4b3813b",

@@ -58,6 +58,7 @@ export interface UpsertMastercrmOwnerFinancialsInput {
 
 export type MastercrmAnalyticsChannel = 'landing' | 'meta_ctwa';
 export type MastercrmAnalyticsClientChannel = MastercrmAnalyticsChannel | 'organic';
+export type MastercrmIntakeTransport = 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown';
 export type MastercrmMarketingBudgetLevel = 'ad';
 
 export interface GetMastercrmAnalyticsInput {
@@ -65,6 +66,7 @@ export interface GetMastercrmAnalyticsInput {
   dateFrom: string;
   dateTo: string;
   channel?: MastercrmAnalyticsChannel | 'all';
+  transport?: MastercrmIntakeTransport | 'all';
   campaignKey?: string;
   adKey?: string;
 }
@@ -182,6 +184,10 @@ export interface MastercrmOwnerSummary {
   cargadoHoyTotal: number | null;
   cargadoMesTotal: number | null;
   hasReport: boolean;
+  reportExpectedClients: number;
+  reportCoveredClients: number;
+  reportCoveragePct: number | null;
+  cargadoHoyComplete: boolean;
 }
 
 export interface MastercrmOwnerClientRecord {
@@ -307,6 +313,27 @@ export interface MastercrmAnalyticsChannelRecord extends MastercrmAnalyticsMetri
   label: string;
 }
 
+export interface MastercrmAnalyticsTransportRecord extends MastercrmAnalyticsMetricsRecord {
+  transport: MastercrmIntakeTransport;
+  label: string;
+  uniqueChats: number;
+  newClients: number;
+  detectedUsers: number;
+  withReport: number;
+  reportCoveragePct: number | null;
+}
+
+export interface MastercrmAnalyticsFunnelRecord {
+  uniqueChats: number;
+  newClients: number;
+  detectedUsers: number;
+  assigned: number;
+  withReport: number;
+  depositors: number;
+  loadArs: number;
+  reportCoveragePct: number | null;
+}
+
 export interface MastercrmAnalyticsCampaignRecord extends MastercrmAnalyticsMetricsRecord {
   channel: MastercrmAnalyticsChannel;
   campaignKey: string;
@@ -333,6 +360,7 @@ export interface MastercrmAnalyticsClientRecord {
   telefono: string | null;
   estado: 'assigned' | 'pending';
   channel: MastercrmAnalyticsClientChannel;
+  transport: MastercrmIntakeTransport;
   campaignKey: string;
   campaignName: string;
   adKey: string;
@@ -365,11 +393,14 @@ export interface MastercrmAnalyticsRecord {
     dateFrom: string;
     dateTo: string;
     channel: MastercrmAnalyticsChannel | 'all';
+    transport: MastercrmIntakeTransport | 'all';
     campaignKey: string | null;
     adKey: string | null;
   };
   summary: MastercrmAnalyticsMetricsRecord;
+  funnel: MastercrmAnalyticsFunnelRecord;
   channels: MastercrmAnalyticsChannelRecord[];
+  transports: MastercrmAnalyticsTransportRecord[];
   campaigns: MastercrmAnalyticsCampaignRecord[];
   ads: MastercrmAnalyticsAdRecord[];
   clients: MastercrmAnalyticsClientRecord[];
@@ -450,6 +481,14 @@ interface ReportDailySnapshotRow {
   username: string;
   cargado_hoy: number | string | null;
   cargado_mes: number | string | null;
+}
+
+interface OwnerNewClientMonthlyFactRow {
+  client_id: string;
+  month_start: string;
+  cargado_mes_ars: number | string | null;
+  report_date: string | null;
+  has_report: boolean;
 }
 
 interface OwnerClientLinkFirstSeenRow {
@@ -1388,8 +1427,9 @@ function buildEmptyDashboard(month: string): MastercrmClientsDashboardRecord {
 function buildEmptyAnalytics(
   window: ReturnType<typeof buildDateRangeWindow>,
   linkedOwner: MastercrmLinkedOwnerRecord | null = null,
-  filters: Pick<MastercrmAnalyticsRecord['filters'], 'channel' | 'campaignKey' | 'adKey'> = {
+  filters: Pick<MastercrmAnalyticsRecord['filters'], 'channel' | 'transport' | 'campaignKey' | 'adKey'> = {
     channel: 'all',
+    transport: 'all',
     campaignKey: null,
     adKey: null
   }
@@ -1400,11 +1440,23 @@ function buildEmptyAnalytics(
       dateFrom: window.dateFrom,
       dateTo: window.dateTo,
       channel: filters.channel,
+      transport: filters.transport,
       campaignKey: filters.campaignKey,
       adKey: filters.adKey
     },
     summary: finalizeAnalyticsMetrics(makeMutableMetrics(), null),
+    funnel: {
+      uniqueChats: 0,
+      newClients: 0,
+      detectedUsers: 0,
+      assigned: 0,
+      withReport: 0,
+      depositors: 0,
+      loadArs: 0,
+      reportCoveragePct: null
+    },
     channels: [],
+    transports: [],
     campaigns: [],
     ads: [],
     clients: [],
@@ -1712,6 +1764,19 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       'Could not read owner monthly trend snapshots'
     );
 
+    const closedMonthlyFacts = await selectAllSupabasePages<OwnerNewClientMonthlyFactRow>(
+      () =>
+        this.client
+          .from('owner_new_client_monthly_facts')
+          .select('client_id, month_start, cargado_mes_ars, report_date, has_report')
+          .eq('owner_id', owner.id)
+          .gte('month_start', monthTrail[0]?.monthStartDate ?? monthWindow.monthStartDate)
+          .lt('month_start', monthWindow.monthStartDate)
+          .order('month_start', { ascending: true })
+          .order('client_id', { ascending: true }),
+      'Could not read closed owner monthly facts'
+    );
+
     const linkedOwner: MastercrmLinkedOwnerRecord = {
       ownerId: owner.id,
       ownerKey: owner.owner_key,
@@ -1816,6 +1881,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       );
       cargadoHoyTotal = 0;
       cargadoMesTotal = 0;
+      let cargadoHoyIncomplete = false;
 
       for (const snapshot of snapshots) {
         const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
@@ -1826,18 +1892,31 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         const cargadoHoy = toFiniteNumber(snapshot.cargado_hoy);
         const cargadoMes = toFiniteNumber(snapshot.cargado_mes);
         const existing = snapshotByClientId.get(clientId);
+        const combinedCargadoHoy =
+          cargadoHoy === null || existing?.cargadoHoy === null
+            ? null
+            : roundTo((existing?.cargadoHoy ?? 0) + cargadoHoy);
         snapshotByClientId.set(clientId, {
-          cargadoHoy: roundTo((existing?.cargadoHoy ?? 0) + (cargadoHoy ?? 0)),
+          cargadoHoy: combinedCargadoHoy,
           cargadoMes: roundTo((existing?.cargadoMes ?? 0) + (cargadoMes ?? 0)),
           reportDate: snapshot.report_date
         });
-        cargadoHoyTotal += cargadoHoy ?? 0;
+        if (cargadoHoy === null) {
+          cargadoHoyIncomplete = true;
+        } else {
+          cargadoHoyTotal += cargadoHoy;
+        }
         cargadoMesTotal += cargadoMes ?? 0;
+      }
+      clientesConReporte = snapshotByClientId.size;
+      if (cargadoHoyIncomplete) {
+        cargadoHoyTotal = null;
       }
 
       const { data: reportRunData, error: reportRunError } = await this.client
         .from('report_runs')
         .select('finished_at')
+        .eq('pagina', owner.pagina)
         .eq('principal_key', principalKey)
         .eq('report_date', reportDate)
         .in('status', ['completed', 'completed_with_errors'])
@@ -1856,6 +1935,24 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const adSpendRow = adSpendResult.data as OwnerMonthlyAdSpendRow | null;
     const monthlyTrendByMonth = new Map<string, { reportDate: string; cargadoMesArs: number }>();
     const newClientIdsByMonth = new Map<string, Set<string>>();
+    const closedTrendMonths = new Set<string>();
+
+    for (const fact of closedMonthlyFacts) {
+      const monthToken = fact.month_start.slice(0, 7);
+      const clientIds = newClientIdsByMonth.get(monthToken) ?? new Set<string>();
+      clientIds.add(fact.client_id);
+      newClientIdsByMonth.set(monthToken, clientIds);
+      closedTrendMonths.add(monthToken);
+
+      if (!fact.has_report || !fact.report_date) {
+        continue;
+      }
+      const existing = monthlyTrendByMonth.get(monthToken);
+      monthlyTrendByMonth.set(monthToken, {
+        reportDate: fact.report_date,
+        cargadoMesArs: roundTo((existing?.cargadoMesArs ?? 0) + (toFiniteNumber(fact.cargado_mes_ars) ?? 0))
+      });
+    }
 
     for (const fact of factsForTrendMonths) {
       if (!fact.is_new_intake_in_month) {
@@ -1871,6 +1968,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     for (const snapshot of monthlyTrendSnapshots) {
       const monthToken = snapshot.report_date.slice(0, 7);
       if (!monthTrail.some((point) => point.month === monthToken)) {
+        continue;
+      }
+      if (closedTrendMonths.has(monthToken)) {
         continue;
       }
       const clientId = typeof snapshot.client_id === 'string' && snapshot.client_id.length > 0 ? snapshot.client_id : null;
@@ -1996,7 +2096,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         reportUpdatedAt,
         cargadoHoyTotal,
         cargadoMesTotal,
-        hasReport: Boolean(reportDate)
+        hasReport: Boolean(reportDate),
+        reportExpectedClients: totalClients,
+        reportCoveredClients: clientesConReporte,
+        reportCoveragePct: totalClients > 0 ? roundTo((clientesConReporte / totalClients) * 100) : null,
+        cargadoHoyComplete: Boolean(reportDate) && cargadoHoyTotal !== null
       },
       financialInputs: {
         month: monthWindow.month,
@@ -2045,6 +2149,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (requestedChannel !== 'all' && requestedChannel !== 'landing' && requestedChannel !== 'meta_ctwa') {
       throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing, meta_ctwa or all');
     }
+    const requestedTransport = input.transport ?? 'all';
+    if (!['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown'].includes(requestedTransport)) {
+      throw new MastercrmUserStoreError(
+        'VALIDATION',
+        'transport must be whatsapp_qr, n8n_webhook, landing, unknown or all'
+      );
+    }
 
     const campaignFilter = nullableText(input.campaignKey);
     const adFilter = nullableText(input.adKey);
@@ -2054,6 +2165,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     if (!owner) {
       return buildEmptyAnalytics(window, null, {
         channel: requestedChannel,
+        transport: requestedTransport,
         campaignKey: campaignFilter,
         adKey: adFilter
       });
@@ -2065,7 +2177,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       facts,
       snapshotRows,
       financialSettingsResult,
-      budgetSourceRows
+      budgetSourceRows,
+      qrMessageRows,
+      qrMatchRows
     ] = await Promise.all([
       this.getOwnerPhone(owner.id),
       selectAllSupabasePages<OwnerClientEventRow>(
@@ -2126,6 +2240,28 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
             .order('active_from', { ascending: true })
             .order('id', { ascending: true }),
         'Could not read owner marketing budgets'
+      ),
+      selectAllSupabasePages<{ client_phone_e164: string; event_at: string }>(
+        () =>
+          this.client
+            .from('mastercrm_whatsapp_qr_messages')
+            .select('client_phone_e164, event_at')
+            .eq('owner_id', owner.id)
+            .gte('event_at', window.startedAtIso)
+            .lt('event_at', window.endedAtIso)
+            .order('event_at', { ascending: true }),
+        'Could not read QR chats for analytics'
+      ),
+      selectAllSupabasePages<{ client_phone_e164: string; status: string; event_at: string }>(
+        () =>
+          this.client
+            .from('mastercrm_whatsapp_qr_matches')
+            .select('client_phone_e164, status, event_at')
+            .eq('owner_id', owner.id)
+            .gte('event_at', window.startedAtIso)
+            .lt('event_at', window.endedAtIso)
+            .order('event_at', { ascending: true }),
+        'Could not read QR matches for analytics'
       )
     ]);
 
@@ -2287,7 +2423,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       }
 
       const attributionEvent = pickFirstAttributionEvent(clientEvents) ?? firstEvent;
-      const attribution = attributionFromSourceContext(extractMetaSourceContext(attributionEvent.payload));
+      const sourceContext = extractMetaSourceContext(attributionEvent.payload);
+      const transport: MastercrmIntakeTransport =
+        sourceContext?.intakeTransport ?? (sourceContext?.landingSessionId ? 'landing' : 'unknown');
+      if (requestedTransport !== 'all' && transport !== requestedTransport) {
+        continue;
+      }
+      const attribution = attributionFromSourceContext(sourceContext);
       const analyticsAttribution = buildAnalyticsAttribution(attribution);
       if (!analyticsAttribution) {
         if (attribution.kind === 'landing_unmatched') {
@@ -2319,6 +2461,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
             telefono: client?.phone_e164 ?? null,
             estado: fact?.status_at_month_end ?? 'pending',
             channel: 'organic',
+            transport,
             campaignKey: '',
             campaignName: 'Sin atribucion',
             adKey: '',
@@ -2395,6 +2538,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         telefono: client?.phone_e164 ?? null,
         estado: fact?.status_at_month_end ?? 'pending',
         channel: analyticsAttribution.channel,
+        transport,
         campaignKey: analyticsAttribution.campaignKey,
         campaignName: analyticsAttribution.campaignName,
         adKey: analyticsAttribution.adKey,
@@ -2512,6 +2656,51 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       }))
       .sort((left, right) => right.revenueArs - left.revenueArs);
 
+    const transportsByKey = new Map<MastercrmIntakeTransport, MutableAnalyticsMetrics>();
+    for (const client of clients) {
+      const metrics = transportsByKey.get(client.transport) ?? makeMutableMetrics();
+      metrics.leads += 1;
+      metrics.assigned += client.estado === 'assigned' ? 1 : 0;
+      metrics.depositors += client.revenueArs > 0 ? 1 : 0;
+      metrics.revenueArs = roundTo(metrics.revenueArs + client.revenueArs);
+      transportsByKey.set(client.transport, metrics);
+    }
+    const transportLabels: Record<MastercrmIntakeTransport, string> = {
+      whatsapp_qr: 'WhatsApp QR',
+      n8n_webhook: 'Webhook WhatsApp',
+      landing: 'Landing',
+      unknown: 'Sin identificar'
+    };
+    const phoneKey = (value: string | null | undefined): string => (value ?? '').replace(/[^0-9]/g, '');
+    const qrChatPhones = new Set(qrMessageRows.map((row) => phoneKey(row.client_phone_e164)).filter(Boolean));
+    const qrDetectedPhones = new Set(qrMatchRows.map((row) => phoneKey(row.client_phone_e164)).filter(Boolean));
+    const finalizedTransports = [...transportsByKey.entries()]
+      .map(([transport, metrics]) => {
+        const transportClients = clients.filter((client) => client.transport === transport);
+        const withReport = transportClients.filter((client) => monthlySnapshotByClientId.has(client.clientId)).length;
+        const detectedUsers = transportClients.filter((client) =>
+          transport === 'whatsapp_qr'
+            ? qrDetectedPhones.has(phoneKey(client.telefono))
+            : Boolean(client.username)
+        ).length;
+        const uniqueChats =
+          transport === 'whatsapp_qr'
+            ? transportClients.filter((client) => qrChatPhones.has(phoneKey(client.telefono))).length
+            : transportClients.length;
+        return {
+          ...finalizeAnalyticsMetrics(metrics, commissionPct),
+          transport,
+          label: transportLabels[transport],
+          uniqueChats,
+          newClients: transportClients.length,
+          detectedUsers,
+          withReport,
+          reportCoveragePct:
+            transportClients.length > 0 ? roundTo((withReport / transportClients.length) * 100) : null
+        };
+      })
+      .sort((left, right) => right.leads - left.leads);
+
     const summaryMutable = makeMutableMetrics();
     for (const channel of channelsByKey.values()) {
       summaryMutable.investmentArs = roundTo(summaryMutable.investmentArs + channel.investmentArs);
@@ -2527,17 +2716,40 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       summaryMutable.depositors += organicSummary.depositors;
     }
 
+    const summary = finalizeAnalyticsMetrics(summaryMutable, commissionPct);
+    const funnelWithReport = clients.filter((client) => monthlySnapshotByClientId.has(client.clientId)).length;
+    const funnelQrClients = clients.filter((client) => client.transport === 'whatsapp_qr');
+    const funnel: MastercrmAnalyticsFunnelRecord = {
+      uniqueChats:
+        funnelQrClients.filter((client) => qrChatPhones.has(phoneKey(client.telefono))).length +
+        clients.filter((client) => client.transport !== 'whatsapp_qr').length,
+      newClients: clients.length,
+      detectedUsers: clients.filter((client) =>
+        client.transport === 'whatsapp_qr'
+          ? qrDetectedPhones.has(phoneKey(client.telefono))
+          : Boolean(client.username)
+      ).length,
+      assigned: summary.assigned,
+      withReport: funnelWithReport,
+      depositors: summary.depositors,
+      loadArs: summary.revenueArs,
+      reportCoveragePct: clients.length > 0 ? roundTo((funnelWithReport / clients.length) * 100) : null
+    };
+
     return {
       linkedOwner,
       filters: {
         dateFrom: window.dateFrom,
         dateTo: window.dateTo,
         channel: requestedChannel,
+        transport: requestedTransport,
         campaignKey: campaignFilter,
         adKey: adFilter
       },
-      summary: finalizeAnalyticsMetrics(summaryMutable, commissionPct),
+      summary,
+      funnel,
       channels: finalizedChannels,
+      transports: finalizedTransports,
       campaigns: finalizedCampaigns,
       ads: finalizedAds,
       clients: clients.sort((left, right) => right.revenueArs - left.revenueArs),

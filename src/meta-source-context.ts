@@ -5,6 +5,7 @@ export interface StoredMetaSourcePayload extends Record<string, unknown> {
   owner_label?: string;
   customer_data?: Record<string, unknown>;
   source_context?: Record<string, unknown>;
+  IntakeTransport?: string;
   ReferralCtwaClid?: string;
   Fbp?: string;
   Fbc?: string;
@@ -101,6 +102,13 @@ export function normalizeMetaSourceContext(input: MetaSourceContext | null | und
   }
 
   const normalized: MetaSourceContext = {
+    intakeTransport:
+      input.intakeTransport === 'whatsapp_qr' ||
+      input.intakeTransport === 'n8n_webhook' ||
+      input.intakeTransport === 'landing' ||
+      input.intakeTransport === 'unknown'
+        ? input.intakeTransport
+        : null,
     ctwaClid: normalizeOptionalText(input.ctwaClid),
     fbp: normalizeOptionalText(input.fbp),
     fbc: normalizeOptionalText(input.fbc),
@@ -169,6 +177,7 @@ export function buildStoredMetaSourcePayload(input: {
     owner_label: normalizeOptionalText(input.ownerContext?.ownerLabel),
     customer_data: customerData ? pruneNullish({ ...customerData }) : null,
     source_context: sourceContext ? pruneNullish({ ...sourceContext }) : null,
+    IntakeTransport: sourceContext?.intakeTransport ?? null,
     ReferralCtwaClid: sourceContext?.ctwaClid ?? null,
     Fbp: sourceContext?.fbp ?? null,
     Fbc: sourceContext?.fbc ?? null,
@@ -247,6 +256,8 @@ export function extractMetaSourceContext(payload: Record<string, unknown> | null
     nested && typeof nested === 'object' && !Array.isArray(nested) ? (nested as Record<string, unknown>) : null;
 
   return normalizeMetaSourceContext({
+    intakeTransport: (readPayloadField(payload, 'IntakeTransport') ??
+      (nestedSource ? readPayloadField(nestedSource, 'intakeTransport') : null)) as MetaSourceContext['intakeTransport'],
     ctwaClid:
       readPayloadField(payload, 'ReferralCtwaClid') ??
       (nestedSource ? readPayloadField(nestedSource, 'ctwaClid') : null),

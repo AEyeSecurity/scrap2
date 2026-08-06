@@ -7,6 +7,7 @@ import { toFriendlyAsnUserError } from './asn-user-error';
 import { ensureAuthenticated } from './auth';
 import { parseBalanceNumber } from './balance-job';
 import { configureContext, launchChromiumBrowser } from './browser';
+import type { ReportBrowserSession } from './report-browser-session';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig, AsnReportJobRequest, AsnReportJobResult, JobExecutionResult, JobStepResult } from './types';
 
@@ -353,7 +354,8 @@ async function readAsnReportSnapshot(
 export async function runAsnReportJob(
   request: AsnReportJobRequest,
   appConfig: AppConfig,
-  logger: Logger
+  logger: Logger,
+  reportSession?: ReportBrowserSession
 ): Promise<JobExecutionResult> {
   if (request.payload.pagina !== 'ASN') {
     throw new Error('ASN report job only supports pagina=ASN');
@@ -380,13 +382,18 @@ export async function runAsnReportJob(
 
   await fs.mkdir(artifactDir, { recursive: true });
 
-  const browser = await launchChromiumBrowser(runtimeConfig, jobLogger);
-  const context = await browser.newContext({
-    baseURL: runtimeConfig.baseUrl,
-    viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,
-    recordVideo: runtimeConfig.debug ? { dir: path.join(artifactDir, 'video') } : undefined
-  });
-  await configureContext(context, runtimeConfig, jobLogger);
+  const ownsSession = !reportSession;
+  const browser = reportSession?.browser ?? (await launchChromiumBrowser(runtimeConfig, jobLogger));
+  const context =
+    reportSession?.context ??
+    (await browser.newContext({
+      baseURL: runtimeConfig.baseUrl,
+      viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,
+      recordVideo: runtimeConfig.debug ? { dir: path.join(artifactDir, 'video') } : undefined
+    }));
+  if (ownsSession) {
+    await configureContext(context, runtimeConfig, jobLogger);
+  }
 
   const page = await context.newPage();
   const artifactPaths: string[] = [];
@@ -398,37 +405,41 @@ export async function runAsnReportJob(
   let resultPayload: AsnReportJobResult | undefined;
 
   try {
-    if (runtimeConfig.debug) {
+    if (runtimeConfig.debug && ownsSession) {
       await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
       tracingStarted = true;
     }
 
     const loginStartedAt = new Date().toISOString();
-    await ensureAuthenticated(
-      context,
-      page,
-      runtimeConfig,
-      {
-        username: request.payload.agente,
-        password: request.payload.contrasena_agente
-      },
-      jobLogger,
-      { persistSession: false }
-    );
+    if (ownsSession) {
+      await ensureAuthenticated(
+        context,
+        page,
+        runtimeConfig,
+        {
+          username: request.payload.agente,
+          password: request.payload.contrasena_agente
+        },
+        jobLogger,
+        { persistSession: false }
+      );
+    }
     const loginArtifact = captureSuccessArtifacts ? await captureStepScreenshot(page, artifactDir, '00-login') : undefined;
     if (loginArtifact) {
       artifactPaths.push(loginArtifact);
     }
     steps.push({
       name: '00-login',
-      status: 'ok',
+      status: ownsSession ? 'ok' : 'skipped',
       startedAt: loginStartedAt,
       finishedAt: new Date().toISOString(),
       ...(loginArtifact ? { artifactPath: loginArtifact } : {})
     });
 
     const continueStartedAt = new Date().toISOString();
-    const continueState = await handleAsnPostLoginContinue(page, isTurbo ? 900 : Math.min(runtimeConfig.timeoutMs, 3_000));
+    const continueState = ownsSession
+      ? await handleAsnPostLoginContinue(page, isTurbo ? 900 : Math.min(runtimeConfig.timeoutMs, 3_000))
+      : 'not-needed';
     steps.push({
       name: '01b-continue-intermediate',
       status: continueState === 'ok' ? 'ok' : 'skipped',
@@ -455,8 +466,8 @@ export async function runAsnReportJob(
       throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
     }
 
-    const monthToken = getBuenosAiresMonthToken();
-    const dateToken = getBuenosAiresDateToken();
+    const dateToken = request.payload.reportDate ?? getBuenosAiresDateToken();
+    const monthToken = dateToken.slice(0, 7);
     let monthTotalRow: AsnCdRow | undefined;
     let dayTotalRow: AsnCdRow | null = null;
     const findTotalStep = await executeActionStep(
@@ -489,7 +500,7 @@ export async function runAsnReportJob(
       '04-read-cargado-report',
       async () => {
         if (!monthTotalRow) {
-          throw new Error('Month total row was not resolved');
+          throw new Error(`REPORT_DATE_UNAVAILABLE: ASN does not expose report data for ${dateToken}`);
         }
         const cargadoTexto = normalizeSpaces(monthTotalRow.cargado);
         const cargadoNumero = parseAsnReportCargadoNumber(cargadoTexto);
@@ -531,8 +542,11 @@ export async function runAsnReportJob(
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
-    await context.close();
-    await browser.close();
+    await page.close();
+    if (ownsSession) {
+      await context.close();
+      await browser.close();
+    }
 
     if (!resultPayload) {
       throw new Error('ASN report result was not captured');
@@ -565,8 +579,11 @@ export async function runAsnReportJob(
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug).catch(() => undefined);
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    await page.close().catch(() => undefined);
+    if (ownsSession) {
+      await context.close().catch(() => undefined);
+      await browser.close().catch(() => undefined);
+    }
 
     const wrapped = new Error(message, {
       cause: friendlyError?.cause ?? (error instanceof Error ? error : undefined)

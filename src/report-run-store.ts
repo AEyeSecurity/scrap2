@@ -85,6 +85,7 @@ export interface ReportRunLease {
   ownerLabel: string;
   attempts: number;
   maxAttempts: number;
+  leaseToken?: string;
 }
 
 export interface ReportRunItemsPage {
@@ -97,8 +98,10 @@ export interface ReportRunStore {
   deleteRun(runId: string): Promise<void>;
   enqueueRunItemsFromPrincipal(runId: string, principalKey: string): Promise<number>;
   leaseNextRunItem(leaseSeconds: number, maxAttempts: number): Promise<ReportRunLease | null>;
-  completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
-  failRunItem(lease: ReportRunLease, error: string): Promise<void>;
+  completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<boolean | void>;
+  failRunItem(lease: ReportRunLease, error: string): Promise<boolean | void>;
+  renewRunItemLease?(lease: ReportRunLease, leaseSeconds: number): Promise<boolean>;
+  failRemainingRunItems?(runId: string, error: string): Promise<void>;
   upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   enqueueWhatsappQrRecheckFromSnapshot?(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   refreshRunStatus(runId: string): Promise<ReportRunRecord>;
@@ -213,6 +216,7 @@ type ReportRunItemRow = {
   status: ReportRunItemStatus;
   attempts: number;
   max_attempts: number;
+  lease_token?: string;
   lease_until: string | null;
   next_retry_at: string | null;
   started_at: string | null;
@@ -242,6 +246,7 @@ type ClaimRow = {
   owner_label: string;
   attempts: number;
   max_attempts: number;
+  lease_token?: string;
 };
 
 const REDACTED_REPORT_SECRET = '[redacted]';
@@ -308,7 +313,8 @@ function asLease(row: ClaimRow): ReportRunLease {
     ownerKey: row.owner_key,
     ownerLabel: row.owner_label,
     attempts: row.attempts,
-    maxAttempts: row.max_attempts
+    maxAttempts: row.max_attempts,
+    ...(row.lease_token ? { leaseToken: row.lease_token } : {})
   };
 }
 
@@ -333,6 +339,28 @@ export class SupabaseReportRunStore implements ReportRunStore {
     const agente = normalizeText(input.agente, 'agente');
     const contrasenaAgente = normalizeText(input.contrasenaAgente, 'contrasena_agente');
 
+    const { data: credentialData, error: credentialError } = await this.client
+      .from('mastercrm_report_credentials')
+      .upsert(
+        {
+          pagina: input.pagina,
+          principal_key: principalKey,
+          login_username: agente,
+          login_password: contrasenaAgente,
+          source: 'report_api',
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'pagina,principal_key' }
+      )
+      .select('id')
+      .single();
+    if (credentialError) {
+      throw mapPostgrestError(credentialError, 'Could not persist report credential');
+    }
+    if (typeof credentialData?.id !== 'string') {
+      throw new ReportRunStoreError('INTERNAL', 'Could not persist report credential');
+    }
+
     const { data, error } = await this.client
       .from('report_runs')
       .insert({
@@ -341,7 +369,8 @@ export class SupabaseReportRunStore implements ReportRunStore {
         report_date: reportDate,
         status: 'queued',
         agente,
-        contrasena_agente: contrasenaAgente,
+        contrasena_agente: REDACTED_REPORT_SECRET,
+        credential_id: credentialData.id,
         metadata: input.metadata ?? {}
       })
       .select('*')
@@ -392,12 +421,13 @@ export class SupabaseReportRunStore implements ReportRunStore {
     return asLease(rows[0] as ClaimRow);
   }
 
-  async completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
-    const { error } = await this.client
+  async completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<boolean> {
+    let query = this.client
       .from('report_run_items')
       .update({
         status: 'done',
         lease_until: null,
+        lease_token: null,
         next_retry_at: null,
         finished_at: new Date().toISOString(),
         last_error: null,
@@ -406,34 +436,108 @@ export class SupabaseReportRunStore implements ReportRunStore {
         raw_result: result
       })
       .eq('id', lease.itemId);
+    if (lease.leaseToken) {
+      query = query.eq('lease_token', lease.leaseToken).eq('status', 'leased');
+    }
+    const { data, error } = await query.select('id').maybeSingle();
 
     if (error) {
       throw mapPostgrestError(error, 'Could not complete report run item');
     }
+    return Boolean(data);
   }
 
-  async failRunItem(lease: ReportRunLease, errorMessage: string): Promise<void> {
+  async failRunItem(lease: ReportRunLease, errorMessage: string): Promise<boolean> {
     const terminal = lease.attempts >= lease.maxAttempts;
     const delaySeconds = lease.attempts >= lease.maxAttempts - 1 ? 300 : 60;
     const nextRetryAt = terminal ? null : new Date(Date.now() + delaySeconds * 1000).toISOString();
 
-    const { error } = await this.client
+    let query = this.client
       .from('report_run_items')
       .update({
         status: terminal ? 'failed' : 'retry_wait',
         lease_until: null,
+        lease_token: null,
         next_retry_at: nextRetryAt,
         finished_at: terminal ? new Date().toISOString() : null,
         last_error: errorMessage
       })
       .eq('id', lease.itemId);
+    if (lease.leaseToken) {
+      query = query.eq('lease_token', lease.leaseToken).eq('status', 'leased');
+    }
+    const { data, error } = await query.select('id').maybeSingle();
 
     if (error) {
       throw mapPostgrestError(error, 'Could not fail report run item');
     }
+    return Boolean(data);
+  }
+
+  async renewRunItemLease(lease: ReportRunLease, leaseSeconds: number): Promise<boolean> {
+    if (!lease.leaseToken) {
+      return false;
+    }
+    const leaseUntil = new Date(Date.now() + Math.max(1, Math.trunc(leaseSeconds)) * 1000).toISOString();
+    const { data, error } = await this.client
+      .from('report_run_items')
+      .update({ lease_until: leaseUntil, updated_at: new Date().toISOString() })
+      .eq('id', lease.itemId)
+      .eq('lease_token', lease.leaseToken)
+      .eq('status', 'leased')
+      .select('id')
+      .maybeSingle();
+    if (error) {
+      throw mapPostgrestError(error, 'Could not renew report run item lease');
+    }
+    return Boolean(data);
+  }
+
+  async failRemainingRunItems(runId: string, errorMessage: string): Promise<void> {
+    const now = new Date().toISOString();
+    const { error } = await this.client
+      .from('report_run_items')
+      .update({
+        status: 'failed',
+        lease_until: null,
+        lease_token: null,
+        next_retry_at: null,
+        finished_at: now,
+        last_error: errorMessage
+      })
+      .eq('run_id', runId)
+      .in('status', ['pending', 'retry_wait']);
+    if (error) {
+      throw mapPostgrestError(error, 'Could not fail remaining report run items');
+    }
   }
 
   async upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void> {
+    let cargadoHoy = result.cargadoHoyNumero;
+    if (lease.pagina === 'RdA' && cargadoHoy === null) {
+      const monthStart = getMonthStartFromReportDate(lease.reportDate);
+      const { data: previousData, error: previousError } = await this.client
+        .from('report_daily_snapshots')
+        .select('report_date, cargado_mes')
+        .eq('identity_id', lease.identityId)
+        .gte('report_date', monthStart)
+        .lt('report_date', lease.reportDate)
+        .order('report_date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (previousError) {
+        throw mapPostgrestError(previousError, 'Could not read previous RdA report snapshot');
+      }
+
+      const previousMonthly = previousData ? Number(previousData.cargado_mes) : null;
+      if (previousData && Number.isFinite(previousMonthly)) {
+        cargadoHoy = Number((result.cargadoNumero - Number(previousMonthly)).toFixed(2));
+      } else if (lease.reportDate.endsWith('-01')) {
+        cargadoHoy = result.cargadoNumero;
+      }
+    }
+
     const { error } = await this.client.from('report_daily_snapshots').upsert(
       {
         pagina: lease.pagina,
@@ -446,7 +550,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
         username: lease.username,
         owner_key: lease.ownerKey,
         owner_label: lease.ownerLabel,
-        cargado_hoy: result.cargadoHoyNumero,
+        cargado_hoy: cargadoHoy,
         cargado_mes: result.cargadoNumero,
         raw_result: result
       },
@@ -455,6 +559,16 @@ export class SupabaseReportRunStore implements ReportRunStore {
 
     if (error) {
       throw mapPostgrestError(error, 'Could not upsert report daily snapshot');
+    }
+
+    if (cargadoHoy !== result.cargadoHoyNumero) {
+      const { error: itemError } = await this.client
+        .from('report_run_items')
+        .update({ cargado_hoy: cargadoHoy })
+        .eq('id', lease.itemId);
+      if (itemError) {
+        throw mapPostgrestError(itemError, 'Could not persist derived RdA daily amount');
+      }
     }
   }
 

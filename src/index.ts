@@ -99,11 +99,13 @@ program
 
 program
   .command('sync-n8n-rda-cashiers')
-  .description('Sync RdA cashier login credentials from an n8n SQLite data table into MasterCRM QR storage')
+  .alias('sync-n8n-platform-cashiers')
+  .description('Sync RdA or ASN cashier login credentials from an n8n SQLite data table into MasterCRM QR storage')
+  .option('--pagina <pagina>', 'Platform: RdA or ASN', 'RdA')
   .option('--sqlite <path>', 'n8n SQLite database path (fallback: N8N_SQLITE_PATH)')
   .option('--python-bin <path>', 'Python executable used to read SQLite (fallback: PYTHON_BIN or python)')
   .option('--write', 'Write credentials to backend storage. Omit for dry-run.')
-  .action(async (options: { sqlite?: string; pythonBin?: string; write?: boolean }) => {
+  .action(async (options: { sqlite?: string; pythonBin?: string; write?: boolean; pagina?: string }) => {
     const sqlitePath = options.sqlite || process.env.N8N_SQLITE_PATH?.trim();
     if (!sqlitePath) {
       console.error('Missing --sqlite or N8N_SQLITE_PATH');
@@ -111,12 +113,20 @@ program
       return;
     }
 
+    const pagina = options.pagina === 'ASN' ? 'ASN' : options.pagina === 'RdA' ? 'RdA' : null;
+    if (!pagina) {
+      console.error('Invalid --pagina. Use RdA or ASN.');
+      process.exitCode = 1;
+      return;
+    }
+
     try {
-      const rows = await readN8nRdaCredentialRowsFromSqlite(sqlitePath, options.pythonBin || undefined);
+      const rows = await readN8nRdaCredentialRowsFromSqlite(sqlitePath, options.pythonBin || undefined, pagina);
       const result = await runN8nRdaCredentialSync({
         store: createWhatsappQrStoreFromEnv(),
         rows,
-        dryRun: !options.write
+        dryRun: !options.write,
+        pagina
       });
 
       console.log(

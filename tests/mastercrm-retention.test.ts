@@ -62,12 +62,14 @@ describe('mastercrm retention', () => {
           landing_sessions_deleted: 0
         },
         error: null
-      });
+      })
+      .mockResolvedValueOnce({ data: 4, error: null });
     const store = createMastercrmRetentionStore({ rpc } as never);
     const logger = createLogger();
     const worker = new MastercrmRetentionWorker(store, logger as never, {
       runOnStart: false,
       pollMs: 86_400_000,
+      whatsappQrMessageRetentionDays: 90,
       now: () => new Date('2026-07-08T15:00:00.000Z')
     });
 
@@ -79,8 +81,16 @@ describe('mastercrm retention', () => {
     expect(rpc).toHaveBeenNthCalledWith(2, 'purge_mastercrm_technical_history_v1', {
       p_cutoff_date: '2026-07-01'
     });
+    expect(rpc).toHaveBeenNthCalledWith(3, 'purge_mastercrm_whatsapp_qr_message_excerpts_v1', {
+      p_before: '2026-04-09T15:00:00.000Z'
+    });
     expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({ cutoffDate: '2026-07-01', closedFacts: 12 }),
+      expect.objectContaining({
+        cutoffDate: '2026-07-01',
+        closedFacts: 12,
+        qrExcerptBefore: '2026-04-09T15:00:00.000Z',
+        qrMessageExcerptsPurged: 4
+      }),
       'MasterCRM technical retention purge completed'
     );
   });

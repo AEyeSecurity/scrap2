@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -143,6 +143,7 @@ describe('WhatsappQrManager runtime hardening', () => {
     vi.doMock('@whiskeysockets/baileys', () => ({
       default: baileysDefault,
       useMultiFileAuthState: vi.fn(async () => ({ state: {}, saveCreds: vi.fn() })),
+      fetchLatestBaileysVersion: vi.fn(async () => ({ version: [2, 3000, 1043857760], isLatest: true })),
       DisconnectReason: { loggedOut: 401 }
     }));
 
@@ -169,6 +170,7 @@ describe('WhatsappQrManager runtime hardening', () => {
       const config = baileysDefault.mock.calls[0][0];
       expect(config.syncFullHistory).toBe(false);
       expect(config.shouldSyncHistoryMessage).toBeUndefined();
+      expect(config.version).toEqual([2, 3000, 1043857760]);
     } finally {
       if (previousRuntime === undefined) delete process.env.WHATSAPP_QR_RUNTIME;
       else process.env.WHATSAPP_QR_RUNTIME = previousRuntime;
@@ -178,6 +180,238 @@ describe('WhatsappQrManager runtime hardening', () => {
       else process.env.WHATSAPP_QR_AUTH_DIR = previousAuthDir;
       vi.doUnmock('@whiskeysockets/baileys');
     }
+  });
+
+  it('does not report an intentional runtime stop as a disconnection', async () => {
+    const previousRuntime = process.env.WHATSAPP_QR_RUNTIME;
+    const previousAuthDir = process.env.WHATSAPP_QR_AUTH_DIR;
+    const listeners = new Map<string, (...args: any[]) => void>();
+    const removeAllListeners = vi.fn();
+    const socket = {
+      ev: {
+        on: vi.fn((event: string, handler: (...args: any[]) => void) => listeners.set(event, handler)),
+        removeAllListeners
+      },
+      end: vi.fn(),
+      ws: { close: vi.fn() }
+    };
+    vi.doMock('@whiskeysockets/baileys', () => ({
+      default: vi.fn(() => socket),
+      useMultiFileAuthState: vi.fn(async () => ({ state: {}, saveCreds: vi.fn() })),
+      fetchLatestBaileysVersion: vi.fn(async () => ({ version: [2, 3000, 1043857760], isLatest: true })),
+      DisconnectReason: { loggedOut: 401 }
+    }));
+
+    try {
+      process.env.WHATSAPP_QR_RUNTIME = 'baileys';
+      tempRootDir = await mkdtemp(join(tmpdir(), 'qr-runtime-'));
+      process.env.WHATSAPP_QR_AUTH_DIR = tempRootDir;
+      const onDisconnected = vi.fn(async () => undefined);
+      const runtime = buildWhatsappQrRuntimeFromEnv(createLogger() as any);
+      const session = await runtime.start(owner, 'session-stop', {
+        onQr: vi.fn(),
+        onConnected: vi.fn(),
+        onDisconnected,
+        onHeartbeat: vi.fn(),
+        onMessage: vi.fn(),
+        onContact: vi.fn()
+      });
+
+      await session.stop();
+      listeners.get('connection.update')?.({
+        connection: 'close',
+        lastDisconnect: { error: { message: 'Connection Failure', output: { statusCode: 428 } } }
+      });
+      await Promise.resolve();
+
+      expect(removeAllListeners).toHaveBeenCalledOnce();
+      expect(onDisconnected).not.toHaveBeenCalled();
+    } finally {
+      if (previousRuntime === undefined) delete process.env.WHATSAPP_QR_RUNTIME;
+      else process.env.WHATSAPP_QR_RUNTIME = previousRuntime;
+      if (previousAuthDir === undefined) delete process.env.WHATSAPP_QR_AUTH_DIR;
+      else process.env.WHATSAPP_QR_AUTH_DIR = previousAuthDir;
+      vi.doUnmock('@whiskeysockets/baileys');
+    }
+  });
+
+  it('reports a forbidden session as terminal without reconnecting', async () => {
+    const previousRuntime = process.env.WHATSAPP_QR_RUNTIME;
+    const previousAuthDir = process.env.WHATSAPP_QR_AUTH_DIR;
+    const listeners = new Map<string, (...args: any[]) => void>();
+    const socket = {
+      ev: { on: vi.fn((event: string, handler: (...args: any[]) => void) => listeners.set(event, handler)) },
+      end: vi.fn(),
+      ws: { close: vi.fn() }
+    };
+    const makeSocket = vi.fn(() => socket);
+    vi.doMock('@whiskeysockets/baileys', () => ({
+      default: makeSocket,
+      useMultiFileAuthState: vi.fn(async () => ({ state: {}, saveCreds: vi.fn() })),
+      fetchLatestBaileysVersion: vi.fn(async () => ({ version: [2, 3000, 1043857760], isLatest: true })),
+      DisconnectReason: { loggedOut: 401, badSession: 500, multideviceMismatch: 411 }
+    }));
+
+    try {
+      process.env.WHATSAPP_QR_RUNTIME = 'baileys';
+      tempRootDir = await mkdtemp(join(tmpdir(), 'qr-runtime-'));
+      process.env.WHATSAPP_QR_AUTH_DIR = tempRootDir;
+      const onDisconnected = vi.fn(async () => undefined);
+      const runtime = buildWhatsappQrRuntimeFromEnv(createLogger() as any);
+      await runtime.start(owner, 'session-forbidden', {
+        onQr: vi.fn(),
+        onConnected: vi.fn(),
+        onDisconnected,
+        onHeartbeat: vi.fn(),
+        onMessage: vi.fn(),
+        onContact: vi.fn()
+      });
+
+      listeners.get('connection.update')?.({
+        connection: 'close',
+        lastDisconnect: { error: { message: 'Forbidden', output: { statusCode: 403 } } }
+      });
+
+      await vi.waitFor(() => expect(onDisconnected).toHaveBeenCalledWith('Forbidden (403)'));
+      expect(makeSocket).toHaveBeenCalledOnce();
+    } finally {
+      if (previousRuntime === undefined) delete process.env.WHATSAPP_QR_RUNTIME;
+      else process.env.WHATSAPP_QR_RUNTIME = previousRuntime;
+      if (previousAuthDir === undefined) delete process.env.WHATSAPP_QR_AUTH_DIR;
+      else process.env.WHATSAPP_QR_AUTH_DIR = previousAuthDir;
+      vi.doUnmock('@whiskeysockets/baileys');
+    }
+  });
+});
+
+describe('WhatsappQrManager explicit connection lifecycle', () => {
+  it('clears invalid persisted auth before starting a new QR connection', async () => {
+    const disconnected = buildSession('session-invalid-auth', 'disconnected');
+    const authRootDir = await createAuthState(disconnected);
+    await writeFile(join(authRootDir, disconnected.runtimeSessionId, 'creds.json'), '{"registered":false}');
+    const waiting = { ...disconnected, status: 'waiting_qr' as const };
+    const runtimeStart = vi.fn(async () => {
+      await expect(access(join(authRootDir, disconnected.runtimeSessionId))).rejects.toThrow();
+      return { stop: vi.fn(async () => undefined) };
+    });
+
+    const manager = new WhatsappQrManager({
+      store: {
+        getSessionByOwner: vi.fn(async () => disconnected),
+        upsertSession: vi.fn(async () => waiting),
+        updateSession: vi.fn()
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: createLogger() as any,
+      runtime: { start: runtimeStart },
+      authRootDir,
+      alertPollMs: 60_000
+    });
+
+    await manager.connect(owner);
+
+    expect(runtimeStart).toHaveBeenCalledOnce();
+  });
+
+  it('preserves linked auth when Baileys leaves registered false', async () => {
+    const disconnected = buildSession('session-linked-auth', 'disconnected');
+    const authRootDir = await createAuthState(disconnected);
+    const sessionDir = join(authRootDir, disconnected.runtimeSessionId);
+    await writeFile(
+      join(sessionDir, 'creds.json'),
+      JSON.stringify({
+        registered: false,
+        me: { id: '5493516549344:9@s.whatsapp.net', name: 'Royal Luck' },
+        account: { details: 'linked' }
+      })
+    );
+    const waiting = { ...disconnected, status: 'waiting_qr' as const };
+    const runtimeStart = vi.fn(async () => {
+      await expect(access(sessionDir)).resolves.toBeUndefined();
+      return { stop: vi.fn(async () => undefined) };
+    });
+
+    const manager = new WhatsappQrManager({
+      store: {
+        getSessionByOwner: vi.fn(async () => disconnected),
+        upsertSession: vi.fn(async () => waiting),
+        updateSession: vi.fn()
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: createLogger() as any,
+      runtime: { start: runtimeStart },
+      authRootDir,
+      alertPollMs: 60_000
+    });
+
+    await manager.connect(owner);
+
+    expect(runtimeStart).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the active QR session intact when connect is clicked repeatedly', async () => {
+    const waiting = {
+      ...buildSession('session-active-qr', 'waiting_qr'),
+      qrPayload: 'qr-payload',
+      qrDataUrl: 'data:image/png;base64,qr'
+    };
+    let lookupCount = 0;
+    const upsertSession = vi.fn(async () => waiting);
+    const runtimeStart = vi.fn(async () => ({ stop: vi.fn(async () => undefined) }));
+    const manager = new WhatsappQrManager({
+      store: {
+        getSessionByOwner: vi.fn(async () => (lookupCount++ === 0 ? null : waiting)),
+        upsertSession,
+        updateSession: vi.fn()
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: createLogger() as any,
+      runtime: { start: runtimeStart },
+      alertPollMs: 60_000
+    });
+
+    await manager.connect(owner);
+    const repeated = await manager.connect(owner);
+
+    expect(repeated.qrDataUrl).toBe(waiting.qrDataUrl);
+    expect(upsertSession).toHaveBeenCalledOnce();
+    expect(runtimeStart).toHaveBeenCalledOnce();
+  });
+
+  it('clears persisted auth when the user disconnects', async () => {
+    const connected = buildSession('session-user-disconnect', 'connected');
+    const authRootDir = await createAuthState(connected);
+    const updateSession = vi.fn(async (_id: string, patch: Partial<WhatsappQrSessionRecord>) => ({
+      ...connected,
+      ...patch
+    }));
+    const manager = new WhatsappQrManager({
+      store: {
+        upsertSession: vi.fn(async () => connected),
+        updateSession
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: createLogger() as any,
+      runtime: { start: vi.fn() },
+      authRootDir,
+      alertPollMs: 60_000
+    });
+
+    await manager.disconnect(owner);
+
+    await expect(access(join(authRootDir, connected.runtimeSessionId))).rejects.toThrow();
+    expect(updateSession).toHaveBeenCalledWith(
+      connected.id,
+      expect.objectContaining({ status: 'disconnected', lastError: null })
+    );
   });
 });
 
@@ -207,8 +441,8 @@ describe('WhatsappQrManager startup reattach', () => {
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
         listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
-        listStaleSessions: vi.fn(async () => []),
-        markAlerted: vi.fn()
+        listUnalertedDisconnectedSessions: vi.fn(async () => []),
+        markDisconnectedAlerted: vi.fn()
       } as any,
       autoAssignService: { processMessage: vi.fn() } as any,
       telegramAlerts: { send: vi.fn(async () => undefined) } as any,
@@ -248,8 +482,8 @@ describe('WhatsappQrManager startup reattach', () => {
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
         listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
-        listStaleSessions: vi.fn(async () => []),
-        markAlerted: vi.fn()
+        listUnalertedDisconnectedSessions: vi.fn(async () => []),
+        markDisconnectedAlerted: vi.fn()
       } as any,
       autoAssignService: { processMessage: vi.fn() } as any,
       telegramAlerts: { send: vi.fn(async () => undefined) } as any,
@@ -288,8 +522,8 @@ describe('WhatsappQrManager startup reattach', () => {
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
         listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
-        listStaleSessions: vi.fn(async () => []),
-        markAlerted: vi.fn()
+        listUnalertedDisconnectedSessions: vi.fn(async () => []),
+        markDisconnectedAlerted: vi.fn()
       } as any,
       autoAssignService: { processMessage: vi.fn() } as any,
       telegramAlerts: { send: vi.fn(async () => undefined) } as any,
@@ -313,5 +547,42 @@ describe('WhatsappQrManager startup reattach', () => {
         lastError: 'qr_auth_state_invalid'
       })
     );
+  });
+});
+
+describe('WhatsappQrManager Telegram alerts', () => {
+  it('alerts only disconnected sessions and marks them once', async () => {
+    const connected = buildSession('session-connected-alert', 'connected');
+    const disconnected = {
+      ...buildSession('session-disconnected-alert', 'disconnected'),
+      lastError: 'Forbidden (403)'
+    };
+    const send = vi.fn(async () => undefined);
+    const markDisconnectedAlerted = vi.fn(async () => undefined);
+    const manager = new WhatsappQrManager({
+      store: {
+        listUnalertedDisconnectedSessions: vi.fn(async () => [connected, disconnected]),
+        markDisconnectedAlerted
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send } as any,
+      logger: createLogger() as any,
+      runtime: { start: vi.fn() },
+      alertPollMs: 60_000
+    });
+
+    await manager.checkAlerts();
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'sesion de WhatsApp desconectada o bloqueada',
+        status: 'disconnected',
+        detail: 'Forbidden (403)'
+      })
+    );
+    expect(markDisconnectedAlerted).toHaveBeenCalledOnce();
+    expect(markDisconnectedAlerted).toHaveBeenCalledWith(disconnected.id, expect.any(String));
   });
 });

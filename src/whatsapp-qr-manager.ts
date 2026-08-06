@@ -1,6 +1,7 @@
-import { access, mkdir } from 'node:fs/promises';
+import { access, mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from 'pino';
+import type { MetaSourceContext } from './types';
 import type { TelegramAlertSender } from './telegram-alerts';
 import { WhatsappQrAutoBackfillRunner } from './whatsapp-qr-auto-backfill';
 import type { WhatsappQrAutoAssignService } from './whatsapp-qr-service';
@@ -30,6 +31,7 @@ interface RuntimeMessageEvent {
   text?: string | null;
   messageTimestamp?: string | null;
   isHistory?: boolean;
+  sourceContext?: MetaSourceContext | null;
 }
 
 interface RuntimeContactEvent {
@@ -76,20 +78,20 @@ export interface WhatsappQrManagerOptions {
   runtime?: WhatsappQrRuntime;
   authRootDir?: string;
   qrTtlMs?: number;
-  heartbeatStaleMs?: number;
   alertPollMs?: number;
 }
 
 export interface WhatsappQrDashboard {
-  sessions: Array<WhatsappQrSessionRecord & { hasRdaCredentials: boolean }>;
+  sessions: Array<WhatsappQrSessionRecord & { hasRdaCredentials: boolean; hasPlatformCredentials: boolean }>;
   summary: WhatsappQrQueueSummary;
   queue: WhatsappQrPhoneQueueRow[];
   coverage?: WhatsappQrCoverageSummary | null;
+  reportHealth?: import('./whatsapp-qr-store').WhatsappQrPlatformHealthRecord | null;
   isAdmin: boolean;
   runtimeEnabled: boolean;
   ownerSummaries?: Array<{
     owner: WhatsappQrOwner;
-    session: (WhatsappQrSessionRecord & { hasRdaCredentials: boolean }) | null;
+    session: (WhatsappQrSessionRecord & { hasRdaCredentials: boolean; hasPlatformCredentials: boolean }) | null;
     summary: WhatsappQrQueueSummary;
   }>;
 }
@@ -134,6 +136,41 @@ function extractText(message: any): string | null {
     payload.videoMessage?.caption ??
     null
   );
+}
+
+export function extractMessageSourceContext(message: any): MetaSourceContext | null {
+  const payload = message?.message;
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const seen = new Set<object>();
+  const findReferral = (value: unknown, depth = 0): any => {
+    if (!value || typeof value !== 'object' || depth > 5 || seen.has(value as object)) return null;
+    seen.add(value as object);
+    const candidate = value as any;
+    if (candidate.contextInfo?.externalAdReply) return candidate.contextInfo.externalAdReply;
+    for (const nested of Object.values(candidate)) {
+      const found = findReferral(nested, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  const referral = findReferral(payload);
+  if (!referral || typeof referral !== 'object') {
+    return null;
+  }
+  return {
+    intakeTransport: 'whatsapp_qr',
+    ctwaClid: typeof referral.ctwaClid === 'string' ? referral.ctwaClid : null,
+    referralSourceId: typeof referral.sourceId === 'string' ? referral.sourceId : null,
+    referralSourceUrl: typeof referral.sourceUrl === 'string' ? referral.sourceUrl : null,
+    referralHeadline: typeof referral.title === 'string' ? referral.title : null,
+    referralBody: typeof referral.body === 'string' ? referral.body : null,
+    referralSourceType:
+      typeof referral.sourceType === 'string' || typeof referral.sourceType === 'number'
+        ? String(referral.sourceType)
+        : 'ad'
+  };
 }
 
 function extractContactName(contact: any): string | null {
@@ -247,6 +284,24 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
     let reconnectTimer: NodeJS.Timeout | null = null;
     const resumeOnly = options.resumeOnly === true;
     const syncFullHistory = readBooleanEnv('WHATSAPP_QR_SYNC_FULL_HISTORY', false);
+    let waVersion: [number, number, number] | null = null;
+
+    try {
+      const latestVersion = await baileys.fetchLatestBaileysVersion({ signal: AbortSignal.timeout(5_000) });
+      if (Array.isArray(latestVersion.version) && latestVersion.version.length === 3) {
+        waVersion = latestVersion.version as [number, number, number];
+      }
+      if (latestVersion.error) {
+        this.logger.warn({ error: latestVersion.error, ownerKey: owner.ownerKey }, 'Could not refresh WhatsApp Web version');
+      } else {
+        this.logger.info(
+          { ownerKey: owner.ownerKey, waVersion: waVersion?.join('.'), isLatest: latestVersion.isLatest },
+          'Resolved WhatsApp Web version'
+        );
+      }
+    } catch (error) {
+      this.logger.warn({ error, ownerKey: owner.ownerKey }, 'Could not refresh WhatsApp Web version');
+    }
 
     const runEventTask = async (label: string, task: () => Promise<void>): Promise<void> => {
       try {
@@ -279,7 +334,8 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
       const socketConfig: Record<string, unknown> = {
         auth: state,
         syncFullHistory,
-        browser: ['MasterCRM', 'Chrome', '1.0.0']
+        browser: ['MasterCRM', 'Chrome', '1.0.0'],
+        ...(waVersion ? { version: waVersion } : {})
       };
       if (syncFullHistory) {
         socketConfig.shouldSyncHistoryMessage = () => true;
@@ -347,6 +403,7 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
           pushName: item.pushName ?? null,
           text: extractText(item),
           messageTimestamp: timestamp,
+          sourceContext: extractMessageSourceContext(item) ?? { intakeTransport: 'whatsapp_qr' },
           isHistory
         });
       };
@@ -398,7 +455,14 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
               update.lastDisconnect?.error?.output?.payload?.message ??
               'connection_closed';
 
-            if (!stopped && statusCode !== baileys.DisconnectReason.loggedOut) {
+            const terminalStatusCodes = new Set([
+              baileys.DisconnectReason.loggedOut,
+              baileys.DisconnectReason.badSession,
+              baileys.DisconnectReason.multideviceMismatch,
+              403,
+              405
+            ]);
+            if (!stopped && !terminalStatusCodes.has(statusCode)) {
               reconnectAttempts += 1;
               const delayMs = Math.min(15_000, Math.max(1_000, reconnectAttempts * 1_500));
               this.logger.warn(
@@ -415,7 +479,7 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
               return;
             }
 
-            await notifyDisconnected(message);
+            await notifyDisconnected(statusCode ? `${message} (${statusCode})` : message);
           }
         });
       });
@@ -448,7 +512,9 @@ class BaileysWhatsappQrRuntime implements WhatsappQrRuntime {
     return {
       async stop() {
         stopped = true;
+        disconnectedNotified = true;
         clearReconnectTimer();
+        sock?.ev?.removeAllListeners?.();
         try {
           sock.end?.(new Error('MasterCRM QR session stopped'));
         } catch {
@@ -481,9 +547,9 @@ export class WhatsappQrManager {
   private readonly runtimeSessions = new Map<string, RuntimeSession>();
   private readonly autoBackfillRunner: WhatsappQrAutoBackfillRunner;
   private readonly qrTtlMs: number;
-  private readonly heartbeatStaleMs: number;
   private readonly alertPollMs: number;
   private readonly authRootDir: string;
+  private readonly autoBackfillEnabled: boolean;
   private alertTimer: NodeJS.Timeout | null = null;
   private readonly runtimeEnabled: boolean;
   private readonly chatStateCache = new Map<string, { state: WhatsappQrChatState; loadedAt: number }>();
@@ -494,11 +560,11 @@ export class WhatsappQrManager {
 
   constructor(private readonly options: WhatsappQrManagerOptions) {
     this.qrTtlMs = options.qrTtlMs ?? Number(process.env.WHATSAPP_QR_TTL_MS ?? 90_000);
-    this.heartbeatStaleMs = options.heartbeatStaleMs ?? Number(process.env.WHATSAPP_QR_HEARTBEAT_STALE_MS ?? 180_000);
     this.alertPollMs = options.alertPollMs ?? Number(process.env.WHATSAPP_QR_ALERT_POLL_MS ?? 60_000);
     this.authRootDir =
       options.authRootDir ??
       (process.env.WHATSAPP_QR_AUTH_DIR?.trim() || join(process.cwd(), 'artifacts', 'whatsapp-qr-auth'));
+    this.autoBackfillEnabled = readBooleanEnv('WHATSAPP_QR_AUTO_BACKFILL_ENABLED', false);
     this.runtimeEnabled = process.env.WHATSAPP_QR_RUNTIME?.trim().toLowerCase() === 'baileys' || Boolean(options.runtime);
     this.autoBackfillRunner = new WhatsappQrAutoBackfillRunner(options.store, options.logger, {
       authRootDir: this.authRootDir
@@ -542,6 +608,9 @@ export class WhatsappQrManager {
   }
 
   private queueAutoBackfill(owner: WhatsappQrOwner, session: WhatsappQrSessionRecord, triggerSource: string): void {
+    if (!this.autoBackfillEnabled) {
+      return;
+    }
     this.autoBackfillRunner
       .run(owner, session, triggerSource)
       .catch((error) =>
@@ -628,7 +697,8 @@ export class WhatsappQrManager {
     owner: WhatsappQrOwner,
     session: WhatsappQrSessionRecord,
     phoneE164: string,
-    state: WhatsappQrChatState
+    state: WhatsappQrChatState,
+    messageSourceContext?: MetaSourceContext | null
   ): Promise<void> {
     if (state.intakeRecordedAt || state.firstMessageDirection !== 'inbound') {
       return;
@@ -648,7 +718,11 @@ export class WhatsappQrManager {
         pagina: owner.pagina,
         telefono: phoneE164,
         ownerContext: ownerContextFromWhatsappQrOwner(owner, session.phoneE164),
-        sourceContext: { receivedAt: state.firstMessageAt }
+        sourceContext: {
+          ...(messageSourceContext ?? {}),
+          intakeTransport: 'whatsapp_qr',
+          receivedAt: state.firstMessageAt
+        }
       });
       const recordedAt = await this.options.store.markIntakeRecorded({ ownerId: owner.ownerId, phoneE164 });
       state.intakeRecordedAt = recordedAt ?? new Date().toISOString();
@@ -712,6 +786,30 @@ export class WhatsappQrManager {
     }
   }
 
+  private authSessionDir(runtimeSessionId: string): string {
+    return join(this.authRootDir, safeRuntimeSessionId(runtimeSessionId));
+  }
+
+  private async persistedAuthIsInvalid(runtimeSessionId: string): Promise<boolean> {
+    const credsPath = join(this.authSessionDir(runtimeSessionId), 'creds.json');
+    try {
+      const creds = JSON.parse(await readFile(credsPath, 'utf8')) as {
+        registered?: unknown;
+        me?: { id?: unknown };
+        account?: unknown;
+      };
+      const hasLinkedIdentity = typeof creds.me?.id === 'string' && creds.me.id.trim().length > 0 && Boolean(creds.account);
+      return creds.registered === false && !hasLinkedIdentity;
+    } catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : null;
+      return code !== 'ENOENT';
+    }
+  }
+
+  private async clearPersistedAuth(runtimeSessionId: string): Promise<void> {
+    await rm(this.authSessionDir(runtimeSessionId), { recursive: true, force: true });
+  }
+
   private async startRuntime(
     owner: WhatsappQrOwner,
     session: WhatsappQrSessionRecord,
@@ -756,7 +854,6 @@ export class WhatsappQrManager {
                 qrExpiresAt: new Date(Date.now() + this.qrTtlMs).toISOString(),
                 lastHeartbeatAt: new Date().toISOString(),
                 lastError: null,
-                qrAlertedAt: null
               });
             });
           },
@@ -772,7 +869,6 @@ export class WhatsappQrManager {
                 lastHeartbeatAt: new Date().toISOString(),
                 lastError: null,
                 disconnectedAlertedAt: null,
-                heartbeatAlertedAt: null
               });
               this.queueAutoBackfill(owner, currentSession, options.resumeOnly ? 'resume_connected' : 'connect_connected');
             });
@@ -804,8 +900,7 @@ export class WhatsappQrManager {
               }
 
               currentSession = await this.options.store.updateSession(currentSession.id, {
-                lastHeartbeatAt: heartbeatAt,
-                heartbeatAlertedAt: null
+                lastHeartbeatAt: heartbeatAt
               });
             });
           },
@@ -819,7 +914,7 @@ export class WhatsappQrManager {
               if (!this.isCurrentMonthChat(state)) {
                 return;
               }
-              await this.maybeRecordIntake(owner, currentSession, phone, state);
+              await this.maybeRecordIntake(owner, currentSession, phone, state, message.sourceContext);
               await this.options.autoAssignService.processMessage({
                 owner,
                 session: currentSession,
@@ -926,9 +1021,11 @@ export class WhatsappQrManager {
   async getDashboard(owner: WhatsappQrOwner, isAdmin: boolean, month: string): Promise<WhatsappQrDashboard> {
     const ownerIds = [owner.ownerId];
     const monthWindow = buildWhatsappQrMonthWindow(month);
-    const [sessions, credentialOwnerIds, monthClients, messages, matches, ignoredPhones] = await Promise.all([
+    const [sessions, credentialOwnerIds, monthClients, messages, matches, ignoredPhones, reportHealth] = await Promise.all([
       this.options.store.listSessions(ownerIds),
-      this.options.store.listCredentialOwnerIds(ownerIds),
+      this.options.store.listPlatformCredentialOwnerIds
+        ? this.options.store.listPlatformCredentialOwnerIds(ownerIds)
+        : this.options.store.listCredentialOwnerIds(ownerIds),
       this.options.store.listMonthClients({
         ownerId: owner.ownerId,
         monthStart: monthWindow.monthStartDate
@@ -946,7 +1043,8 @@ export class WhatsappQrManager {
       this.options.store.listIgnoredPhonesForMonth({
         ownerId: owner.ownerId,
         monthStart: monthWindow.monthStartDate
-      })
+      }),
+      this.options.store.getLatestPlatformReportHealth?.(owner.ownerId, owner.pagina) ?? Promise.resolve(null)
     ]);
     const { summary, queue, allRows } = buildWhatsappQrPhoneQueue({
       monthClients,
@@ -959,11 +1057,13 @@ export class WhatsappQrManager {
     return {
       sessions: sessions.map((session) => ({
         ...session,
-        hasRdaCredentials: credentialOwnerIds.has(session.ownerId)
+        hasRdaCredentials: credentialOwnerIds.has(session.ownerId),
+        hasPlatformCredentials: credentialOwnerIds.has(session.ownerId)
       })),
       summary,
       queue,
       coverage,
+      reportHealth,
       isAdmin,
       runtimeEnabled: this.runtimeEnabled
     };
@@ -979,10 +1079,13 @@ export class WhatsappQrManager {
     }
 
     const ownerIds = [...ownerById.keys()];
-    const credentialOwnerIds = await this.options.store.listCredentialOwnerIds(ownerIds);
+    const credentialOwnerIds = this.options.store.listPlatformCredentialOwnerIds
+      ? await this.options.store.listPlatformCredentialOwnerIds(ownerIds)
+      : await this.options.store.listCredentialOwnerIds(ownerIds);
     const safeSessions = sessions.map((session) => ({
       ...session,
-      hasRdaCredentials: credentialOwnerIds.has(session.ownerId)
+      hasRdaCredentials: credentialOwnerIds.has(session.ownerId),
+      hasPlatformCredentials: credentialOwnerIds.has(session.ownerId)
     }));
     const sessionByOwnerId = new Map(safeSessions.map((session) => [session.ownerId, session]));
     const ownerSummaries = [];
@@ -1055,6 +1158,22 @@ export class WhatsappQrManager {
   }
 
   async connect(owner: WhatsappQrOwner): Promise<WhatsappQrSessionRecord> {
+    const existingSession =
+      typeof this.options.store.getSessionByOwner === 'function'
+        ? await this.options.store.getSessionByOwner(owner.ownerId)
+        : null;
+    if (existingSession && this.runtimeSessions.has(existingSession.id)) {
+      return existingSession;
+    }
+
+    if (existingSession && (await this.persistedAuthIsInvalid(existingSession.runtimeSessionId))) {
+      await this.clearPersistedAuth(existingSession.runtimeSessionId);
+      this.options.logger.info(
+        { ownerKey: owner.ownerKey, sessionId: existingSession.id },
+        'Cleared invalid WhatsApp QR auth before reconnecting'
+      );
+    }
+
     const now = new Date().toISOString();
     const session = await this.options.store.upsertSession(owner, {
       status: 'waiting_qr',
@@ -1072,9 +1191,10 @@ export class WhatsappQrManager {
     const session = await this.options.store.upsertSession(owner, {});
     const runtimeSession = this.runtimeSessions.get(session.id);
     if (runtimeSession) {
-      await runtimeSession.stop().catch((error) => this.options.logger.warn({ error }, 'Could not stop QR runtime session'));
       this.runtimeSessions.delete(session.id);
+      await runtimeSession.stop().catch((error) => this.options.logger.warn({ error }, 'Could not stop QR runtime session'));
     }
+    await this.clearPersistedAuth(session.runtimeSessionId);
 
     return this.options.store.updateSession(session.id, {
       status: 'disconnected',
@@ -1087,33 +1207,15 @@ export class WhatsappQrManager {
   }
 
   async checkAlerts(): Promise<void> {
-    const now = new Date();
-    const staleSessions = await this.options.store.listStaleSessions({
-      heartbeatBefore: new Date(now.getTime() - this.heartbeatStaleMs).toISOString(),
-      qrExpiredBefore: now.toISOString()
-    });
+    const sessions = await this.options.store.listUnalertedDisconnectedSessions();
 
-    for (const session of staleSessions) {
-      const alertKind =
-        session.status === 'connected'
-          ? 'heartbeat'
-          : session.status === 'waiting_qr'
-            ? 'qr'
-            : session.status === 'disconnected'
-              ? 'disconnected'
-              : null;
-      if (!alertKind) {
+    for (const session of sessions) {
+      if (session.status !== 'disconnected') {
         continue;
       }
-      const title =
-        alertKind === 'heartbeat'
-          ? 'heartbeat vencido'
-          : alertKind === 'qr'
-            ? 'QR vencido sin conectar'
-            : 'sesion desconectada';
-      const timestamp = now.toISOString();
+      const timestamp = new Date().toISOString();
       await this.options.telegramAlerts.send({
-        title,
+        title: 'sesion de WhatsApp desconectada o bloqueada',
         ownerKey: session.ownerKey,
         ownerLabel: session.ownerLabel,
         status: session.status,
@@ -1121,7 +1223,7 @@ export class WhatsappQrManager {
         timestamp,
         detail: session.lastError
       });
-      await this.options.store.markAlerted(session.id, alertKind, timestamp);
+      await this.options.store.markDisconnectedAlerted(session.id, timestamp);
     }
   }
 }

@@ -604,12 +604,23 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
       const baileys = (await import('@whiskeysockets/baileys')) as any;
       const { state, saveCreds } = await baileys.useMultiFileAuthState(sessionDir);
       let connectionOpened = false;
+      let waVersion: [number, number, number] | null = null;
+
+      try {
+        const latestVersion = await baileys.fetchLatestBaileysVersion({ signal: AbortSignal.timeout(5_000) });
+        if (Array.isArray(latestVersion.version) && latestVersion.version.length === 3) {
+          waVersion = latestVersion.version as [number, number, number];
+        }
+      } catch (error) {
+        logger.warn({ error, ownerKey: owner.ownerKey }, 'Could not refresh WhatsApp Web version for backfill');
+      }
 
       const sock = baileys.default({
         auth: state,
         syncFullHistory: true,
         shouldSyncHistoryMessage: () => true,
-        browser: ['MasterCRM', 'Chrome', '1.0.0']
+        browser: ['MasterCRM', 'Chrome', '1.0.0'],
+        ...(waVersion ? { version: waVersion } : {})
       });
 
       sock.ev.on('creds.update', saveCreds);

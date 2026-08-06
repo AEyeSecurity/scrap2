@@ -82,6 +82,7 @@ import { createReportJobExecutor, ReportRunWorker, type ReportJobExecutor } from
 import { runRdaReportJob } from './rda-report-job';
 import { assertRdaUserExists, RdaUserCheckError, type AssertRdaUserExistsInput } from './rda-user-check';
 import { paginaCodeSchema } from './site-profile';
+import { getPlatformUserValidator } from './platform-user-validator';
 import {
   buildTelegramAlertConfigFromEnv,
   NoopTelegramAlertSender,
@@ -151,6 +152,7 @@ interface ServerDependencies {
   metaConversionsDispatcher?: MetaConversionsDispatcher;
   landingMetaConversionsDispatcher?: MetaConversionsDispatcher;
   reportWorkerEnabled?: boolean;
+  reportAsnEnabled?: boolean;
   reportWorkerConcurrency?: number;
   reportWorkerPollMs?: number;
   reportWorkerMaxPollMs?: number;
@@ -160,6 +162,7 @@ interface ServerDependencies {
   retentionWorkerEnabled?: boolean;
   retentionRunOnStart?: boolean;
   retentionPollMs?: number;
+  whatsappQrMessageRetentionDays?: number;
   whatsappQrRecheckWorkerEnabled?: boolean;
   whatsappQrRecheckRunOnStart?: boolean;
   whatsappQrRecheckPollMs?: number;
@@ -285,6 +288,7 @@ const ownerContextSchema = z.object({
 });
 
 const sourceContextSchema = z.object({
+  intakeTransport: z.enum(['whatsapp_qr', 'n8n_webhook', 'landing', 'unknown']).nullable().optional(),
   ctwaClid: z.string().trim().min(1).nullable().optional(),
   fbp: z.string().trim().min(1).nullable().optional(),
   fbc: z.string().trim().min(1).nullable().optional(),
@@ -571,6 +575,8 @@ const mastercrmAnalyticsBodySchema = z
     fecha_hasta: z.string().optional(),
     channel: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
     canal: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
+    transport: z.enum(['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown']).optional(),
+    transporte: z.enum(['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown']).optional(),
     campaign_key: z.string().optional(),
     campana_key: z.string().optional(),
     ad_key: z.string().optional(),
@@ -833,10 +839,11 @@ function buildWhatsappSourceContext(
   explicitSourceContext: MetaSourceContext | undefined
 ): MetaSourceContext | null {
   if (explicitSourceContext) {
-    return compactMetaSourceContext(explicitSourceContext);
+    return compactMetaSourceContext({ intakeTransport: 'n8n_webhook', ...explicitSourceContext });
   }
 
   return compactMetaSourceContext({
+    intakeTransport: 'n8n_webhook',
     ctwaClid: readOptionalStringField(body, 'ReferralCtwaClid'),
     referralSourceId: readOptionalStringField(body, 'ReferralSourceId'),
     referralSourceUrl: readOptionalStringField(body, 'ReferralSourceUrl'),
@@ -913,6 +920,7 @@ function whatsappQrSessionToResponse(session: WhatsappQrSessionRecord): Record<s
     lastError: safeSession.lastError,
     botGroupKey: safeSession.botGroupKey,
     hasRdaCredentials: Boolean(safeSession.hasRdaCredentials),
+    hasPlatformCredentials: Boolean(safeSession.hasPlatformCredentials ?? safeSession.hasRdaCredentials),
     updatedAt: safeSession.updatedAt
   };
 }
@@ -935,6 +943,7 @@ function whatsappQrDashboardToResponse(
     runtimeEnabled: dashboard.runtimeEnabled,
     sessions: dashboard.sessions.map(whatsappQrSessionToResponse),
     summary: dashboard.summary,
+    reportHealth: dashboard.reportHealth ?? null,
     coverage: dashboard.coverage
       ? {
           portfolioTotal: dashboard.coverage.portfolioTotal,
@@ -1571,6 +1580,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
     dateFrom: string;
     dateTo: string;
     channel?: 'all' | 'landing' | 'meta_ctwa';
+    transport?: 'all' | 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown';
     campaignKey?: string;
     adKey?: string;
   };
@@ -1588,6 +1598,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
   const dateFrom = resolveAliasStringField(parsed.data, ['date_from', 'fecha_desde'], 'date_from', issues);
   const dateTo = resolveAliasStringField(parsed.data, ['date_to', 'fecha_hasta'], 'date_to', issues);
   const channel = parsed.data.channel ?? parsed.data.canal;
+  const transport = parsed.data.transport ?? parsed.data.transporte;
   const campaignKey = resolveAliasStringField(parsed.data, ['campaign_key', 'campana_key'], 'campaign_key', issues, {
     required: false
   });
@@ -1605,6 +1616,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
       dateFrom,
       dateTo,
       ...(channel ? { channel } : {}),
+      ...(transport ? { transport } : {}),
       ...(campaignKey ? { campaignKey } : {}),
       ...(adKey ? { adKey } : {})
     },
@@ -1789,6 +1801,12 @@ function parseMastercrmMarketingBudgetDeletePayload(body: unknown): {
   return { data: { userId, budgetId }, issues };
 }
 
+function readServiceBearerToken(authorization: string | string[] | undefined): string | null {
+  const value = Array.isArray(authorization) ? authorization[0] : authorization;
+  const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
+  return match?.[1]?.trim() || null;
+}
+
 export function createServer(
   appConfig: AppConfig,
   serverConfig: ServerConfig,
@@ -1797,6 +1815,22 @@ export function createServer(
   dependencies?: ServerDependencies
 ): FastifyInstance {
   const fastify = Fastify({ logger: false });
+  const reportApiToken = process.env.REPORT_API_TOKEN?.trim() || null;
+  const whatsappQrAsnAllowedOwnerIds = new Set(
+    (process.env.WHATSAPP_QR_ASN_ENABLED_OWNER_IDS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+  fastify.addHook('onRequest', async (request, reply) => {
+    if (!reportApiToken || !request.url.startsWith('/reports/')) {
+      return;
+    }
+    const token = readServiceBearerToken(request.headers.authorization);
+    if (!token || !secretsEqual(token, reportApiToken)) {
+      return reply.code(401).send({ message: 'Unauthorized report service request', code: 'REPORT_UNAUTHORIZED' });
+    }
+  });
   let cachedMastercrmUserStore: MastercrmUserStore | null = dependencies?.mastercrmUserStore ?? null;
   let cachedMastercrmSessionSecret: string | null = dependencies?.mastercrmSessionSecret ?? null;
   let cachedPlayerPhoneStore: PlayerPhoneStore | null = dependencies?.playerPhoneStore ?? null;
@@ -1846,6 +1880,7 @@ export function createServer(
   const reportWorkerEnabled =
     dependencies?.reportWorkerEnabled ??
     ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
+  const reportAsnEnabled = dependencies?.reportAsnEnabled ?? (parseBooleanEnv(process.env.REPORT_ASN_ENABLED) ?? true);
   const reportWorkerConcurrency =
     dependencies?.reportWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_CONCURRENCY, 3);
   const reportWorkerPollMs = dependencies?.reportWorkerPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_POLL_MS, 5000);
@@ -1855,12 +1890,23 @@ export function createServer(
     dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
   const reportWorkerMaxAttempts =
     dependencies?.reportWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_ATTEMPTS, 3);
+  const parsedReportScheduleStartHour = Number.parseInt(process.env.REPORT_EXPECTED_BA_START_HOUR ?? '', 10);
+  const parsedReportScheduleEndHour = Number.parseInt(process.env.REPORT_EXPECTED_BA_END_HOUR ?? '', 10);
+  const reportExpectedScheduleStartHour = Number.isInteger(parsedReportScheduleStartHour)
+    ? Math.min(23, Math.max(0, parsedReportScheduleStartHour))
+    : 2;
+  const reportExpectedScheduleEndHour = Number.isInteger(parsedReportScheduleEndHour)
+    ? Math.min(23, Math.max(0, parsedReportScheduleEndHour))
+    : 6;
   const retentionWorkerEnabled =
     dependencies?.retentionWorkerEnabled ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_ENABLED) ?? false);
   const retentionRunOnStart =
     dependencies?.retentionRunOnStart ?? (parseBooleanEnv(process.env.MASTERCRM_RETENTION_RUN_ON_START) ?? true);
   const retentionPollMs =
     dependencies?.retentionPollMs ?? parsePositiveIntegerEnv(process.env.MASTERCRM_RETENTION_POLL_MS, 86_400_000);
+  const whatsappQrMessageRetentionDays =
+    dependencies?.whatsappQrMessageRetentionDays ??
+    parsePositiveIntegerEnv(process.env.WHATSAPP_QR_MESSAGE_RETENTION_DAYS, 90);
   const whatsappQrRecheckWorkerEnabled =
     dependencies?.whatsappQrRecheckWorkerEnabled ?? (parseBooleanEnv(process.env.WHATSAPP_QR_RECHECK_ENABLED) ?? false);
   const whatsappQrRecheckRunOnStart =
@@ -1926,7 +1972,8 @@ export function createServer(
         logger,
         store: qrStore,
         playerPhoneStore: getPlayerPhoneStore(),
-        rdaUserExistsChecker
+        rdaUserExistsChecker,
+        asnUserExistsChecker
       }),
       playerPhoneStore: getPlayerPhoneStore(),
       telegramAlerts: getTelegramAlertSender(),
@@ -2145,6 +2192,7 @@ export function createServer(
     return {
       ...landingSourceContext,
       ...(whatsappSourceContext ?? {}),
+      intakeTransport: 'landing',
       fbp: landingSourceContext.fbp ?? whatsappSourceContext?.fbp ?? null,
       fbc: landingSourceContext.fbc ?? whatsappSourceContext?.fbc ?? null,
       fbclid: landingSourceContext.fbclid ?? whatsappSourceContext?.fbclid ?? null,
@@ -2278,7 +2326,11 @@ export function createServer(
       pollMs: reportWorkerPollMs,
       maxPollMs: reportWorkerMaxPollMs,
       leaseSeconds: reportWorkerLeaseSeconds,
-      maxAttempts: reportWorkerMaxAttempts
+      maxAttempts: reportWorkerMaxAttempts,
+      alertSender: getTelegramAlertSender(),
+      asnEnabled: reportAsnEnabled,
+      expectedScheduleStartHour: reportExpectedScheduleStartHour,
+      expectedScheduleEndHour: reportExpectedScheduleEndHour
     }, executor);
     reportWorker.start();
   }
@@ -2312,7 +2364,8 @@ export function createServer(
     try {
       retentionWorker = new MastercrmRetentionWorker(getMastercrmRetentionStore(), logger, {
         runOnStart: retentionRunOnStart,
-        pollMs: retentionPollMs
+        pollMs: retentionPollMs,
+        whatsappQrMessageRetentionDays
       });
       retentionWorker.start();
     } catch (error) {
@@ -2332,7 +2385,8 @@ export function createServer(
           runOnStart: whatsappQrRecheckRunOnStart,
           pollMs: whatsappQrRecheckPollMs,
           batchSize: whatsappQrRecheckBatchSize
-        }
+        },
+        asnUserExistsChecker
       );
       whatsappQrRecheckWorker.start();
     } catch (error) {
@@ -3196,6 +3250,7 @@ export function createServer(
       });
     }
 
+    let assignmentPagina: PaginaCode = 'RdA';
     try {
       const session = await requireMastercrmSession(request, reply);
       if (!session) {
@@ -3206,16 +3261,29 @@ export function createServer(
       if (!qrOwner) {
         return;
       }
+      assignmentPagina = qrOwner.owner.pagina;
+      if (assignmentPagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(qrOwner.owner.ownerId)) {
+        return reply.code(403).send({ message: 'ASN QR is not enabled for this owner', code: 'ASN_QR_NOT_ENABLED' });
+      }
 
-      const credentials = await getWhatsappQrStore().getRdaCredential(qrOwner.owner.ownerId);
+      const qrStore = getWhatsappQrStore();
+      const credentials = qrStore.getPlatformCredential
+        ? await qrStore.getPlatformCredential(qrOwner.owner.ownerId, assignmentPagina)
+        : assignmentPagina === 'RdA'
+          ? await qrStore.getRdaCredential(qrOwner.owner.ownerId)
+          : null;
       if (!credentials) {
         return reply.code(409).send({
-          message: 'El cajero no tiene credenciales RdA sincronizadas',
-          code: 'WHATSAPP_QR_RDA_CREDENTIALS_MISSING'
+          message: `El cajero no tiene credenciales ${assignmentPagina} sincronizadas`,
+          code: 'WHATSAPP_QR_PLATFORM_CREDENTIALS_MISSING'
         });
       }
 
-      await rdaUserExistsChecker({
+      const validator = getPlatformUserValidator(assignmentPagina, {
+        RdA: rdaUserExistsChecker,
+        ASN: asnUserExistsChecker
+      });
+      await validator.validate({
         usuario: parsed.data.username,
         agente: credentials.loginUsername,
         contrasenaAgente: credentials.loginPassword,
@@ -3224,7 +3292,7 @@ export function createServer(
       });
 
       await getPlayerPhoneStore().assignUsernameByPhone({
-        pagina: 'RdA',
+        pagina: assignmentPagina,
         jugadorUsername: parsed.data.username,
         telefono: parsed.data.phoneE164,
         ownerContext: ownerContextFromWhatsappQrOwner(qrOwner.owner, qrOwner.linkedOwner.telefono ?? null)
@@ -3236,6 +3304,16 @@ export function createServer(
         summary: dashboard.summary
       });
     } catch (error) {
+      if (error instanceof AsnUserCheckError) {
+        if (error.code === 'NOT_FOUND') {
+          return reply.code(404).send({ message: error.message, code: 'ASN_USER_NOT_FOUND' });
+        }
+        logger.error({ error }, 'Unexpected ASN user existence checker error for WhatsApp QR assign');
+        return reply.code(500).send({
+          message: 'No se pudo verificar el usuario en ASN',
+          code: 'ASN_USER_CHECK_FAILED'
+        });
+      }
       if (error instanceof RdaUserCheckError) {
         if (error.code === 'NOT_FOUND') {
           return reply.code(404).send({
@@ -3267,7 +3345,7 @@ export function createServer(
       if (mappedError) {
         if (mappedError.code === 'USERNAME_ALREADY_EXISTS_IN_PAGINA') {
           return reply.code(409).send({
-            message: 'Ese usuario ya esta vinculado a otro numero dentro de RdA',
+            message: `Ese usuario ya esta vinculado a otro numero dentro de ${assignmentPagina}`,
             code: mappedError.code,
             ...(mappedError.details ? { details: mappedError.details } : {})
           });
@@ -3384,6 +3462,9 @@ export function createServer(
       const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
       if (!qrOwner) {
         return;
+      }
+      if (qrOwner.owner.pagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(qrOwner.owner.ownerId)) {
+        return reply.code(403).send({ message: 'ASN QR is not enabled for this owner', code: 'ASN_QR_NOT_ENABLED' });
       }
 
       const qrSession = await getWhatsappQrManager().connect(qrOwner.owner);
@@ -3849,6 +3930,12 @@ export function createServer(
 
     const payload = parsed.data;
     if (payload.operacion === 'reporte') {
+      if (payload.pagina === 'ASN' && !reportAsnEnabled) {
+        return reply.code(503).send({
+          message: 'ASN report processing is temporarily disabled',
+          code: 'ASN_REPORTS_DISABLED'
+        });
+      }
       const createdAt = new Date().toISOString();
       const id = randomUUID();
       const reportRequest: ReportJobRequest =
@@ -3955,6 +4042,12 @@ export function createServer(
     let runId: string | null = null;
     try {
       const payload = parsed.data;
+      if (payload.pagina === 'ASN' && !reportAsnEnabled) {
+        return reply.code(503).send({
+          message: 'ASN report processing is temporarily disabled',
+          code: 'ASN_REPORTS_DISABLED'
+        });
+      }
       const store = getReportRunStore();
       const run = await store.createRun({
         pagina: payload.pagina,
@@ -3995,6 +4088,13 @@ export function createServer(
       return reply.code(400).send({
         message: 'Invalid payload',
         issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+      });
+    }
+
+    if (!reportAsnEnabled) {
+      return reply.code(503).send({
+        message: 'ASN report processing is temporarily disabled',
+        code: 'ASN_REPORTS_DISABLED'
       });
     }
 

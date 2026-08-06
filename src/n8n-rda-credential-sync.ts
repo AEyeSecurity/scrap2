@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import { normalizeMastercrmOwnerKey } from './mastercrm-user-store';
 import type { WhatsappQrStore } from './whatsapp-qr-store';
+import type { PaginaCode } from './types';
 
 export interface N8nRdaCashierCredentialRow {
   ownerKey: string;
@@ -44,17 +45,19 @@ function isTruthyPermission(value: string): boolean {
   return !['no', 'false', '0', 'inactivo', 'inactive', 'deshabilitado'].includes(normalized);
 }
 
-function isRdaRow(row: Record<string, unknown>): boolean {
+function isPaginaRow(row: Record<string, unknown>, paginaEsperada: PaginaCode): boolean {
   const pagina = readStringField(row, ['pagina', 'Pagina', 'PAGINA', 'sede', 'Sede', 'SEDE']);
   if (!pagina) {
-    return true;
+    return paginaEsperada === 'RdA';
   }
 
   const normalized = pagina.toLowerCase();
-  return ['rda', 'rey de ases', 'reydeases', 'reydeases.com'].includes(normalized);
+  return paginaEsperada === 'RdA'
+    ? ['rda', 'rey de ases', 'reydeases', 'reydeases.com'].includes(normalized)
+    : ['asn', 'as', 'casino asn'].includes(normalized);
 }
 
-export function normalizeN8nRdaCredentialRows(rawRows: RawN8nSqliteRow[]): {
+export function normalizeN8nRdaCredentialRows(rawRows: RawN8nSqliteRow[], pagina: PaginaCode = 'RdA'): {
   rows: N8nRdaCashierCredentialRow[];
   skippedInvalid: Array<{ sourceRef: string; reason: string }>;
 } {
@@ -66,7 +69,7 @@ export function normalizeN8nRdaCredentialRows(rawRows: RawN8nSqliteRow[]): {
     const rowid = typeof rawRow.rowid === 'number' ? rawRow.rowid : 0;
     const sourceRef = `${table}:${rowid}`;
 
-    if (!isRdaRow(rawRow)) {
+    if (!isPaginaRow(rawRow, pagina)) {
       continue;
     }
 
@@ -143,7 +146,8 @@ function runPythonJson(script: string, args: string[], pythonBin: string): Promi
 
 export async function readN8nRdaCredentialRowsFromSqlite(
   sqlitePath: string,
-  pythonBin = process.env.PYTHON_BIN?.trim() || 'python'
+  pythonBin = process.env.PYTHON_BIN?.trim() || 'python',
+  pagina: PaginaCode = 'RdA'
 ): Promise<N8nRdaCashierCredentialRow[]> {
   await access(sqlitePath);
 
@@ -180,15 +184,17 @@ print(json.dumps(rows, ensure_ascii=False))
     throw new Error('n8n SQLite reader returned an invalid payload');
   }
 
-  return normalizeN8nRdaCredentialRows(rawRows).rows;
+  return normalizeN8nRdaCredentialRows(rawRows, pagina).rows;
 }
 
 export async function runN8nRdaCredentialSync(input: {
   store: WhatsappQrStore;
   rows: N8nRdaCashierCredentialRow[];
   dryRun?: boolean;
+  pagina?: PaginaCode;
 }): Promise<N8nRdaCredentialSyncResult> {
   const dryRun = input.dryRun ?? true;
+  const pagina = input.pagina ?? 'RdA';
   const result: N8nRdaCredentialSyncResult = {
     dryRun,
     scanned: input.rows.length,
@@ -200,21 +206,35 @@ export async function runN8nRdaCredentialSync(input: {
 
   for (const row of input.rows) {
     result.eligible += 1;
-    const owner = await input.store.resolveOwnerByKey('RdA', row.ownerKey);
+    const owner = await input.store.resolveOwnerByKey(pagina, row.ownerKey);
     if (!owner) {
       result.skippedMissingOwner.push({ ownerKey: row.ownerKey, sourceRef: row.sourceRef });
       continue;
     }
 
     if (!dryRun) {
-      await input.store.upsertRdaCredential({
-        ownerId: owner.ownerId,
-        ownerKey: row.ownerKey,
-        loginUsername: row.loginUsername,
-        loginPassword: row.loginPassword,
-        source: 'n8n',
-        sourceRef: row.sourceRef
-      });
+      if (pagina === 'RdA') {
+        await input.store.upsertRdaCredential({
+          ownerId: owner.ownerId,
+          ownerKey: row.ownerKey,
+          loginUsername: row.loginUsername,
+          loginPassword: row.loginPassword,
+          source: 'n8n',
+          sourceRef: row.sourceRef
+        });
+      } else if (input.store.upsertPlatformCredential) {
+        await input.store.upsertPlatformCredential({
+          ownerId: owner.ownerId,
+          ownerKey: row.ownerKey,
+          pagina,
+          loginUsername: row.loginUsername,
+          loginPassword: row.loginPassword,
+          source: 'n8n',
+          sourceRef: row.sourceRef
+        });
+      } else {
+        throw new Error('Platform credential storage is unavailable');
+      }
     }
 
     result.synced += 1;

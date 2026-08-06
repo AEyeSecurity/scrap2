@@ -1,5 +1,6 @@
 import type { Logger } from 'pino';
 import type { AssertRdaUserExistsInput } from './rda-user-check';
+import { AsnUserCheckError, type AssertAsnUserExistsInput } from './asn-user-check';
 import {
   ownerContextFromWhatsappQrOwner,
   type WhatsappQrMatchRecord,
@@ -17,6 +18,7 @@ import {
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from './player-phone-store';
 import { RdaUserCheckError } from './rda-user-check';
 import type { AppConfig } from './types';
+import { getPlatformUserValidator } from './platform-user-validator';
 
 export interface WhatsappQrMessageEvent {
   owner: WhatsappQrOwner;
@@ -29,6 +31,7 @@ export interface WhatsappQrMessageEvent {
   pushName?: string | null;
   text?: string | null;
   messageTimestamp?: string | null;
+  sourceContext?: import('./types').MetaSourceContext | null;
 }
 
 export interface WhatsappQrProcessResult {
@@ -42,6 +45,7 @@ export interface WhatsappQrAutoAssignOptions {
   store: WhatsappQrStore;
   playerPhoneStore: PlayerPhoneStore;
   rdaUserExistsChecker: (input: AssertRdaUserExistsInput) => Promise<void>;
+  asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>;
 }
 
 function getBuenosAiresMonthStart(input = new Date()): string {
@@ -142,19 +146,25 @@ export class WhatsappQrAutoAssignService {
     let match = await this.options.store.createMatch({
       sessionId: event.session.id,
       ownerId: event.owner.ownerId,
+      pagina: event.owner.pagina,
       messageId: message.id,
       clientPhoneE164,
       username: candidateUsername,
-      source: matchSource
+      source: matchSource,
+      eventAt: message.eventAt
     });
 
     let credentials;
     try {
-      credentials = await this.options.store.getRdaCredential(event.owner.ownerId);
+      credentials = this.options.store.getPlatformCredential
+        ? await this.options.store.getPlatformCredential(event.owner.ownerId, event.owner.pagina)
+        : event.owner.pagina === 'RdA'
+          ? await this.options.store.getRdaCredential(event.owner.ownerId)
+          : null;
     } catch (error) {
       match = await this.options.store.updateMatch(match.id, {
         status: 'error',
-        errorMessage: error instanceof Error ? error.message : 'rda_credentials_unavailable'
+        errorMessage: error instanceof Error ? error.message : 'platform_credentials_unavailable'
       });
       await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
@@ -163,14 +173,18 @@ export class WhatsappQrAutoAssignService {
     if (!credentials) {
       match = await this.options.store.updateMatch(match.id, {
         status: 'error',
-        errorMessage: 'missing_rda_credentials'
+        errorMessage: `missing_${event.owner.pagina.toLowerCase()}_credentials`
       });
       await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
     }
 
     try {
-      await this.options.rdaUserExistsChecker({
+      const validator = getPlatformUserValidator(event.owner.pagina, {
+        RdA: this.options.rdaUserExistsChecker,
+        ASN: this.options.asnUserExistsChecker
+      });
+      await validator.validate({
         usuario: candidateUsername,
         agente: credentials.loginUsername,
         contrasenaAgente: credentials.loginPassword,
@@ -178,10 +192,13 @@ export class WhatsappQrAutoAssignService {
         logger: this.options.logger
       });
     } catch (error) {
-      if (error instanceof RdaUserCheckError && error.code === 'NOT_FOUND') {
+      if (
+        (error instanceof RdaUserCheckError || error instanceof AsnUserCheckError) &&
+        error.code === 'NOT_FOUND'
+      ) {
         match = await this.options.store.updateMatch(match.id, {
           status: 'not_found',
-          rdaValidatedAt: new Date().toISOString(),
+          platformValidatedAt: new Date().toISOString(),
           errorMessage: error.message
         });
         return { message, match };
@@ -189,7 +206,7 @@ export class WhatsappQrAutoAssignService {
 
       match = await this.options.store.updateMatch(match.id, {
         status: 'error',
-        errorMessage: error instanceof Error ? error.message : 'rda_validation_failed'
+        errorMessage: error instanceof Error ? error.message : 'platform_validation_failed'
       });
       await this.enqueueRecheck(event, clientPhoneE164, 'technical_error');
       return { message, match };
@@ -198,14 +215,14 @@ export class WhatsappQrAutoAssignService {
     const validatedAt = new Date().toISOString();
     try {
       await this.options.playerPhoneStore.assignUsernameByPhone({
-        pagina: 'RdA',
+        pagina: event.owner.pagina,
         jugadorUsername: candidateUsername,
         telefono: clientPhoneE164,
         ownerContext: ownerContextFromWhatsappQrOwner(event.owner, event.session.phoneE164)
       });
       match = await this.options.store.updateMatch(match.id, {
         status: 'assigned',
-        rdaValidatedAt: validatedAt,
+        platformValidatedAt: validatedAt,
         assignedAt: new Date().toISOString(),
         errorMessage: null
       });
@@ -214,7 +231,7 @@ export class WhatsappQrAutoAssignService {
       if (error instanceof PlayerPhoneStoreError && error.code === 'CONFLICT') {
         match = await this.options.store.updateMatch(match.id, {
           status: 'conflict',
-          rdaValidatedAt: validatedAt,
+          platformValidatedAt: validatedAt,
           errorMessage: error.message
         });
         return { message, match };

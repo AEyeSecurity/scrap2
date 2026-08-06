@@ -10,6 +10,9 @@ class FakeReportRunStore implements ReportRunStore {
   public completed: string[] = [];
   public snapshotted: string[] = [];
   public outbox: string[] = [];
+  public failed: string[] = [];
+  public failedRemaining: string[] = [];
+  public completionAccepted = true;
 
   async createRun(): Promise<ReportRunRecord> {
     throw new Error('not used');
@@ -27,12 +30,18 @@ class FakeReportRunStore implements ReportRunStore {
     return this.leases.shift() ?? null;
   }
 
-  async completeRunItem(lease: ReportRunLease): Promise<void> {
+  async completeRunItem(lease: ReportRunLease): Promise<boolean> {
     this.completed.push(lease.itemId);
+    return this.completionAccepted;
   }
 
-  async failRunItem(): Promise<void> {
-    throw new Error('not used');
+  async failRunItem(lease: ReportRunLease): Promise<boolean> {
+    this.failed.push(lease.itemId);
+    return true;
+  }
+
+  async failRemainingRunItems(runId: string): Promise<void> {
+    this.failedRemaining.push(runId);
   }
 
   async upsertDailySnapshot(lease: ReportRunLease): Promise<void> {
@@ -175,6 +184,59 @@ describe('adaptive worker polling', () => {
     expect(store.completed).toEqual(['item-1']);
     expect(store.snapshotted).toEqual(['item-1']);
     expect(store.outbox).toEqual(['run-1']);
+  });
+
+  it('does not persist side effects when an expired lease rejects completion', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.completionAccepted = false;
+    store.leases.push(buildReportLease({ leaseToken: 'expired-token' }));
+    const logger = createLogger('info', false);
+    const worker = new ReportRunWorker(
+      store,
+      logger,
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3 },
+      vi.fn().mockResolvedValue({
+        kind: 'asn-reporte-cargado-mes',
+        pagina: 'ASN',
+        usuario: 'player-1',
+        mesActual: '2026-04',
+        fechaActual: '2026-04-16',
+        cargadoTexto: '$0',
+        cargadoNumero: 0,
+        cargadoHoyTexto: '$0',
+        cargadoHoyNumero: 0
+      })
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(25);
+    await worker.stop();
+
+    expect(store.completed).toEqual(['item-1']);
+    expect(store.snapshotted).toEqual([]);
+  });
+
+  it('cancels queued ASN work without opening a browser when ASN is disabled', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.leases.push(buildReportLease({ pagina: 'ASN' }));
+    const executor = vi.fn();
+    const worker = new ReportRunWorker(
+      store,
+      createLogger('info', false),
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: false },
+      executor
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(25);
+    await worker.stop();
+
+    expect(executor).not.toHaveBeenCalled();
+    expect(store.failed).toEqual(['item-1']);
+    expect(store.failedRemaining).toEqual(['run-1']);
+    expect(store.snapshotted).toEqual([]);
   });
 
   it('backs off idle report polling when no work is available', async () => {

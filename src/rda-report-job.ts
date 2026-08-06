@@ -5,6 +5,7 @@ import type { Logger } from 'pino';
 import { ensureAuthenticated } from './auth';
 import { parseBalanceNumber } from './balance-job';
 import { configureContext, launchChromiumBrowser } from './browser';
+import type { ReportBrowserSession } from './report-browser-session';
 import { translateRdaJobError } from './rda-user-error';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig, JobExecutionResult, JobStepResult, RdaReportJobRequest, RdaReportJobResult } from './types';
@@ -422,7 +423,8 @@ export async function waitForRdaCashReportReady(page: Page, timeoutMs: number): 
 export async function runRdaReportJob(
   request: RdaReportJobRequest,
   appConfig: AppConfig,
-  logger: Logger
+  logger: Logger,
+  reportSession?: ReportBrowserSession
 ): Promise<JobExecutionResult> {
   if (request.payload.pagina !== 'RdA') {
     throw new Error('RdA report job only supports pagina=RdA');
@@ -448,13 +450,18 @@ export async function runRdaReportJob(
 
   await fs.mkdir(artifactDir, { recursive: true });
 
-  const browser = await launchChromiumBrowser(runtimeConfig, jobLogger);
-  const context = await browser.newContext({
-    baseURL: runtimeConfig.baseUrl,
-    viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,
-    recordVideo: runtimeConfig.debug ? { dir: path.join(artifactDir, 'video') } : undefined
-  });
-  await configureContext(context, runtimeConfig, jobLogger);
+  const ownsSession = !reportSession;
+  const browser = reportSession?.browser ?? (await launchChromiumBrowser(runtimeConfig, jobLogger));
+  const context =
+    reportSession?.context ??
+    (await browser.newContext({
+      baseURL: runtimeConfig.baseUrl,
+      viewport: runtimeConfig.headless ? { width: 1920, height: 1080 } : null,
+      recordVideo: runtimeConfig.debug ? { dir: path.join(artifactDir, 'video') } : undefined
+    }));
+  if (ownsSession) {
+    await configureContext(context, runtimeConfig, jobLogger);
+  }
 
   const page = await context.newPage();
   const artifactPaths: string[] = [];
@@ -466,30 +473,32 @@ export async function runRdaReportJob(
   let resultPayload: RdaReportJobResult | undefined;
 
   try {
-    if (runtimeConfig.debug) {
+    if (runtimeConfig.debug && ownsSession) {
       await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
       tracingStarted = true;
     }
 
     const loginStartedAt = new Date().toISOString();
-    await ensureAuthenticated(
-      context,
-      page,
-      runtimeConfig,
-      {
-        username: request.payload.agente,
-        password: request.payload.contrasena_agente
-      },
-      jobLogger,
-      { persistSession: false }
-    );
+    if (ownsSession) {
+      await ensureAuthenticated(
+        context,
+        page,
+        runtimeConfig,
+        {
+          username: request.payload.agente,
+          password: request.payload.contrasena_agente
+        },
+        jobLogger,
+        { persistSession: false }
+      );
+    }
     const loginArtifact = captureSuccessArtifacts ? await captureStepScreenshot(page, artifactDir, '00-login') : undefined;
     if (loginArtifact) {
       artifactPaths.push(loginArtifact);
     }
     steps.push({
       name: '00-login',
-      status: 'ok',
+      status: ownsSession ? 'ok' : 'skipped',
       startedAt: loginStartedAt,
       finishedAt: new Date().toISOString(),
       ...(loginArtifact ? { artifactPath: loginArtifact } : {})
@@ -540,8 +549,12 @@ export async function runRdaReportJob(
           depositoTotalNumero,
           cargadoTexto: depositoTotalTexto,
           cargadoNumero: depositoTotalNumero,
-          cargadoHoyTexto: '0,00',
-          cargadoHoyNumero: 0
+          // RdA only exposes the accumulated monthly total. The daily value is
+          // derived while persisting the snapshot, using the previous snapshot
+          // from the same month. Returning zero here would be a false business
+          // signal for dashboards and conversion jobs.
+          cargadoHoyTexto: null,
+          cargadoHoyNumero: null
         };
       },
       captureSuccessArtifacts
@@ -568,8 +581,11 @@ export async function runRdaReportJob(
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug);
-    await context.close();
-    await browser.close();
+    await page.close();
+    if (ownsSession) {
+      await context.close();
+      await browser.close();
+    }
 
     if (!resultPayload) {
       throw new Error('RdA report result was not captured');
@@ -602,8 +618,11 @@ export async function runRdaReportJob(
     }
 
     await waitBeforeCloseIfHeaded(page, runtimeConfig.headless, runtimeConfig.debug).catch(() => undefined);
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
+    await page.close().catch(() => undefined);
+    if (ownsSession) {
+      await context.close().catch(() => undefined);
+      await browser.close().catch(() => undefined);
+    }
 
     throw new Error(message, { cause: error instanceof Error ? error : undefined });
   }

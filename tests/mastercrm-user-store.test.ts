@@ -138,6 +138,13 @@ class FakeSupabaseClient {
     const result = pending.shift();
     this.results.set(key, pending);
     if (!result) {
+      if (
+        key === 'owner_new_client_monthly_facts:select' ||
+        key === 'mastercrm_whatsapp_qr_messages:select' ||
+        key === 'mastercrm_whatsapp_qr_matches:select'
+      ) {
+        return { data: [], error: null };
+      }
       throw new Error(`No queued result for ${key}`);
     }
 
@@ -786,7 +793,11 @@ describe('mastercrm clients dashboard', () => {
         reportUpdatedAt: null,
         cargadoHoyTotal: null,
         cargadoMesTotal: null,
-        hasReport: false
+        hasReport: false,
+        reportExpectedClients: 0,
+        reportCoveredClients: 0,
+        reportCoveragePct: null,
+        cargadoHoyComplete: false
       },
       financialInputs: {
         month: '2026-03',
@@ -1507,7 +1518,7 @@ describe('mastercrm clients dashboard', () => {
           identity_id: 'identity-miriam',
           report_date: '2026-06-19',
           username: '3miriam776',
-          cargado_hoy: 0,
+          cargado_hoy: null,
           cargado_mes: 820000
         }
       ],
@@ -1775,7 +1786,7 @@ describe('mastercrm clients dashboard', () => {
           identity_id: 'identity-miriam',
           report_date: '2026-06-19',
           username: '3miriam776',
-          cargado_hoy: 0,
+          cargado_hoy: null,
           cargado_mes: 820000
         }
       ],
@@ -1790,11 +1801,21 @@ describe('mastercrm clients dashboard', () => {
     const dashboard = await store.getClientsDashboard({ userId: 777, month: '2026-06' });
 
     expect(dashboard.statsKpis.clientesConReporte).toBe(1);
+    expect(dashboard.statsKpis.cargadoHoyArs).toBeNull();
     expect(dashboard.statsKpis.cargadoMesArs).toBe(820000);
+    expect(dashboard.summary).toEqual(
+      expect.objectContaining({
+        reportExpectedClients: 1,
+        reportCoveredClients: 1,
+        reportCoveragePct: 100,
+        cargadoHoyComplete: false
+      })
+    );
     expect(dashboard.clientes).toContainEqual(
       expect.objectContaining({
         id: 'link-miriam',
         username: '3miriam776',
+        cargadoHoy: null,
         cargadoMes: 820000,
         reportDate: '2026-06-19'
       })

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildAppConfig } from '../src/config';
 import { createLogger } from '../src/logging';
 import { WhatsappQrRecheckWorker } from '../src/whatsapp-qr-recheck-worker';
@@ -68,6 +68,15 @@ function buildMatch(overrides: Partial<WhatsappQrMatchRecord> = {}): WhatsappQrM
 }
 
 describe('WhatsappQrRecheckWorker', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-06T12:05:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('retries an existing technical-error match without creating duplicate matches', async () => {
     const recheck = buildRecheck();
     const match = buildMatch();

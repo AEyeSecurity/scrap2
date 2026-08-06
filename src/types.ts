@@ -158,6 +158,7 @@ export interface MetaCustomerData {
 }
 
 export interface MetaSourceContext {
+  intakeTransport?: 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown' | null;
   ctwaClid?: string | null;
   fbp?: string | null;
   fbc?: string | null;
@@ -361,8 +362,8 @@ export interface RdaReportJobResult {
   depositoTotalNumero: number;
   cargadoTexto: string;
   cargadoNumero: number;
-  cargadoHoyTexto: string;
-  cargadoHoyNumero: number;
+  cargadoHoyTexto: string | null;
+  cargadoHoyNumero: number | null;
 }
 
 export type ReportJobResult = AsnReportJobResult | RdaReportJobResult;

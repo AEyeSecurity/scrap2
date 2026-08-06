@@ -29,11 +29,13 @@ export interface MastercrmTechnicalPurgeRecord {
 export interface MastercrmRetentionStore {
   purgeTechnicalHistory(cutoffDate: string): Promise<MastercrmTechnicalPurgeRecord>;
   closeNewClientMonthlyFacts(cutoffDate: string): Promise<number>;
+  purgeWhatsappQrMessageExcerpts?(before: string): Promise<number>;
 }
 
 export interface MastercrmRetentionWorkerOptions {
   runOnStart: boolean;
   pollMs: number;
+  whatsappQrMessageRetentionDays?: number;
   now?: () => Date;
 }
 
@@ -121,6 +123,18 @@ class SupabaseMastercrmRetentionStore implements MastercrmRetentionStore {
     const row = Array.isArray(data) ? data[0] : data;
     return normalizePurgeRow(row as MastercrmTechnicalPurgeRow | null | undefined);
   }
+
+  async purgeWhatsappQrMessageExcerpts(before: string): Promise<number> {
+    const { data, error } = await this.client.rpc('purge_mastercrm_whatsapp_qr_message_excerpts_v1', {
+      p_before: before
+    });
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not purge WhatsApp QR message excerpts');
+    }
+
+    return toNonNegativeInteger(data as number | string | null | undefined);
+  }
 }
 
 export class MastercrmRetentionWorker {
@@ -161,11 +175,20 @@ export class MastercrmRetentionWorker {
     }
 
     this.running = true;
-    const cutoffDate = getBuenosAiresCurrentMonthStartDate(this.options.now?.() ?? new Date());
+    const now = this.options.now?.() ?? new Date();
+    const cutoffDate = getBuenosAiresCurrentMonthStartDate(now);
+    const qrRetentionDays = Math.max(1, Math.trunc(this.options.whatsappQrMessageRetentionDays ?? 90));
+    const qrExcerptBefore = new Date(now.getTime() - qrRetentionDays * 86_400_000).toISOString();
     try {
       const closedFacts = await this.store.closeNewClientMonthlyFacts(cutoffDate);
       const result = await this.store.purgeTechnicalHistory(cutoffDate);
-      this.logger.info({ cutoffDate, closedFacts, result }, 'MasterCRM technical retention purge completed');
+      const qrMessageExcerptsPurged = this.store.purgeWhatsappQrMessageExcerpts
+        ? await this.store.purgeWhatsappQrMessageExcerpts(qrExcerptBefore)
+        : 0;
+      this.logger.info(
+        { cutoffDate, closedFacts, result, qrExcerptBefore, qrMessageExcerptsPurged },
+        'MasterCRM technical retention purge completed'
+      );
     } catch (error) {
       this.logger.error({ error, cutoffDate }, 'MasterCRM technical retention purge failed');
     } finally {

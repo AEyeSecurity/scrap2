@@ -152,8 +152,8 @@ function createStore(overrides: Partial<WhatsappQrStore> = {}): WhatsappQrStore 
       throw new Error('not implemented');
     }),
     listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
-    listStaleSessions: vi.fn(async () => []),
-    markAlerted: vi.fn(async () => undefined),
+    listUnalertedDisconnectedSessions: vi.fn(async () => []),
+    markDisconnectedAlerted: vi.fn(async () => undefined),
     ...overrides
   } as WhatsappQrStore;
 }

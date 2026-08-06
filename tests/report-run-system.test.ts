@@ -490,6 +490,39 @@ function createExecutor() {
 }
 
 describe('report run system', () => {
+  it('protects every report route when the service bearer token is configured', async () => {
+    const previousToken = process.env.REPORT_API_TOKEN;
+    process.env.REPORT_API_TOKEN = 'report-service-token';
+    const store = createSeededStore();
+    const logger = createLogger('silent', false);
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false }
+    );
+
+    try {
+      const unauthorized = await server.inject({ method: 'POST', url: '/reports/run', payload: {} });
+      expect(unauthorized.statusCode).toBe(401);
+      expect(unauthorized.json().code).toBe('REPORT_UNAUTHORIZED');
+
+      const authorized = await server.inject({
+        method: 'POST',
+        url: '/reports/run',
+        headers: { authorization: 'Bearer report-service-token' },
+        payload: {}
+      });
+      expect(authorized.statusCode).toBe(400);
+    } finally {
+      await server.close();
+      if (previousToken === undefined) delete process.env.REPORT_API_TOKEN;
+      else process.env.REPORT_API_TOKEN = previousToken;
+    }
+  });
+
   it('creates a report run and lists seeded users from the current owner model', async () => {
     const store = createSeededStore();
     const logger = createLogger('silent', false);

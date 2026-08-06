@@ -2,6 +2,8 @@ import type { Logger } from 'pino';
 import type { AppConfig } from './types';
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from './player-phone-store';
 import { RdaUserCheckError, type AssertRdaUserExistsInput } from './rda-user-check';
+import { AsnUserCheckError, type AssertAsnUserExistsInput } from './asn-user-check';
+import { getPlatformUserValidator } from './platform-user-validator';
 import { extractUsernameFromContactName } from './whatsapp-qr-parser';
 import {
   ownerContextFromWhatsappQrOwner,
@@ -34,7 +36,7 @@ function phoneToJid(phoneE164: string): string {
 }
 
 function matchAttemptAt(match: WhatsappQrMatchRecord): string {
-  return match.assignedAt ?? match.updatedAt ?? match.rdaValidatedAt ?? match.createdAt;
+  return match.assignedAt ?? match.updatedAt ?? match.platformValidatedAt ?? match.rdaValidatedAt ?? match.createdAt;
 }
 
 function pickLatestMatch(matches: WhatsappQrMatchRecord[]): WhatsappQrMatchRecord | null {
@@ -53,7 +55,8 @@ export class WhatsappQrRecheckWorker {
     private readonly rdaUserExistsChecker: (input: AssertRdaUserExistsInput) => Promise<void>,
     private readonly appConfig: AppConfig,
     private readonly logger: Logger,
-    private readonly options: WhatsappQrRecheckWorkerOptions
+    private readonly options: WhatsappQrRecheckWorkerOptions,
+    private readonly asnUserExistsChecker?: (input: AssertAsnUserExistsInput) => Promise<void>
   ) {}
 
   start(): void {
@@ -239,7 +242,7 @@ export class WhatsappQrRecheckWorker {
     }
     await this.store.updateMatch(match.id, {
       status: 'assigned',
-      rdaValidatedAt: new Date().toISOString(),
+      platformValidatedAt: new Date().toISOString(),
       assignedAt: new Date().toISOString(),
       errorMessage: null
     });
@@ -263,14 +266,22 @@ export class WhatsappQrRecheckWorker {
       pagina: session.pagina,
       telefono: session.phoneE164
     };
-    const credentials = await this.store.getRdaCredential(row.ownerId);
+    const credentials = this.store.getPlatformCredential
+      ? await this.store.getPlatformCredential(row.ownerId, session.pagina)
+      : session.pagina === 'RdA'
+        ? await this.store.getRdaCredential(row.ownerId)
+        : null;
     if (!credentials) {
-      await this.reschedule(row, 'missing_rda_credentials');
+      await this.reschedule(row, `missing_${session.pagina.toLowerCase()}_credentials`);
       return false;
     }
 
     try {
-      await this.rdaUserExistsChecker({
+      const validator = getPlatformUserValidator(session.pagina, {
+        RdA: this.rdaUserExistsChecker,
+        ASN: this.asnUserExistsChecker
+      });
+      await validator.validate({
         usuario: username,
         agente: credentials.loginUsername,
         contrasenaAgente: credentials.loginPassword,
@@ -278,14 +289,14 @@ export class WhatsappQrRecheckWorker {
         logger: this.logger
       });
       await this.playerPhoneStore.assignUsernameByPhone({
-        pagina: 'RdA',
+        pagina: session.pagina,
         jugadorUsername: username,
         telefono: row.phoneE164,
         ownerContext: ownerContextFromWhatsappQrOwner(owner, session.phoneE164)
       });
       return true;
     } catch (error) {
-      if (error instanceof RdaUserCheckError && error.code === 'NOT_FOUND') {
+      if ((error instanceof RdaUserCheckError || error instanceof AsnUserCheckError) && error.code === 'NOT_FOUND') {
         await this.reschedule(row, error.message);
         return false;
       }
