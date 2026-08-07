@@ -97,7 +97,7 @@ export interface ReportRunStore {
   enqueueRunItemsFromPrincipal(runId: string, principalKey: string): Promise<number>;
   leaseNextRunItem(leaseSeconds: number, maxAttempts: number): Promise<ReportRunLease | null>;
   completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<boolean | void>;
-  failRunItem(lease: ReportRunLease, error: string): Promise<boolean | void>;
+  failRunItem(lease: ReportRunLease, error: string, options?: { terminal?: boolean }): Promise<boolean | void>;
   renewRunItemLease?(lease: ReportRunLease, leaseSeconds: number): Promise<boolean>;
   failRemainingRunItems?(runId: string, error: string, ownerId?: string): Promise<void>;
   upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
@@ -409,8 +409,12 @@ export class SupabaseReportRunStore implements ReportRunStore {
     return Boolean(data);
   }
 
-  async failRunItem(lease: ReportRunLease, errorMessage: string): Promise<boolean> {
-    const terminal = lease.attempts >= lease.maxAttempts;
+  async failRunItem(
+    lease: ReportRunLease,
+    errorMessage: string,
+    options: { terminal?: boolean } = {}
+  ): Promise<boolean> {
+    const terminal = options.terminal === true || lease.attempts >= lease.maxAttempts;
     const delaySeconds = lease.attempts >= lease.maxAttempts - 1 ? 300 : 60;
     const nextRetryAt = terminal ? null : new Date(Date.now() + delaySeconds * 1000).toISOString();
 

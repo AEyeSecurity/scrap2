@@ -11,6 +11,7 @@ class FakeReportRunStore implements ReportRunStore {
   public snapshotted: string[] = [];
   public outbox: string[] = [];
   public failed: string[] = [];
+  public terminalFailures: boolean[] = [];
   public failedRemaining: string[] = [];
   public completionAccepted = true;
 
@@ -35,8 +36,9 @@ class FakeReportRunStore implements ReportRunStore {
     return this.completionAccepted;
   }
 
-  async failRunItem(lease: ReportRunLease): Promise<boolean> {
+  async failRunItem(lease: ReportRunLease, _error: string, options?: { terminal?: boolean }): Promise<boolean> {
     this.failed.push(lease.itemId);
+    this.terminalFailures.push(options?.terminal === true);
     return true;
   }
 
@@ -237,6 +239,25 @@ describe('adaptive worker polling', () => {
     expect(store.failed).toEqual(['item-1']);
     expect(store.failedRemaining).toEqual(['run-1']);
     expect(store.snapshotted).toEqual([]);
+  });
+
+  it('fails a missing platform username immediately without scheduling retries', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.leases.push(buildReportLease({ attempts: 1, maxAttempts: 3 }));
+    const worker = new ReportRunWorker(
+      store,
+      createLogger('silent', false),
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: true },
+      vi.fn().mockRejectedValue(new Error('No se ha encontrado el usuario missing-user'))
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(25);
+    await worker.stop();
+
+    expect(store.failed).toEqual(['item-1']);
+    expect(store.terminalFailures).toEqual([true]);
   });
 
   it('backs off idle report polling when no work is available', async () => {

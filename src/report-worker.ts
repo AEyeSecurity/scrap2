@@ -2,6 +2,10 @@ import type { Logger } from 'pino';
 import type { AppConfig, JobExecutionOptions, ReportJobResult } from './types';
 import type { ReportRunLease, ReportRunStore } from './report-run-store';
 import type { TelegramAlertSender } from './telegram-alerts';
+
+function isDeterministicReportItemError(message: string): boolean {
+  return message.startsWith('No se ha encontrado el usuario ') || message.startsWith('REPORT_DATE_UNAVAILABLE');
+}
 import {
   RunAuthenticatedReportSessionManager,
   type PlatformReportSessionManager
@@ -187,7 +191,9 @@ export class ReportRunWorker {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn({ error: message, runId: lease.runId, username: lease.username }, 'Report item failed');
-      const failed = await this.store.failRunItem(lease, message);
+      const failed = await this.store.failRunItem(lease, message, {
+        terminal: isDeterministicReportItemError(message)
+      });
       if (
         failed !== false &&
         (message.startsWith('PLATFORM_AUTH_FAILED') || message === 'ASN_REPORTS_DISABLED') &&
