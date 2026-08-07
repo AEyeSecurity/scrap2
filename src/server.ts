@@ -4342,8 +4342,13 @@ export function createServer(
   fastify.post('/reports/run', async (request, reply) => {
     const parsed = reportRunBodySchema.safeParse(request.body);
     if (!parsed.success) {
+      const rawBody = typeof request.body === 'object' && request.body !== null ? request.body as Record<string, unknown> : {};
+      const missingAsnReportDate =
+        rawBody.pagina === 'ASN' &&
+        parsed.error.issues.some((issue) => issue.path.length === 1 && issue.path[0] === 'reportDate');
       return reply.code(400).send({
         message: 'Invalid payload',
+        ...(missingAsnReportDate ? { code: 'REPORT_DATE_UNAVAILABLE' } : {}),
         issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
       });
     }
@@ -4398,8 +4403,12 @@ export function createServer(
     const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
     const parsed = reportRunBodySchema.safeParse({ ...body, pagina: 'ASN' });
     if (!parsed.success) {
+      const missingReportDate = parsed.error.issues.some(
+        (issue) => issue.path.length === 1 && issue.path[0] === 'reportDate'
+      );
       return reply.code(400).send({
         message: 'Invalid payload',
+        ...(missingReportDate ? { code: 'REPORT_DATE_UNAVAILABLE' } : {}),
         issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
       });
     }

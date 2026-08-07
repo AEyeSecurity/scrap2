@@ -540,7 +540,29 @@ describe('report run system', () => {
     });
 
     expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe('REPORT_DATE_UNAVAILABLE');
     expect(JSON.stringify(response.json())).toContain('ASN reportDate is required');
+    await server.close();
+  });
+
+  it('returns REPORT_DATE_UNAVAILABLE from the generic report route for ASN without a date', async () => {
+    const store = createSeededStore();
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 1, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/reports/run',
+      payload: { pagina: 'ASN', principalKey: 'asnlucas10:lucas10' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().code).toBe('REPORT_DATE_UNAVAILABLE');
     await server.close();
   });
 
