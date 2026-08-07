@@ -74,11 +74,28 @@ export interface WhatsappQrMessageRecord {
   eventAt: string;
   routeStatus: WhatsappQrMessageRouteStatus;
   resolvedOwnerId: string | null;
+  resolvedOwners: WhatsappQrMessageResolvedOwnerRecord[];
   resolvedPagina: PaginaCode | null;
   routeResolution: string | null;
   routeResolvedAt: string | null;
   sourceContext: MetaSourceContext | null;
   createdAt: string;
+}
+
+export interface WhatsappQrMessageResolvedOwnerRecord {
+  ownerId: string;
+  pagina: PaginaCode;
+  resolution: string;
+  isPrimary: boolean;
+  resolvedAt: string;
+}
+
+export interface WhatsappQrPlatformOwnerPairRecord {
+  id: string;
+  rdaOwnerId: string;
+  asnOwnerId: string;
+  activeFrom: string;
+  activeTo: string | null;
 }
 
 export interface WhatsappQrMatchRecord {
@@ -264,6 +281,16 @@ export interface WhatsappQrStore {
     ownerId?: string | null;
     resolution?: string | null;
   }): Promise<WhatsappQrMessageRecord>;
+  setMessageRoutes?(input: {
+    messageId: string;
+    status: WhatsappQrMessageRouteStatus;
+    ownerIds?: string[];
+    resolution?: string | null;
+  }): Promise<WhatsappQrMessageRecord>;
+  getActivePlatformOwnerPair?(
+    rdaOwnerId: string,
+    asnOwnerId: string
+  ): Promise<WhatsappQrPlatformOwnerPairRecord | null>;
   touchSessionHeartbeat?(id: string, heartbeatAt?: string): Promise<void>;
   listUnalertedDisconnectedSessions(): Promise<WhatsappQrSessionRecord[]>;
   markDisconnectedAlerted(sessionId: string, alertedAt: string): Promise<void>;
@@ -434,6 +461,13 @@ function asSession(row: any): WhatsappQrSessionRecord {
 }
 
 function asMessage(row: any): WhatsappQrMessageRecord {
+  const resolvedOwners = (Array.isArray(row.resolved_owners) ? row.resolved_owners : []).map((resolution: any) => ({
+    ownerId: resolution.owner_id,
+    pagina: asPagina(resolution.pagina),
+    resolution: resolution.resolution,
+    isPrimary: Boolean(resolution.is_primary),
+    resolvedAt: resolution.resolved_at
+  }));
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -449,6 +483,7 @@ function asMessage(row: any): WhatsappQrMessageRecord {
     eventAt: row.event_at ?? row.message_timestamp ?? row.created_at,
     routeStatus: row.route_status ?? 'resolved',
     resolvedOwnerId: row.resolved_owner_id ?? row.owner_id ?? null,
+    resolvedOwners,
     resolvedPagina: row.resolved_pagina ? asPagina(row.resolved_pagina) : null,
     routeResolution: row.route_resolution ?? null,
     routeResolvedAt: row.route_resolved_at ?? null,
@@ -1070,10 +1105,24 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     ownerId?: string | null;
     resolution?: string | null;
   }): Promise<WhatsappQrMessageRecord> {
-    const { data, error } = await this.client.rpc('set_whatsapp_qr_message_route_v1', {
+    return this.setMessageRoutes({
+      messageId: input.messageId,
+      status: input.status,
+      ownerIds: input.ownerId ? [input.ownerId] : [],
+      resolution: input.resolution
+    });
+  }
+
+  async setMessageRoutes(input: {
+    messageId: string;
+    status: WhatsappQrMessageRouteStatus;
+    ownerIds?: string[];
+    resolution?: string | null;
+  }): Promise<WhatsappQrMessageRecord> {
+    const { data, error } = await this.client.rpc('set_whatsapp_qr_message_routes_v1', {
       p_message_id: input.messageId,
       p_status: input.status,
-      p_owner_id: input.ownerId ?? null,
+      p_owner_ids: [...new Set(input.ownerIds ?? [])],
       p_resolution: nullableText(input.resolution)
     });
     if (error) {
@@ -1084,6 +1133,32 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       throw new WhatsappQrStoreError('NOT_FOUND', 'Could not read routed WhatsApp QR message');
     }
     return asMessage(row);
+  }
+
+  async getActivePlatformOwnerPair(
+    rdaOwnerId: string,
+    asnOwnerId: string
+  ): Promise<WhatsappQrPlatformOwnerPairRecord | null> {
+    const now = new Date().toISOString();
+    const { data, error } = await this.client
+      .from('mastercrm_platform_owner_pairs')
+      .select('id, rda_owner_id, asn_owner_id, active_from, active_to')
+      .eq('rda_owner_id', rdaOwnerId)
+      .eq('asn_owner_id', asnOwnerId)
+      .lte('active_from', now)
+      .or(`active_to.is.null,active_to.gt.${now}`)
+      .maybeSingle();
+    if (error) {
+      throw mapPostgrestError(error, 'Could not resolve platform owner pair');
+    }
+    if (!data) return null;
+    return {
+      id: data.id,
+      rdaOwnerId: data.rda_owner_id,
+      asnOwnerId: data.asn_owner_id,
+      activeFrom: data.active_from,
+      activeTo: data.active_to ?? null
+    };
   }
 
   async touchSessionHeartbeat(id: string, heartbeatAt = new Date().toISOString()): Promise<void> {
@@ -1363,9 +1438,9 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     const data = await selectAllSupabasePages<any>(
       () => {
         let query = this.client
-          .from('mastercrm_whatsapp_qr_messages')
+          .from('mastercrm_whatsapp_qr_messages_by_owner')
           .select('*')
-          .eq('owner_id', input.ownerId)
+          .eq('scope_owner_id', input.ownerId)
           .gte('event_at', input.createdFrom)
           .lt('event_at', input.createdTo)
           .order('event_at', { ascending: false });

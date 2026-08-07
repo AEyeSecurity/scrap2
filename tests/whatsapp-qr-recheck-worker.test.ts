@@ -173,4 +173,56 @@ describe('WhatsappQrRecheckWorker', () => {
     expect(updateRecheck).toHaveBeenCalledWith('recheck-1', expect.objectContaining({ status: 'expired', attempts: 1 }));
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
+
+  it('uses the secondary ASN route instead of the physical RdA session during rechecks', async () => {
+    const recheck = buildRecheck({ ownerId: 'owner-asn' });
+    const match = buildMatch({ ownerId: 'owner-asn', pagina: 'ASN' });
+    const updateRecheck = vi.fn(async (_id: string, patch: Partial<WhatsappQrRecheckQueueRecord>) => ({ ...recheck, ...patch }));
+    const updateMatch = vi.fn(async (_id: string, patch: Partial<WhatsappQrMatchRecord>) => ({ ...match, ...patch }));
+    const assignUsernameByPhone = vi.fn(async () => ({}));
+    const asnUserExistsChecker = vi.fn(async () => undefined);
+    const store = {
+      listDueRechecks: vi.fn(async () => [recheck]),
+      getSessionByOwner: vi.fn(async () => session),
+      listSessionRoutes: vi.fn(async () => [
+        {
+          id: 'route-asn',
+          sessionId: session.id,
+          ownerId: 'owner-asn',
+          ownerKey: 'asnlucas10:lucas10',
+          ownerLabel: 'Lucas10',
+          pagina: 'ASN',
+          status: 'active',
+          isPrimary: false,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt
+        }
+      ]),
+      listMonthClients: vi.fn(async () => [{ clientId: 'client-asn', linkId: 'link-asn', phoneE164: recheck.phoneE164, assignedUsername: null }]),
+      listContactsByPhones: vi.fn(async () => []),
+      listMessagesForMonth: vi.fn(async () => []),
+      listMatchesForMonth: vi.fn(async () => [match]),
+      getPlatformCredential: vi.fn(async () => ({
+        ownerId: 'owner-asn', ownerKey: 'asnlucas10:lucas10', pagina: 'ASN',
+        loginUsername: 'asn-agent', loginPassword: 'asn-password', source: 'test', sourceRef: null, syncedAt: session.updatedAt
+      })),
+      updateMatch,
+      updateRecheck
+    };
+    const worker = new WhatsappQrRecheckWorker(
+      store as any,
+      { assignUsernameByPhone } as any,
+      vi.fn(async () => { throw new Error('RdA validator must not run'); }),
+      appConfig,
+      logger,
+      { pollMs: 60_000, batchSize: 10, runOnStart: false },
+      asnUserExistsChecker
+    );
+
+    await worker.pump();
+
+    expect(asnUserExistsChecker).toHaveBeenCalledTimes(1);
+    expect(assignUsernameByPhone).toHaveBeenCalledWith(expect.objectContaining({ pagina: 'ASN', ownerContext: expect.objectContaining({ ownerKey: 'asnlucas10:lucas10' }) }));
+    expect(updateRecheck).toHaveBeenCalledWith('recheck-1', expect.objectContaining({ status: 'done' }));
+  });
 });

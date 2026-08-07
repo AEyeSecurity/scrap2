@@ -168,6 +168,13 @@ export interface PlayerPhoneStore {
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
   assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
+  assignUsernameToPlatformOwnerPair?(input: {
+    pairId: string;
+    telefono: string;
+    jugadorUsername: string;
+    actorAlias?: string | null;
+    actorPhone?: string | null;
+  }): Promise<Array<{ ownerId: string; pagina: PaginaCode; ownerKey: string }>>;
   unassignUsernameByPhone(input: UnassignPhoneInput): Promise<UnassignUsernameByPhoneResult>;
 }
 
@@ -736,6 +743,34 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     }
 
     return result;
+  }
+
+  async assignUsernameToPlatformOwnerPair(input: {
+    pairId: string;
+    telefono: string;
+    jugadorUsername: string;
+    actorAlias?: string | null;
+    actorPhone?: string | null;
+  }): Promise<Array<{ ownerId: string; pagina: PaginaCode; ownerKey: string }>> {
+    const telefono = normalizePhone(input.telefono);
+    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
+    const { data, error } = await this.client.rpc('assign_username_to_platform_owner_pair_v1', {
+      p_pair_id: input.pairId,
+      p_cliente_telefono: telefono,
+      p_username: jugadorUsername,
+      p_actor_alias: input.actorAlias ?? null,
+      p_actor_phone: input.actorPhone ?? null
+    });
+    if (error) {
+      throw mapAssignUsernameByPhoneRpcError(error);
+    }
+    const rows = ((data as any[] | null) ?? []).map((row) => ({
+      ownerId: String(row.owner_id),
+      pagina: row.pagina === 'ASN' ? ('ASN' as const) : ('RdA' as const),
+      ownerKey: String(row.owner_key)
+    }));
+    await Promise.all(rows.map((row) => this.refreshMonthlyFacts(row.ownerId)));
+    return rows;
   }
 
   async unassignUsernameByPhone(input: UnassignPhoneInput): Promise<UnassignUsernameByPhoneResult> {

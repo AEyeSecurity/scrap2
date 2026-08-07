@@ -8,6 +8,7 @@ import { extractUsernameFromContactName } from './whatsapp-qr-parser';
 import {
   ownerContextFromWhatsappQrOwner,
   type WhatsappQrMatchRecord,
+  type WhatsappQrOwner,
   type WhatsappQrRecheckQueueRecord,
   type WhatsappQrSessionRecord,
   type WhatsappQrStore
@@ -115,6 +116,11 @@ export class WhatsappQrRecheckWorker {
       await this.reschedule(row, 'qr_session_missing');
       return;
     }
+    const owner = await this.resolveRecheckOwner(row.ownerId, session);
+    if (!owner) {
+      await this.reschedule(row, 'qr_owner_route_missing');
+      return;
+    }
 
     const monthStart = row.monthStart;
     const [monthClients, contacts, messages, matches] = await Promise.all([
@@ -163,7 +169,7 @@ export class WhatsappQrRecheckWorker {
             sessionId: message.sessionId,
             ownerId: message.ownerId,
             messageId: message.id,
-            pagina: 'RdA' as const,
+            pagina: owner.pagina,
             clientPhoneE164: message.clientPhoneE164,
             username: message.candidateUsername!,
             source: message.matchSource!,
@@ -177,13 +183,13 @@ export class WhatsappQrRecheckWorker {
       );
 
     if (reusableMatch && reusableMatch.id) {
-      const done = await this.retryMatch(row, session, reusableMatch);
+      const done = await this.retryMatch(row, session, owner, reusableMatch);
       if (done) {
         return;
       }
     }
     if (reusableMatch && !reusableMatch.id) {
-      const done = await this.assignUsername(row, session, reusableMatch.username);
+      const done = await this.assignUsername(row, session, owner, reusableMatch.username);
       if (done) {
         await this.store.updateRecheck(row.id, {
           status: 'done',
@@ -202,13 +208,13 @@ export class WhatsappQrRecheckWorker {
         (match) => match.username === contactCandidate && match.source === 'contact_name'
       );
       if (existingContactMatch) {
-        const done = await this.retryMatch(row, session, existingContactMatch);
+        const done = await this.retryMatch(row, session, owner, existingContactMatch);
         if (done) {
           return;
         }
       }
 
-      const created = await this.assignUsername(row, session, contactCandidate);
+      const created = await this.assignUsername(row, session, owner, contactCandidate);
       if (created) {
         await this.store.updateRecheck(row.id, {
           status: 'done',
@@ -234,9 +240,10 @@ export class WhatsappQrRecheckWorker {
   private async retryMatch(
     row: WhatsappQrRecheckQueueRecord,
     session: WhatsappQrSessionRecord,
+    owner: WhatsappQrOwner,
     match: WhatsappQrMatchRecord
   ): Promise<boolean> {
-    const assigned = await this.assignUsername(row, session, match.username);
+    const assigned = await this.assignUsername(row, session, owner, match.username);
     if (!assigned) {
       return false;
     }
@@ -257,27 +264,21 @@ export class WhatsappQrRecheckWorker {
   private async assignUsername(
     row: WhatsappQrRecheckQueueRecord,
     session: WhatsappQrSessionRecord,
+    owner: WhatsappQrOwner,
     username: string
   ): Promise<boolean> {
-    const owner = {
-      ownerId: session.ownerId,
-      ownerKey: session.ownerKey,
-      ownerLabel: session.ownerLabel,
-      pagina: session.pagina,
-      telefono: session.phoneE164
-    };
     const credentials = this.store.getPlatformCredential
-      ? await this.store.getPlatformCredential(row.ownerId, session.pagina)
-      : session.pagina === 'RdA'
+      ? await this.store.getPlatformCredential(row.ownerId, owner.pagina)
+      : owner.pagina === 'RdA'
         ? await this.store.getRdaCredential(row.ownerId)
         : null;
     if (!credentials) {
-      await this.reschedule(row, `missing_${session.pagina.toLowerCase()}_credentials`);
+      await this.reschedule(row, `missing_${owner.pagina.toLowerCase()}_credentials`);
       return false;
     }
 
     try {
-      const validator = getPlatformUserValidator(session.pagina, {
+      const validator = getPlatformUserValidator(owner.pagina, {
         RdA: this.rdaUserExistsChecker,
         ASN: this.asnUserExistsChecker
       });
@@ -289,7 +290,7 @@ export class WhatsappQrRecheckWorker {
         logger: this.logger
       });
       await this.playerPhoneStore.assignUsernameByPhone({
-        pagina: session.pagina,
+        pagina: owner.pagina,
         jugadorUsername: username,
         telefono: row.phoneE164,
         ownerContext: ownerContextFromWhatsappQrOwner(owner, session.phoneE164)
@@ -307,6 +308,31 @@ export class WhatsappQrRecheckWorker {
       await this.reschedule(row, error instanceof Error ? error.message : 'recheck_assignment_failed');
       return false;
     }
+  }
+
+  private async resolveRecheckOwner(
+    ownerId: string,
+    session: WhatsappQrSessionRecord
+  ): Promise<WhatsappQrOwner | null> {
+    if (session.ownerId === ownerId) {
+      return {
+        ownerId: session.ownerId,
+        ownerKey: session.ownerKey,
+        ownerLabel: session.ownerLabel,
+        pagina: session.pagina,
+        telefono: session.phoneE164
+      };
+    }
+    if (typeof this.store.listSessionRoutes !== 'function') return null;
+    const route = (await this.store.listSessionRoutes(session.id, true)).find((candidate) => candidate.ownerId === ownerId);
+    if (!route) return null;
+    return {
+      ownerId: route.ownerId,
+      ownerKey: route.ownerKey,
+      ownerLabel: route.ownerLabel,
+      pagina: route.pagina,
+      telefono: session.phoneE164
+    };
   }
 
   private async reschedule(row: WhatsappQrRecheckQueueRecord, lastError: string): Promise<void> {

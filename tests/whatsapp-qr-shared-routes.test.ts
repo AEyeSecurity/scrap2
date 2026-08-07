@@ -162,15 +162,37 @@ class SharedRouteStore {
   }
 }
 
-function buildService(input: { rdaFound: boolean; asnFound: boolean; asnError?: boolean; existingPhonePagina?: 'ASN' | 'RdA' | 'both' }) {
+function buildService(input: {
+  rdaFound: boolean;
+  asnFound: boolean;
+  asnError?: boolean;
+  existingPhonePagina?: 'ASN' | 'RdA' | 'both';
+  paired?: boolean;
+  dualAssignFails?: boolean;
+}) {
   const store = new SharedRouteStore();
+  if (input.paired) {
+    (store as any).getActivePlatformOwnerPair = vi.fn(async (rdaOwnerId: string, asnOwnerId: string) =>
+      rdaOwnerId === rdaOwner.ownerId && asnOwnerId === asnOwner.ownerId
+        ? { id: 'pair-rda-asn', rdaOwnerId, asnOwnerId, activeFrom: session.createdAt, activeTo: null }
+        : null
+    );
+  }
   const assignUsernameByPhone = vi.fn(async () => ({}));
+  const assignUsernameToPlatformOwnerPair = vi.fn(async () => {
+    if (input.dualAssignFails) throw new Error('pair transaction rolled back');
+    return [
+      { ownerId: rdaOwner.ownerId, pagina: 'RdA', ownerKey: rdaOwner.ownerKey },
+      { ownerId: asnOwner.ownerId, pagina: 'ASN', ownerKey: asnOwner.ownerKey }
+    ];
+  });
   const service = new WhatsappQrAutoAssignService({
     appConfig,
     logger,
     store: store as unknown as WhatsappQrStore,
     playerPhoneStore: {
       assignUsernameByPhone,
+      assignUsernameToPlatformOwnerPair,
       resolveOwnerContextByPhone: vi.fn(async ({ pagina }: { pagina: 'ASN' | 'RdA' }) => {
         if (input.existingPhonePagina !== pagina && input.existingPhonePagina !== 'both') return null;
         const routeOwner = pagina === 'ASN' ? asnOwner : rdaOwner;
@@ -185,7 +207,7 @@ function buildService(input: { rdaFound: boolean; asnFound: boolean; asnError?: 
       if (!input.asnFound) throw new AsnUserCheckError('NOT_FOUND', `${usuario} missing`);
     })
   });
-  return { service, store, assignUsernameByPhone };
+  return { service, store, assignUsernameByPhone, assignUsernameToPlatformOwnerPair };
 }
 
 describe('WhatsApp QR shared session routing', () => {
@@ -339,6 +361,51 @@ describe('WhatsApp QR shared session routing', () => {
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
 
+  it('assigns both platforms atomically when both routes belong to the same cashier pair', async () => {
+    const { service, store, assignUsernameByPhone, assignUsernameToPlatformOwnerPair } = buildService({
+      rdaFound: true,
+      asnFound: true,
+      paired: true
+    });
+    const result = await service.processMessage({
+      owner: rdaOwner,
+      session,
+      direction: 'outbound',
+      remoteJid: '5493512222222@s.whatsapp.net',
+      messageId: 'wamid-paired',
+      text: 'Usuario: player_123 Contraseña: secret'
+    });
+
+    expect(result.routeStatus).toBe('resolved');
+    expect(result.resolvedOwners.map((owner) => owner.ownerId)).toEqual([rdaOwner.ownerId, asnOwner.ownerId]);
+    expect(store.matches).toHaveLength(2);
+    expect(store.matches.every((match) => match.status === 'assigned')).toBe(true);
+    expect(assignUsernameToPlatformOwnerPair).toHaveBeenCalledTimes(1);
+    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the paired assignment transaction fails', async () => {
+    const { service, store, assignUsernameByPhone } = buildService({
+      rdaFound: true,
+      asnFound: true,
+      paired: true,
+      dualAssignFails: true
+    });
+    const result = await service.processMessage({
+      owner: rdaOwner,
+      session,
+      direction: 'outbound',
+      remoteJid: '5493512222222@s.whatsapp.net',
+      messageId: 'wamid-paired-failure',
+      text: 'Usuario: player_123 Contraseña: secret'
+    });
+
+    expect(result.routeStatus).toBe('error');
+    expect(result.resolvedOwners).toEqual([]);
+    expect(store.matches.every((match) => match.status === 'error')).toBe(true);
+    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+  });
+
   it('does not choose the healthy route when another route validation fails', async () => {
     const { service, assignUsernameByPhone } = buildService({ rdaFound: true, asnFound: false, asnError: true });
     const result = await service.processMessage({
@@ -424,6 +491,27 @@ describe('WhatsApp QR shared session routing', () => {
 
     expect(result.routeStatus).toBe('conflict');
     expect(result.message?.routeResolution).toBe('phone_linked_to_multiple_active_routes');
+    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+  });
+
+  it('resolves an exact phone linked in both paired platforms to both owners', async () => {
+    const { service, assignUsernameByPhone } = buildService({
+      rdaFound: true,
+      asnFound: true,
+      existingPhonePagina: 'both',
+      paired: true
+    });
+    const result = await service.processMessage({
+      owner: rdaOwner,
+      session,
+      direction: 'contact_sync',
+      remoteJid: '5493512222222@s.whatsapp.net',
+      contactName: null,
+      text: null
+    });
+
+    expect(result.routeStatus).toBe('resolved');
+    expect(result.resolvedOwners.map((owner) => owner.ownerId)).toEqual([rdaOwner.ownerId, asnOwner.ownerId]);
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
 });

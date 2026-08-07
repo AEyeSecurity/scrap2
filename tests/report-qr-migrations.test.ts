@@ -68,4 +68,15 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).toContain("('asn', 'asnlucas10:lucas1', 'lucas1')");
     expect(sql).toContain("('asn', 'asnlucas10:leandro', 'leandro')");
   });
+
+  it('pairs cashiers explicitly and assigns dual-platform QR identities transactionally', () => {
+    const sql = migration('20260807124500_whatsapp_qr_dual_platform_pairs.sql');
+    expect(sql).toContain('create table if not exists public.mastercrm_platform_owner_pairs');
+    expect(sql).toContain('create table if not exists public.mastercrm_whatsapp_qr_message_resolutions');
+    expect(sql).toContain('assign_username_to_platform_owner_pair_v1');
+    expect(sql).toContain('set_whatsapp_qr_message_routes_v1');
+    expect(sql).toContain("('luqui10:luqui10', 'asnlucas10:lucas10')");
+    expect(sql).not.toContain("('luqui10:lucas10', 'asnlucas10:lucas10')");
+    expect(sql).not.toContain("'asnlucas10:lucas5'");
+  });
 });

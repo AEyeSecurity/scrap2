@@ -671,7 +671,8 @@ const mastercrmWhatsappQrRouteResolveBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
     message_id: z.string().optional(),
-    owner_id: z.string().optional()
+    owner_id: z.string().optional(),
+    owner_ids: z.array(z.string()).min(1).max(2).optional()
   })
   .passthrough();
 
@@ -1861,7 +1862,7 @@ function parseMastercrmWhatsappQrRouteAddPayload(body: unknown): {
 }
 
 function parseMastercrmWhatsappQrRouteResolvePayload(body: unknown): {
-  data?: { userId: number; messageId: string; ownerId: string };
+  data?: { userId: number; messageId: string; ownerIds: string[] };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmWhatsappQrRouteResolveBodySchema.safeParse(body);
@@ -1871,11 +1872,15 @@ function parseMastercrmWhatsappQrRouteResolvePayload(body: unknown): {
   const issues: ValidationIssue[] = [];
   const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
   const messageId = resolveAliasStringField(parsed.data, ['message_id'], 'message_id', issues);
-  const ownerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues);
-  if (issues.length > 0 || !userId || !messageId || !ownerId) {
+  const legacyOwnerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues, { required: false });
+  const ownerIds = [...new Set([...(parsed.data.owner_ids ?? []), ...(legacyOwnerId ? [legacyOwnerId] : [])].map((value) => value.trim()).filter(Boolean))];
+  if (ownerIds.length < 1 || ownerIds.length > 2) {
+    issues.push({ path: 'owner_ids', message: 'owner_id or one/two owner_ids are required' });
+  }
+  if (issues.length > 0 || !userId || !messageId || ownerIds.length < 1 || ownerIds.length > 2) {
     return { issues };
   }
-  return { data: { userId, messageId, ownerId }, issues };
+  return { data: { userId, messageId, ownerIds }, issues };
 }
 
 function parseMastercrmOrganicQrBudgetPayload(body: unknown): {
@@ -3550,19 +3555,26 @@ export function createServer(
       if (!qrOwner.isAdmin) {
         return reply.code(403).send({ message: 'Solo un administrador QR puede resolver rutas', code: 'WHATSAPP_QR_ADMIN_REQUIRED' });
       }
-      const targetOwner = await findWhatsappQrOwnerById(parsed.data.ownerId);
-      if (!targetOwner) {
-        return reply.code(404).send({ message: 'No se encontró el owner de destino', code: 'WHATSAPP_QR_OWNER_NOT_FOUND' });
+      const targetOwners = (await Promise.all(parsed.data.ownerIds.map((ownerId) => findWhatsappQrOwnerById(ownerId))))
+        .filter((owner): owner is WhatsappQrOwner => Boolean(owner));
+      if (targetOwners.length !== parsed.data.ownerIds.length) {
+        return reply.code(404).send({ message: 'No se encontró un owner de destino', code: 'WHATSAPP_QR_OWNER_NOT_FOUND' });
       }
-      if (targetOwner.pagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(targetOwner.ownerId)) {
+      if (targetOwners.some((owner) => owner.pagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(owner.ownerId))) {
         return reply.code(403).send({ message: 'ASN QR no está habilitado para este owner', code: 'ASN_QR_NOT_ENABLED' });
       }
-      const routed = await getWhatsappQrManager().resolveMessageRoute(parsed.data.messageId, targetOwner);
+      const routed = await getWhatsappQrManager().resolveMessageRoutes(parsed.data.messageId, targetOwners);
       return reply.code(200).send({
         messageId: routed.id,
         routeStatus: routed.routeStatus,
         ownerId: routed.resolvedOwnerId,
         pagina: routed.resolvedPagina,
+        resolvedOwners: targetOwners.map((owner) => ({
+          ownerId: owner.ownerId,
+          pagina: owner.pagina,
+          ownerKey: owner.ownerKey,
+          ownerLabel: owner.ownerLabel
+        })),
         resolution: routed.routeResolution,
         resolvedAt: routed.routeResolvedAt
       });
@@ -3570,6 +3582,9 @@ export function createServer(
       const message = error instanceof Error ? error.message : String(error);
       if (message === 'WHATSAPP_QR_MESSAGE_NOT_FOUND' || message === 'WHATSAPP_QR_ROUTE_NOT_ACTIVE') {
         return reply.code(404).send({ message, code: message });
+      }
+      if (message === 'QR_PAIR_NOT_CONFIGURED') {
+        return reply.code(409).send({ message: 'Los owners no forman un par de cajero autorizado', code: message });
       }
       if (message.includes('already resolved') || message.includes('QR_ROUTE_CONFLICT')) {
         return reply.code(409).send({ message: 'El mensaje ya tiene una ruta diferente', code: 'QR_ROUTE_CONFLICT' });

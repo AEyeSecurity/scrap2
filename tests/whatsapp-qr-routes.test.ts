@@ -535,6 +535,70 @@ describe('WhatsApp QR CRM routes', () => {
     });
   });
 
+  it('lets a QR admin resolve one message to an explicit RdA/ASN owner pair', async () => {
+    await withEnv(
+      {
+        MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10',
+        WHATSAPP_QR_ASN_ENABLED_OWNER_IDS: 'owner-asn'
+      },
+      async () => {
+        const resolveMessageRoutes = vi.fn(async () => ({
+          id: 'message-dual',
+          routeStatus: 'resolved',
+          resolvedOwnerId: 'owner-admin',
+          resolvedPagina: 'RdA',
+          routeResolution: 'manual_paired_owner_selection',
+          routeResolvedAt: '2026-07-01T12:00:00.000Z'
+        }));
+        const whatsappQrManager = {
+          start: vi.fn(async () => undefined),
+          stop: vi.fn(async () => undefined),
+          listRoutes: vi.fn(async () => [
+            {
+              id: 'route-rda',
+              sessionId: 'session-admin',
+              ownerId: 'owner-admin',
+              ownerKey: 'luqui10:luqui10',
+              ownerLabel: 'Luqui10',
+              pagina: 'RdA',
+              status: 'active',
+              isPrimary: true
+            },
+            {
+              id: 'route-asn',
+              sessionId: 'session-admin',
+              ownerId: 'owner-asn',
+              ownerKey: 'asnlucas10:lucas10',
+              ownerLabel: 'Lucas10',
+              pagina: 'ASN',
+              status: 'active',
+              isPrimary: false
+            }
+          ]),
+          resolveMessageRoutes
+        };
+        const { app } = buildApp({ whatsappQrManager });
+        const response = await app.inject({
+          method: 'POST',
+          url: '/mastercrm-whatsapp-qr/route/resolve',
+          headers: authHeader(2, 'luqui'),
+          payload: { user_id: 2, message_id: 'message-dual', owner_ids: ['owner-admin', 'owner-asn'] }
+        });
+        await app.close();
+
+        expect(response.statusCode).toBe(200);
+        expect(resolveMessageRoutes).toHaveBeenCalledWith(
+          'message-dual',
+          expect.arrayContaining([
+            expect.objectContaining({ ownerId: 'owner-admin', pagina: 'RdA' }),
+            expect.objectContaining({ ownerId: 'owner-asn', pagina: 'ASN' })
+          ])
+        );
+        expect(response.json().resolvedOwners).toHaveLength(2);
+      }
+    );
+  });
+
   it('validates and assigns a reviewed phone inside the QR queue', async () => {
     await withEnv({ MASTERCRM_QR_ADMIN_OWNER_KEYS: 'luqui10:luqui10' }, async () => {
       const assignUsernameByPhone = vi.fn(async () => ({

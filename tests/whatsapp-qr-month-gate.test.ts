@@ -279,4 +279,27 @@ describe('WhatsappQrManager month gate + intake', () => {
     expect(harness.intakePendingCliente).toHaveBeenCalledTimes(1);
     expect(harness.intakePendingCliente).toHaveBeenCalledWith(expect.objectContaining({ pagina: 'ASN' }));
   });
+
+  it('materializes the same QR acquisition independently for both paired owners', async () => {
+    const harness = await startManager(
+      { listSessionRoutes: vi.fn(async () => []) },
+      {
+        message: { id: 'message-dual' },
+        match: null,
+        matches: [],
+        resolvedOwner: owner,
+        resolvedOwners: [owner, asnOwner],
+        routeStatus: 'resolved'
+      }
+    );
+
+    await harness.handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' });
+
+    expect(harness.store.recordChatMessage).toHaveBeenCalledTimes(2);
+    expect(harness.store.recordChatMessage).toHaveBeenCalledWith(expect.objectContaining({ ownerId: owner.ownerId }));
+    expect(harness.store.recordChatMessage).toHaveBeenCalledWith(expect.objectContaining({ ownerId: asnOwner.ownerId }));
+    expect(harness.intakePendingCliente).toHaveBeenCalledTimes(2);
+    expect(harness.intakePendingCliente).toHaveBeenCalledWith(expect.objectContaining({ pagina: 'RdA' }));
+    expect(harness.intakePendingCliente).toHaveBeenCalledWith(expect.objectContaining({ pagina: 'ASN' }));
+  });
 });
