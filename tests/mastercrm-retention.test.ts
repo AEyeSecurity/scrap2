@@ -141,6 +141,7 @@ describe('mastercrm retention', () => {
       'owner_client_events',
       'owner_client_monthly_facts',
       'owner_marketing_daily_budgets',
+      'owner_organic_qr_daily_budgets',
       'owner_financial_settings'
     ]) {
       expect(migration).not.toMatch(new RegExp(`delete\\s+from\\s+public\\.${businessTable}\\b`));
@@ -163,5 +164,22 @@ describe('mastercrm retention', () => {
     expect(migration).toMatch(/from\s+pg_temp\.mastercrm_distributed_ads\s+ads\s+where\s+ads\.channel/);
     expect(migration).toMatch(/group\s+by\s+ads\.channel,\s+ads\.campaign_name,\s+ads\.ad_key/);
     expect(migration).toContain('Budget overlaps existing ads:'.toLowerCase());
+  });
+
+  it('creates overlap-safe organic QR budgets without fake campaigns or ads', () => {
+    const migration = readFileSync(
+      join(__dirname, '..', 'db', 'migrations', '20260807120000_mastercrm_organic_qr_daily_budgets.sql'),
+      'utf8'
+    ).toLowerCase();
+
+    expect(migration).toContain('create table if not exists public.owner_organic_qr_daily_budgets');
+    expect(migration).toContain('daily_budget_ars numeric(14,2)');
+    expect(migration).toContain('prevent_owner_organic_qr_budget_overlap_v1');
+    expect(migration).toContain("errcode = '23p01'");
+    expect(migration).toContain('pg_advisory_xact_lock');
+    expect(migration).toContain('upsert_owner_organic_qr_daily_budget_v1');
+    expect(migration).not.toContain('campaign_key');
+    expect(migration).not.toContain('ad_key');
+    expect(migration).toContain('enable row level security');
   });
 });

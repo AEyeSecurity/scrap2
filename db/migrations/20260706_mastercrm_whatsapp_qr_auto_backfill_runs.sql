@@ -1,9 +1,17 @@
-alter table public.mastercrm_whatsapp_qr_recheck_queue
-  drop constraint if exists mastercrm_whatsapp_qr_recheck_queue_reason_check;
+do $$
+begin
+  if to_regclass('public.mastercrm_whatsapp_qr_recheck_queue') is null then
+    return;
+  end if;
 
-alter table public.mastercrm_whatsapp_qr_recheck_queue
-  add constraint mastercrm_whatsapp_qr_recheck_queue_reason_check
-  check (reason in ('outbound_candidate', 'contact_seen', 'technical_error', 'first_load', 'manual', 'backfill_no_signal'));
+  alter table public.mastercrm_whatsapp_qr_recheck_queue
+    drop constraint if exists mastercrm_whatsapp_qr_recheck_queue_reason_check;
+
+  alter table public.mastercrm_whatsapp_qr_recheck_queue
+    add constraint mastercrm_whatsapp_qr_recheck_queue_reason_check
+    check (reason in ('outbound_candidate', 'contact_seen', 'technical_error', 'first_load', 'manual', 'backfill_no_signal'));
+end;
+$$;
 
 create table if not exists public.mastercrm_whatsapp_qr_backfill_runs (
   id uuid primary key default gen_random_uuid(),

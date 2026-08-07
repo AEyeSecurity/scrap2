@@ -74,7 +74,10 @@ export function normalizeN8nRdaCredentialRows(rawRows: RawN8nSqliteRow[], pagina
     }
 
     const permission = readStringField(rawRow, ['Permiso', 'permiso', 'active', 'is_active']);
-    if (permission && !isTruthyPermission(permission)) {
+    if (pagina === 'ASN' && !['si', 'sí'].includes(permission.trim().toLowerCase())) {
+      continue;
+    }
+    if (pagina === 'RdA' && permission && !isTruthyPermission(permission)) {
       continue;
     }
 
@@ -104,8 +107,25 @@ export function normalizeN8nRdaCredentialRows(rawRows: RawN8nSqliteRow[], pagina
   }
 
   const deduped = new Map<string, N8nRdaCashierCredentialRow>();
+  const conflictingOwnerKeys = new Set<string>();
   for (const row of rows) {
-    deduped.set(row.ownerKey, row);
+    const previous = deduped.get(row.ownerKey);
+    if (!previous) {
+      deduped.set(row.ownerKey, row);
+      continue;
+    }
+    if (previous.loginUsername === row.loginUsername && previous.loginPassword === row.loginPassword) {
+      continue;
+    }
+
+    conflictingOwnerKeys.add(row.ownerKey);
+    skippedInvalid.push({
+      sourceRef: `${previous.sourceRef},${row.sourceRef}`,
+      reason: `conflicting_duplicate_credentials:${row.ownerKey}`
+    });
+  }
+  for (const ownerKey of conflictingOwnerKeys) {
+    deduped.delete(ownerKey);
   }
 
   return { rows: [...deduped.values()], skippedInvalid };
@@ -184,7 +204,12 @@ print(json.dumps(rows, ensure_ascii=False))
     throw new Error('n8n SQLite reader returned an invalid payload');
   }
 
-  return normalizeN8nRdaCredentialRows(rawRows, pagina).rows;
+  const normalized = normalizeN8nRdaCredentialRows(rawRows, pagina);
+  const conflicts = normalized.skippedInvalid.filter((row) => row.reason.startsWith('conflicting_duplicate_credentials:'));
+  if (conflicts.length > 0) {
+    throw new Error(`N8N_CREDENTIAL_CONFLICT: ${conflicts.map((row) => row.reason.split(':').slice(1).join(':')).join(', ')}`);
+  }
+  return normalized.rows;
 }
 
 export async function runN8nRdaCredentialSync(input: {
@@ -213,28 +238,18 @@ export async function runN8nRdaCredentialSync(input: {
     }
 
     if (!dryRun) {
-      if (pagina === 'RdA') {
-        await input.store.upsertRdaCredential({
-          ownerId: owner.ownerId,
-          ownerKey: row.ownerKey,
-          loginUsername: row.loginUsername,
-          loginPassword: row.loginPassword,
-          source: 'n8n',
-          sourceRef: row.sourceRef
-        });
-      } else if (input.store.upsertPlatformCredential) {
-        await input.store.upsertPlatformCredential({
-          ownerId: owner.ownerId,
-          ownerKey: row.ownerKey,
-          pagina,
-          loginUsername: row.loginUsername,
-          loginPassword: row.loginPassword,
-          source: 'n8n',
-          sourceRef: row.sourceRef
-        });
-      } else {
+      if (!input.store.upsertPlatformCredential) {
         throw new Error('Platform credential storage is unavailable');
       }
+      await input.store.upsertPlatformCredential({
+        ownerId: owner.ownerId,
+        ownerKey: row.ownerKey,
+        pagina,
+        loginUsername: row.loginUsername,
+        loginPassword: row.loginPassword,
+        source: 'n8n',
+        sourceRef: row.sourceRef
+      });
     }
 
     result.synced += 1;

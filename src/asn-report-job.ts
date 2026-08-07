@@ -11,7 +11,7 @@ import type { ReportBrowserSession } from './report-browser-session';
 import { resolveSiteAppConfig } from './site-profile';
 import type { AppConfig, AsnReportJobRequest, AsnReportJobResult, JobExecutionResult, JobStepResult } from './types';
 
-type AsnCdRow = {
+export type AsnCdRow = {
   label: string;
   cargado: string;
   descargado: string;
@@ -92,6 +92,31 @@ export function pickAsnDayCargadoRow(rows: AsnCdRow[], dayToken: string): AsnCdR
 
 export function parseAsnReportCargadoNumber(rawValue: string): number {
   return parseBalanceNumber(rawValue);
+}
+
+export function buildAsnReportResult(input: {
+  usuario: string;
+  reportDate: string;
+  monthRow: AsnCdRow | null;
+  dayRow: AsnCdRow | null;
+}): AsnReportJobResult {
+  if (!input.monthRow) {
+    throw new Error(`REPORT_DATE_UNAVAILABLE: ASN does not expose report data for ${input.reportDate}`);
+  }
+
+  const cargadoTexto = normalizeSpaces(input.monthRow.cargado);
+  const cargadoHoyTexto = input.dayRow ? normalizeSpaces(input.dayRow.cargado) : null;
+  return {
+    kind: 'asn-reporte-cargado-mes',
+    pagina: 'ASN',
+    usuario: input.usuario,
+    mesActual: input.reportDate.slice(0, 7),
+    fechaActual: input.reportDate,
+    cargadoTexto,
+    cargadoNumero: parseAsnReportCargadoNumber(cargadoTexto),
+    cargadoHoyTexto,
+    cargadoHoyNumero: cargadoHoyTexto === null ? null : parseAsnReportCargadoNumber(cargadoHoyTexto)
+  };
 }
 
 export function extractAsnMonthTotalCargadoFromText(pageText: string, monthToken: string): string | null {
@@ -347,7 +372,7 @@ async function readAsnReportSnapshot(
     .slice(0, 20)
     .join(' | ');
   throw new Error(
-    `Could not find row "TOTAL del mes ${monthToken}" in ASN Cargas y Descargas table. Last labels: ${lastLabels}. Text sample: ${normalizeSpaces(lastTextSnapshot).slice(0, 220)}`
+    `REPORT_DATE_UNAVAILABLE: ASN does not expose report data for ${dateToken}. Last labels: ${lastLabels}. Text sample: ${normalizeSpaces(lastTextSnapshot).slice(0, 220)}`
   );
 }
 
@@ -359,6 +384,10 @@ export async function runAsnReportJob(
 ): Promise<JobExecutionResult> {
   if (request.payload.pagina !== 'ASN') {
     throw new Error('ASN report job only supports pagina=ASN');
+  }
+  const dateToken = request.payload.reportDate?.trim();
+  if (!dateToken || !/^\d{4}-\d{2}-\d{2}$/.test(dateToken)) {
+    throw new Error('REPORT_DATE_UNAVAILABLE: ASN reportDate is required and must follow YYYY-MM-DD');
   }
 
   const jobLogger = logger.child({
@@ -466,7 +495,6 @@ export async function runAsnReportJob(
       throw new Error(`Step failed: ${gotoStep.name} (${gotoStep.error ?? 'unknown error'})`);
     }
 
-    const dateToken = request.payload.reportDate ?? getBuenosAiresDateToken();
     const monthToken = dateToken.slice(0, 7);
     let monthTotalRow: AsnCdRow | undefined;
     let dayTotalRow: AsnCdRow | null = null;
@@ -499,24 +527,12 @@ export async function runAsnReportJob(
       artifactDir,
       '04-read-cargado-report',
       async () => {
-        if (!monthTotalRow) {
-          throw new Error(`REPORT_DATE_UNAVAILABLE: ASN does not expose report data for ${dateToken}`);
-        }
-        const cargadoTexto = normalizeSpaces(monthTotalRow.cargado);
-        const cargadoNumero = parseAsnReportCargadoNumber(cargadoTexto);
-        const cargadoHoyTexto = normalizeSpaces(dayTotalRow?.cargado ?? '0,00');
-        const cargadoHoyNumero = parseAsnReportCargadoNumber(cargadoHoyTexto);
-        resultPayload = {
-          kind: 'asn-reporte-cargado-mes',
-          pagina: 'ASN',
+        resultPayload = buildAsnReportResult({
           usuario: request.payload.usuario,
-          mesActual: monthToken,
-          fechaActual: dateToken,
-          cargadoTexto,
-          cargadoNumero,
-          cargadoHoyTexto,
-          cargadoHoyNumero
-        };
+          reportDate: dateToken,
+          monthRow: monthTotalRow ?? null,
+          dayRow: dayTotalRow
+        });
       },
       captureSuccessArtifacts
     );

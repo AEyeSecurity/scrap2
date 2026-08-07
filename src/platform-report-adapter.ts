@@ -32,7 +32,8 @@ export function isPlatformAuthenticationFailure(error: unknown): boolean {
 }
 
 function resultFromExecution(pagina: PaginaCode, result: ReportJobResult | undefined): ReportJobResult {
-  if (!result || !['asn-reporte-cargado-mes', 'rda-reporte-deposito-total'].includes(result.kind)) {
+  const expectedKind = pagina === 'ASN' ? 'asn-reporte-cargado-mes' : 'rda-reporte-deposito-total';
+  if (!result || result.kind !== expectedKind || result.pagina !== pagina) {
     throw new Error(`Report job did not return a supported report result for pagina=${pagina}`);
   }
   return result;

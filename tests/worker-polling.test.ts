@@ -163,7 +163,7 @@ describe('adaptive worker polling', () => {
     const worker = new ReportRunWorker(
       store,
       logger,
-      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3 },
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: true },
       vi.fn().mockResolvedValue({
         kind: 'asn-reporte-cargado-mes',
         pagina: 'ASN',
@@ -195,7 +195,7 @@ describe('adaptive worker polling', () => {
     const worker = new ReportRunWorker(
       store,
       logger,
-      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3 },
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: true },
       vi.fn().mockResolvedValue({
         kind: 'asn-reporte-cargado-mes',
         pagina: 'ASN',
@@ -217,7 +217,7 @@ describe('adaptive worker polling', () => {
     expect(store.snapshotted).toEqual([]);
   });
 
-  it('cancels queued ASN work without opening a browser when ASN is disabled', async () => {
+  it('cancels queued ASN work without opening a browser when ASN is not explicitly enabled', async () => {
     vi.useFakeTimers();
     const store = new FakeReportRunStore();
     store.leases.push(buildReportLease({ pagina: 'ASN' }));
@@ -225,7 +225,7 @@ describe('adaptive worker polling', () => {
     const worker = new ReportRunWorker(
       store,
       createLogger('info', false),
-      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: false },
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3 },
       executor
     );
 

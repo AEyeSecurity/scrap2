@@ -115,6 +115,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
 
   const whatsappQrManager = {
     start: vi.fn(async () => undefined),
+    listRoutes: vi.fn(async () => []),
     getDashboard: vi.fn(async (owner, isAdmin) => ({
       isAdmin,
       runtimeEnabled: true,
@@ -308,7 +309,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
       }))
     } as any),
     whatsappQrStore: (overrides.whatsappQrStore as any) ?? ({
-      getRdaCredential: vi.fn(async () => ({
+      getPlatformCredential: vi.fn(async () => ({
         ownerId: 'owner-admin',
         ownerKey: 'luqui10:luqui10',
         pagina: 'RdA',
@@ -705,7 +706,7 @@ describe('WhatsApp QR CRM routes', () => {
       const { app } = buildApp({
         whatsappQrManager,
         whatsappQrStore: {
-          getRdaCredential: vi.fn(async () => ({
+          getPlatformCredential: vi.fn(async () => ({
             ownerId: 'owner-admin',
             ownerKey: 'luqui10:luqui10',
             pagina: 'RdA',

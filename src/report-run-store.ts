@@ -22,8 +22,6 @@ export interface CreateReportRunInput {
   pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
-  agente: string;
-  contrasenaAgente: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -101,7 +99,7 @@ export interface ReportRunStore {
   completeRunItem(lease: ReportRunLease, result: ReportJobResult): Promise<boolean | void>;
   failRunItem(lease: ReportRunLease, error: string): Promise<boolean | void>;
   renewRunItemLease?(lease: ReportRunLease, leaseSeconds: number): Promise<boolean>;
-  failRemainingRunItems?(runId: string, error: string): Promise<void>;
+  failRemainingRunItems?(runId: string, error: string, ownerId?: string): Promise<void>;
   upsertDailySnapshot(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   enqueueWhatsappQrRecheckFromSnapshot?(lease: ReportRunLease, result: ReportJobResult): Promise<void>;
   refreshRunStatus(runId: string): Promise<ReportRunRecord>;
@@ -321,45 +319,9 @@ function asLease(row: ClaimRow): ReportRunLease {
 export class SupabaseReportRunStore implements ReportRunStore {
   constructor(private readonly client: SupabaseClient) {}
 
-  private async redactRunSecret(runId: string): Promise<void> {
-    const { error } = await this.client
-      .from('report_runs')
-      .update({ contrasena_agente: REDACTED_REPORT_SECRET })
-      .eq('id', runId)
-      .neq('contrasena_agente', REDACTED_REPORT_SECRET);
-
-    if (error) {
-      throw mapPostgrestError(error, 'Could not redact report run secret');
-    }
-  }
-
   async createRun(input: CreateReportRunInput): Promise<ReportRunRecord> {
     const principalKey = normalizeKey(input.principalKey, 'principalKey');
     const reportDate = normalizeDate(input.reportDate);
-    const agente = normalizeText(input.agente, 'agente');
-    const contrasenaAgente = normalizeText(input.contrasenaAgente, 'contrasena_agente');
-
-    const { data: credentialData, error: credentialError } = await this.client
-      .from('mastercrm_report_credentials')
-      .upsert(
-        {
-          pagina: input.pagina,
-          principal_key: principalKey,
-          login_username: agente,
-          login_password: contrasenaAgente,
-          source: 'report_api',
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: 'pagina,principal_key' }
-      )
-      .select('id')
-      .single();
-    if (credentialError) {
-      throw mapPostgrestError(credentialError, 'Could not persist report credential');
-    }
-    if (typeof credentialData?.id !== 'string') {
-      throw new ReportRunStoreError('INTERNAL', 'Could not persist report credential');
-    }
 
     const { data, error } = await this.client
       .from('report_runs')
@@ -368,9 +330,9 @@ export class SupabaseReportRunStore implements ReportRunStore {
         principal_key: principalKey,
         report_date: reportDate,
         status: 'queued',
-        agente,
+        agente: '[per-owner-platform-credential]',
         contrasena_agente: REDACTED_REPORT_SECRET,
-        credential_id: credentialData.id,
+        credential_id: null,
         metadata: input.metadata ?? {}
       })
       .select('*')
@@ -493,9 +455,9 @@ export class SupabaseReportRunStore implements ReportRunStore {
     return Boolean(data);
   }
 
-  async failRemainingRunItems(runId: string, errorMessage: string): Promise<void> {
+  async failRemainingRunItems(runId: string, errorMessage: string, ownerId?: string): Promise<void> {
     const now = new Date().toISOString();
-    const { error } = await this.client
+    let query = this.client
       .from('report_run_items')
       .update({
         status: 'failed',
@@ -507,6 +469,10 @@ export class SupabaseReportRunStore implements ReportRunStore {
       })
       .eq('run_id', runId)
       .in('status', ['pending', 'retry_wait']);
+    if (ownerId) {
+      query = query.eq('owner_id', ownerId);
+    }
+    const { error } = await query;
     if (error) {
       throw mapPostgrestError(error, 'Could not fail remaining report run items');
     }
@@ -649,8 +615,6 @@ export class SupabaseReportRunStore implements ReportRunStore {
         error: item.lastError
       }))
     };
-
-    await this.redactRunSecret(runId);
 
     const { error } = await this.client.from('report_outbox').upsert(
       {

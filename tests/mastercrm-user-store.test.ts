@@ -5,6 +5,7 @@ import {
   attributionFromSourceContext,
   createMastercrmUserStore,
   hashMastercrmPassword,
+  isOrganicQrAcquisition,
   normalizeMastercrmNombre,
   normalizeMastercrmOwnerKey,
   normalizeMastercrmTelefono,
@@ -20,7 +21,7 @@ type QueryResult = {
 };
 
 class FakeQueryBuilder implements PromiseLike<QueryResult> {
-  private operation: 'select' | 'insert' | 'update' | 'upsert' = 'select';
+  private operation: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select';
   private readonly filters: Array<{ column: string; value: unknown }> = [];
 
   constructor(
@@ -85,6 +86,12 @@ class FakeQueryBuilder implements PromiseLike<QueryResult> {
     return this;
   }
 
+  delete(): FakeQueryBuilder {
+    this.operation = 'delete';
+    this.client.calls.push({ table: this.table, operation: 'delete' });
+    return this;
+  }
+
   range(from: number, to: number): FakeQueryBuilder {
     this.client.calls.push({ table: this.table, operation: 'range', from, to });
     return this;
@@ -110,7 +117,7 @@ class FakeSupabaseClient {
   public readonly calls: Array<Record<string, unknown>> = [];
   private readonly results = new Map<string, QueryResult[]>();
 
-  queue(table: string, operation: 'select' | 'insert' | 'update' | 'upsert' | 'rpc', result: QueryResult): void {
+  queue(table: string, operation: 'select' | 'insert' | 'update' | 'upsert' | 'delete' | 'rpc', result: QueryResult): void {
     const key = `${table}:${operation}`;
     const pending = this.results.get(key) ?? [];
     pending.push(result);
@@ -129,7 +136,7 @@ class FakeSupabaseClient {
 
   async dequeue(
     table: string,
-    operation: 'select' | 'insert' | 'update' | 'upsert' | 'rpc',
+    operation: 'select' | 'insert' | 'update' | 'upsert' | 'delete' | 'rpc',
     filters: Array<{ column: string; value: unknown }>
   ): Promise<QueryResult> {
     this.calls.push({ table, operation: `resolve-${operation}`, filters });
@@ -141,7 +148,8 @@ class FakeSupabaseClient {
       if (
         key === 'owner_new_client_monthly_facts:select' ||
         key === 'mastercrm_whatsapp_qr_messages:select' ||
-        key === 'mastercrm_whatsapp_qr_matches:select'
+        key === 'mastercrm_whatsapp_qr_matches:select' ||
+        key === 'owner_organic_qr_daily_budgets:select'
       ) {
         return { data: [], error: null };
       }
@@ -199,6 +207,17 @@ function createPostgrestError(code: string, message: string): PostgrestError {
 }
 
 describe('mastercrm user store helpers', () => {
+  it('does not classify a QR intake as organic when any event carries paid evidence', () => {
+    expect(isOrganicQrAcquisition('whatsapp_qr', [{ intakeTransport: 'whatsapp_qr' }, null])).toBe(true);
+    expect(
+      isOrganicQrAcquisition('whatsapp_qr', [
+        { intakeTransport: 'whatsapp_qr' },
+        { intakeTransport: 'whatsapp_qr', ctwaClid: 'ctwa-123', referralSourceId: 'ad-456' }
+      ])
+    ).toBe(false);
+    expect(isOrganicQrAcquisition('n8n_webhook', [{ intakeTransport: 'n8n_webhook' }])).toBe(false);
+  });
+
   function buildPagedRows(count: number): Array<{ id: number }> {
     return Array.from({ length: count }, (_, index) => ({ id: index + 1 }));
   }
@@ -700,6 +719,70 @@ describe('mastercrm marketing budgets', () => {
     ).rejects.toMatchObject({
       code: 'CONFLICT',
       message: 'Budget overlaps existing ads: meta_ctwa / Reino Dorado / Anuncio 1'
+    });
+  });
+
+  it('upserts an organic QR budget through the overlap-safe RPC', async () => {
+    const client = new FakeSupabaseClient();
+    queueActiveUserAndOwner(client);
+    client.queue('upsert_owner_organic_qr_daily_budget_v1', 'rpc', {
+      data: {
+        id: 'organic-budget-1',
+        daily_budget_ars: '1250.50',
+        active_from: '2026-08-01',
+        active_to: '2026-08-31',
+        updated_at: '2026-08-07T12:00:00.000Z'
+      },
+      error: null
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    const result = await store.upsertOrganicQrBudget({
+      userId: 999,
+      dailyBudgetArs: 1250.5,
+      activeFrom: '2026-08-01',
+      activeTo: '2026-08-31'
+    });
+
+    expect(result).toEqual({
+      id: 'organic-budget-1',
+      dailyBudgetArs: 1250.5,
+      activeFrom: '2026-08-01',
+      activeTo: '2026-08-31',
+      effectiveSpendArs: 38_765.5,
+      updatedAt: '2026-08-07T12:00:00.000Z'
+    });
+    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
+      name: 'upsert_owner_organic_qr_daily_budget_v1',
+      payload: {
+        p_owner_id: 'owner-lucas',
+        p_mastercrm_user_id: 999,
+        p_budget_id: null,
+        p_daily_budget_ars: 1250.5,
+        p_active_from: '2026-08-01',
+        p_active_to: '2026-08-31'
+      }
+    });
+  });
+
+  it('maps overlapping organic QR budget periods to a conflict', async () => {
+    const client = new FakeSupabaseClient();
+    queueActiveUserAndOwner(client);
+    client.queue('upsert_owner_organic_qr_daily_budget_v1', 'rpc', {
+      data: null,
+      error: createPostgrestError('23P01', 'Organic QR budget overlaps an existing period')
+    });
+
+    const store = createMastercrmUserStore(client as unknown as SupabaseClient);
+    await expect(
+      store.upsertOrganicQrBudget({
+        userId: 999,
+        dailyBudgetArs: 100,
+        activeFrom: '2026-08-15'
+      })
+    ).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: 'Could not persist owner organic QR budget'
     });
   });
 });
@@ -1234,7 +1317,7 @@ describe('mastercrm clients dashboard', () => {
           client_id: 'client-unknown',
           event_type: 'intake',
           occurred_at: '2026-06-12T13:00:00.000Z',
-          payload: {}
+          payload: { IntakeTransport: 'whatsapp_qr' }
         },
         {
           client_id: 'client-unmatched',
@@ -1377,6 +1460,18 @@ describe('mastercrm clients dashboard', () => {
       ],
       error: null
     });
+    client.queue('owner_organic_qr_daily_budgets', 'select', {
+      data: [
+        {
+          id: 'organic-budget',
+          daily_budget_ars: 20,
+          active_from: '2026-06-10',
+          active_to: '2026-06-18',
+          updated_at: '2026-06-18T12:00:00.000Z'
+        }
+      ],
+      error: null
+    });
 
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const analytics = await store.getMarketingAnalytics({
@@ -1386,14 +1481,24 @@ describe('mastercrm clients dashboard', () => {
     });
 
     expect(analytics.summary).toMatchObject({
-      investmentArs: 90,
+      investmentArs: 270,
       revenueArs: 1000,
       estimatedProfitArs: 500,
-      roiPct: 455.56,
-      roas: 11.11,
-      leads: 4,
+      roiPct: 85.19,
+      roas: 3.7,
+      leads: 3,
       depositors: 1
     });
+    expect(analytics.channels.find((channel) => channel.channel === 'organic')).toMatchObject({
+      label: 'Orgánico QR',
+      investmentSource: 'manual_budget',
+      investmentArs: 180,
+      leads: 1,
+      cplArs: 180
+    });
+    expect(analytics.organicQrBudgets).toEqual([
+      expect.objectContaining({ id: 'organic-budget', dailyBudgetArs: 20, effectiveSpendArs: 180 })
+    ]);
     expect(analytics.campaigns[0]).toMatchObject({
       campaignKey: 'campaign-1',
       campaignName: 'TESTEO V2',
@@ -1408,10 +1513,10 @@ describe('mastercrm clients dashboard', () => {
       hasOwnBudget: true
     });
     expect(analytics.audit).toMatchObject({
-      unknownLeads: 1,
+      unknownLeads: 0,
       landingUnmatchedLeads: 1,
-      organicLeads: 2,
-      excludedLeads: 0,
+      organicLeads: 1,
+      excludedLeads: 1,
       reentryLeads: 1,
       missingBudgetCampaigns: 0
     });
@@ -1424,6 +1529,22 @@ describe('mastercrm clients dashboard', () => {
         toDate: '2026-06-18'
       }
     ]);
+    expect(client.calls).toContainEqual(
+      expect.objectContaining({
+        table: 'mastercrm_whatsapp_qr_messages',
+        operation: 'resolve-select',
+        filters: expect.arrayContaining([{ column: 'route_status', value: 'resolved' }])
+      })
+    );
+    expect(client.calls).toContainEqual(
+      expect.objectContaining({
+        table: 'mastercrm_whatsapp_qr_matches',
+        operation: 'resolve-select',
+        filters: expect.arrayContaining([
+          { column: 'mastercrm_whatsapp_qr_messages.route_status', value: 'resolved' }
+        ])
+      })
+    );
   });
 
   it('paginates marketing acquisition events and snapshots beyond Supabase default limits', async () => {

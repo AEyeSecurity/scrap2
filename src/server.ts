@@ -48,9 +48,11 @@ import {
   normalizeMastercrmUsername,
   toMastercrmHttpError,
   type DistributeMastercrmMarketingBudgetsInput,
+  type DeleteMastercrmOrganicQrBudgetInput,
   type MastercrmLinkedOwnerRecord,
   type MastercrmUserRecord,
-  type MastercrmUserStore
+  type MastercrmUserStore,
+  type UpsertMastercrmOrganicQrBudgetInput
 } from './mastercrm-user-store';
 import {
   createMastercrmRetentionStoreFromEnv,
@@ -371,8 +373,6 @@ const createPlayerBodySchema = z
 const assignPhoneBodySchema = z.object({
   pagina: paginaCodeSchema,
   usuario: z.string().trim().min(1),
-  agente: z.string().trim().min(1),
-  contrasena_agente: z.string().trim().min(1),
   telefono: z.string().trim().min(1),
   ownerContext: ownerContextSchema
 });
@@ -453,13 +453,21 @@ const jobParamsSchema = z.object({
   id: z.string().min(1)
 });
 
-const reportRunBodySchema = z.object({
-  pagina: paginaCodeSchema,
-  principalKey: z.string().trim().min(1),
-  agente: z.string().trim().min(1),
-  contrasena_agente: z.string().trim().min(1),
-  reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
-});
+const reportRunBodySchema = z
+  .object({
+    pagina: paginaCodeSchema,
+    principalKey: z.string().trim().min(1),
+    reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+  })
+  .superRefine((value, ctx) => {
+    if (value.pagina === 'ASN' && !value.reportDate) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['reportDate'],
+        message: 'ASN reportDate is required'
+      });
+    }
+  });
 
 const reportRunParamsSchema = z.object({
   runId: z.string().trim().min(1)
@@ -516,7 +524,8 @@ const mastercrmLinkCashierBodySchema = z
 const mastercrmWhatsappQrBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
-    owner_id: z.string().optional()
+    owner_id: z.string().optional(),
+    session_owner_id: z.string().optional()
   })
   .passthrough();
 
@@ -573,8 +582,8 @@ const mastercrmAnalyticsBodySchema = z
     date_to: z.string().optional(),
     fecha_desde: z.string().optional(),
     fecha_hasta: z.string().optional(),
-    channel: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
-    canal: z.enum(['all', 'landing', 'meta_ctwa']).optional(),
+    channel: z.enum(['all', 'landing', 'meta_ctwa', 'organic']).optional(),
+    canal: z.enum(['all', 'landing', 'meta_ctwa', 'organic']).optional(),
     transport: z.enum(['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown']).optional(),
     transporte: z.enum(['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown']).optional(),
     campaign_key: z.string().optional(),
@@ -646,6 +655,36 @@ const mastercrmMarketingBudgetDeleteBodySchema = z
     user_id: z.union([z.string(), z.number().int()]).optional(),
     id: z.string().optional(),
     budget_id: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmWhatsappQrRouteAddBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    session_owner_id: z.string().optional(),
+    pagina: paginaCodeSchema.optional(),
+    owner_key: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmWhatsappQrRouteResolveBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    message_id: z.string().optional(),
+    owner_id: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmOrganicQrBudgetBodySchema = z
+  .object({
+    id: z.string().optional(),
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    daily_budget_ars: z.union([z.string(), z.number()]).optional(),
+    presupuesto_diario_ars: z.union([z.string(), z.number()]).optional(),
+    active_from: z.string().optional(),
+    active_to: z.string().nullable().optional(),
+    vigente_desde: z.string().optional(),
+    vigente_hasta: z.string().nullable().optional()
   })
   .passthrough();
 
@@ -1404,7 +1443,7 @@ function parseMastercrmWhatsappQrPayload(body: unknown): {
 
   const issues: ValidationIssue[] = [];
   const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
-  const ownerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues, { required: false });
+  const ownerId = resolveAliasStringField(parsed.data, ['owner_id', 'session_owner_id'], 'owner_id', issues, { required: false });
   if (issues.length > 0 || !userId) {
     return { issues };
   }
@@ -1579,7 +1618,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
     userId: number;
     dateFrom: string;
     dateTo: string;
-    channel?: 'all' | 'landing' | 'meta_ctwa';
+    channel?: 'all' | 'landing' | 'meta_ctwa' | 'organic';
     transport?: 'all' | 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown';
     campaignKey?: string;
     adKey?: string;
@@ -1801,6 +1840,92 @@ function parseMastercrmMarketingBudgetDeletePayload(body: unknown): {
   return { data: { userId, budgetId }, issues };
 }
 
+function parseMastercrmWhatsappQrRouteAddPayload(body: unknown): {
+  data?: { userId: number; sessionOwnerId: string; pagina: PaginaCode; ownerKey: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrRouteAddBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return { issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) };
+  }
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const sessionOwnerId = resolveAliasStringField(parsed.data, ['session_owner_id'], 'session_owner_id', issues);
+  const ownerKey = resolveAliasStringField(parsed.data, ['owner_key'], 'owner_key', issues, {
+    normalize: (value) => value.trim().toLowerCase()
+  });
+  if (issues.length > 0 || !userId || !sessionOwnerId || !parsed.data.pagina || !ownerKey) {
+    return { issues };
+  }
+  return { data: { userId, sessionOwnerId, pagina: parsed.data.pagina, ownerKey }, issues };
+}
+
+function parseMastercrmWhatsappQrRouteResolvePayload(body: unknown): {
+  data?: { userId: number; messageId: string; ownerId: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmWhatsappQrRouteResolveBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return { issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) };
+  }
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const messageId = resolveAliasStringField(parsed.data, ['message_id'], 'message_id', issues);
+  const ownerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues);
+  if (issues.length > 0 || !userId || !messageId || !ownerId) {
+    return { issues };
+  }
+  return { data: { userId, messageId, ownerId }, issues };
+}
+
+function parseMastercrmOrganicQrBudgetPayload(body: unknown): {
+  data?: UpsertMastercrmOrganicQrBudgetInput;
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmOrganicQrBudgetBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return {
+      issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
+    };
+  }
+
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const dailyBudgetArs = resolveAliasNumberField(
+    parsed.data,
+    ['daily_budget_ars', 'presupuesto_diario_ars'],
+    'daily_budget_ars',
+    issues,
+    { min: 0 }
+  );
+  const activeFrom = resolveAliasStringField(parsed.data, ['active_from', 'vigente_desde'], 'active_from', issues);
+  const activeTo = resolveAliasStringField(parsed.data, ['active_to', 'vigente_hasta'], 'active_to', issues, {
+    required: false
+  });
+
+  if (issues.length > 0 || !userId || dailyBudgetArs == null || !activeFrom) {
+    return { issues };
+  }
+
+  return {
+    data: {
+      ...(parsed.data.id ? { id: parsed.data.id } : {}),
+      userId,
+      dailyBudgetArs,
+      activeFrom,
+      ...(activeTo ? { activeTo } : {})
+    },
+    issues
+  };
+}
+
+function parseMastercrmOrganicQrBudgetDeletePayload(body: unknown): {
+  data?: DeleteMastercrmOrganicQrBudgetInput;
+  issues: ValidationIssue[];
+} {
+  return parseMastercrmMarketingBudgetDeletePayload(body);
+}
+
 function readServiceBearerToken(authorization: string | string[] | undefined): string | null {
   const value = Array.isArray(authorization) ? authorization[0] : authorization;
   const match = typeof value === 'string' ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
@@ -1822,6 +1947,15 @@ export function createServer(
       .map((value) => value.trim())
       .filter(Boolean)
   );
+  const reportAsnAllowedPrincipalKeys = new Set(
+    (process.env.REPORT_ASN_ALLOWED_PRINCIPAL_KEYS ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => normalizeMastercrmOwnerKey(value))
+  );
+  const isAsnPrincipalAllowed = (principalKey: string): boolean =>
+    reportAsnAllowedPrincipalKeys.size === 0 || reportAsnAllowedPrincipalKeys.has(normalizeMastercrmOwnerKey(principalKey));
   fastify.addHook('onRequest', async (request, reply) => {
     if (!reportApiToken || !request.url.startsWith('/reports/')) {
       return;
@@ -1880,7 +2014,7 @@ export function createServer(
   const reportWorkerEnabled =
     dependencies?.reportWorkerEnabled ??
     ((parseBooleanEnv(process.env.REPORT_WORKER_ENABLED) ?? true) && (Boolean(dependencies?.reportRunStore) || hasSupabaseConfig));
-  const reportAsnEnabled = dependencies?.reportAsnEnabled ?? (parseBooleanEnv(process.env.REPORT_ASN_ENABLED) ?? true);
+  const reportAsnEnabled = dependencies?.reportAsnEnabled ?? (parseBooleanEnv(process.env.REPORT_ASN_ENABLED) ?? false);
   const reportWorkerConcurrency =
     dependencies?.reportWorkerConcurrency ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_CONCURRENCY, 3);
   const reportWorkerPollMs = dependencies?.reportWorkerPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_POLL_MS, 5000);
@@ -2062,6 +2196,21 @@ export function createServer(
       owner,
       isAdmin: mastercrmQrAdminOwnerKeys.has(normalizeMastercrmOwnerKey(owner.ownerKey))
     };
+  }
+
+  async function findWhatsappQrOwnerById(ownerId: string): Promise<WhatsappQrOwner | null> {
+    const sessions = await getWhatsappQrStore().listSessions();
+    for (const sessionRecord of sessions) {
+      if (sessionRecord.ownerId === ownerId) {
+        return whatsappQrSessionOwner(sessionRecord);
+      }
+      const routes = await getWhatsappQrManager().listRoutes(whatsappQrSessionOwner(sessionRecord));
+      const route = routes.find((candidate) => candidate.ownerId === ownerId);
+      if (route) {
+        return route;
+      }
+    }
+    return null;
   }
 
   function getLandingSessionStore(): LandingSessionStore | null {
@@ -3093,6 +3242,56 @@ export function createServer(
     }
   });
 
+  fastify.post('/mastercrm-organic-qr-budgets', async (request, reply) => {
+    const parsed = parseMastercrmOrganicQrBudgetPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ message: 'Invalid payload', issues: parsed.issues });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const budget = await getMastercrmUserStore().upsertOrganicQrBudget(parsed.data);
+      return reply.code(200).send(budget);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-organic-qr-budgets error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
+  fastify.post('/mastercrm-organic-qr-budgets/delete', async (request, reply) => {
+    const parsed = parseMastercrmOrganicQrBudgetDeletePayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ message: 'Invalid payload', issues: parsed.issues });
+    }
+
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) {
+        return;
+      }
+
+      const result = await getMastercrmUserStore().deleteOrganicQrBudget(parsed.data);
+      return reply.code(200).send(result);
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) {
+        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
+      }
+
+      logger.error({ error }, 'Unexpected /mastercrm-organic-qr-budgets/delete error');
+      return reply.code(500).send({ message: 'Unexpected mastercrm auth error' });
+    }
+  });
+
   fastify.post('/mastercrm-link-cashier', async (request, reply) => {
     const parsed = parseMastercrmLinkCashierPayload(request.body);
     if (!parsed.data) {
@@ -3185,6 +3384,14 @@ export function createServer(
       for (const sessionRow of sessions) {
         availableOwnersMap.set(sessionRow.ownerId, whatsappQrSessionOwner(sessionRow));
       }
+      if (qrOwner.isAdmin) {
+        const routeGroups = await Promise.all(
+          sessions.map((sessionRow) => getWhatsappQrManager().listRoutes(whatsappQrSessionOwner(sessionRow)))
+        );
+        for (const route of routeGroups.flat()) {
+          availableOwnersMap.set(route.ownerId, route);
+        }
+      }
       const availableOwners = [...availableOwnersMap.values()].sort((left, right) =>
         left.ownerLabel.localeCompare(right.ownerLabel)
       );
@@ -3241,6 +3448,140 @@ export function createServer(
     }
   });
 
+  fastify.post('/mastercrm-whatsapp-qr/routes', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ message: 'Invalid payload', issues: parsed.issues });
+    }
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) return;
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) return;
+      const targetOwnerId = parsed.data.ownerId ?? qrOwner.owner.ownerId;
+      if (!qrOwner.isAdmin && targetOwnerId !== qrOwner.owner.ownerId) {
+        return reply.code(403).send({ message: 'No tenés permiso para ver otras rutas QR', code: 'WHATSAPP_QR_OWNER_FORBIDDEN' });
+      }
+      const targetOwner = targetOwnerId === qrOwner.owner.ownerId
+        ? qrOwner.owner
+        : await findWhatsappQrOwnerById(targetOwnerId);
+      if (!targetOwner) {
+        return reply.code(404).send({ message: 'No se encontró la sesión QR', code: 'WHATSAPP_QR_SESSION_NOT_FOUND' });
+      }
+      const routes = await getWhatsappQrManager().listRoutes(targetOwner);
+      return reply.code(200).send({
+        routes: routes.map((route) => ({
+          id: route.id,
+          sessionId: route.sessionId,
+          ...whatsappQrOwnerToResponse(route),
+          status: route.status,
+          isPrimary: route.isPrimary,
+          updatedAt: route.updatedAt
+        }))
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === 'WHATSAPP_QR_SESSION_NOT_FOUND') {
+        return reply.code(404).send({ message: 'No se encontró la sesión QR', code: message });
+      }
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/routes error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR routes error' });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/routes/add', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrRouteAddPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ message: 'Invalid payload', issues: parsed.issues });
+    }
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) return;
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) return;
+      if (!qrOwner.isAdmin) {
+        return reply.code(403).send({ message: 'Solo un administrador QR puede agregar rutas', code: 'WHATSAPP_QR_ADMIN_REQUIRED' });
+      }
+      const sessionOwner = await findWhatsappQrOwnerById(parsed.data.sessionOwnerId);
+      if (!sessionOwner) {
+        return reply.code(404).send({ message: 'No se encontró la sesión QR', code: 'WHATSAPP_QR_SESSION_NOT_FOUND' });
+      }
+      const routeOwner = await getWhatsappQrStore().resolveOwnerByKey(parsed.data.pagina, parsed.data.ownerKey);
+      if (!routeOwner) {
+        return reply.code(404).send({ message: 'No se encontró el owner de destino', code: 'WHATSAPP_QR_OWNER_NOT_FOUND' });
+      }
+      if (routeOwner.pagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(routeOwner.ownerId)) {
+        return reply.code(403).send({ message: 'ASN QR no está habilitado para este owner', code: 'ASN_QR_NOT_ENABLED' });
+      }
+      const route = await getWhatsappQrManager().addRoute(sessionOwner, routeOwner);
+      return reply.code(201).send({
+        route: {
+          id: route.id,
+          sessionId: route.sessionId,
+          ...whatsappQrOwnerToResponse(route),
+          status: route.status,
+          isPrimary: route.isPrimary,
+          updatedAt: route.updatedAt
+        }
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === 'WHATSAPP_QR_SESSION_NOT_FOUND') {
+        return reply.code(404).send({ message: 'No se encontró la sesión QR', code: message });
+      }
+      if (message === 'WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE') {
+        return reply.code(503).send({ message: 'Las rutas QR compartidas no están disponibles', code: message });
+      }
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/routes/add error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR route creation error' });
+    }
+  });
+
+  fastify.post('/mastercrm-whatsapp-qr/route/resolve', async (request, reply) => {
+    const parsed = parseMastercrmWhatsappQrRouteResolvePayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ message: 'Invalid payload', issues: parsed.issues });
+    }
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session) return;
+      const qrOwner = await requireWhatsappQrOwner(session, parsed.data.userId, reply);
+      if (!qrOwner) return;
+      if (!qrOwner.isAdmin) {
+        return reply.code(403).send({ message: 'Solo un administrador QR puede resolver rutas', code: 'WHATSAPP_QR_ADMIN_REQUIRED' });
+      }
+      const targetOwner = await findWhatsappQrOwnerById(parsed.data.ownerId);
+      if (!targetOwner) {
+        return reply.code(404).send({ message: 'No se encontró el owner de destino', code: 'WHATSAPP_QR_OWNER_NOT_FOUND' });
+      }
+      if (targetOwner.pagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(targetOwner.ownerId)) {
+        return reply.code(403).send({ message: 'ASN QR no está habilitado para este owner', code: 'ASN_QR_NOT_ENABLED' });
+      }
+      const routed = await getWhatsappQrManager().resolveMessageRoute(parsed.data.messageId, targetOwner);
+      return reply.code(200).send({
+        messageId: routed.id,
+        routeStatus: routed.routeStatus,
+        ownerId: routed.resolvedOwnerId,
+        pagina: routed.resolvedPagina,
+        resolution: routed.routeResolution,
+        resolvedAt: routed.routeResolvedAt
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === 'WHATSAPP_QR_MESSAGE_NOT_FOUND' || message === 'WHATSAPP_QR_ROUTE_NOT_ACTIVE') {
+        return reply.code(404).send({ message, code: message });
+      }
+      if (message.includes('already resolved') || message.includes('QR_ROUTE_CONFLICT')) {
+        return reply.code(409).send({ message: 'El mensaje ya tiene una ruta diferente', code: 'QR_ROUTE_CONFLICT' });
+      }
+      if (message === 'WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE') {
+        return reply.code(503).send({ message: 'Las rutas QR compartidas no están disponibles', code: message });
+      }
+      logger.error({ error }, 'Unexpected /mastercrm-whatsapp-qr/route/resolve error');
+      return reply.code(500).send({ message: 'Unexpected WhatsApp QR route resolution error' });
+    }
+  });
+
   fastify.post('/mastercrm-whatsapp-qr/assign', async (request, reply) => {
     const parsed = parseMastercrmWhatsappQrAssignPayload(request.body);
     if (!parsed.data) {
@@ -3269,9 +3610,7 @@ export function createServer(
       const qrStore = getWhatsappQrStore();
       const credentials = qrStore.getPlatformCredential
         ? await qrStore.getPlatformCredential(qrOwner.owner.ownerId, assignmentPagina)
-        : assignmentPagina === 'RdA'
-          ? await qrStore.getRdaCredential(qrOwner.owner.ownerId)
-          : null;
+        : null;
       if (!credentials) {
         return reply.code(409).send({
           message: `El cajero no tiene credenciales ${assignmentPagina} sincronizadas`,
@@ -3750,23 +4089,35 @@ export function createServer(
     }
 
     try {
-      if (parsed.data.pagina === 'ASN') {
-        await asnUserExistsChecker({
-          usuario: parsed.data.usuario,
-          agente: parsed.data.agente,
-          contrasenaAgente: parsed.data.contrasena_agente,
-          appConfig,
-          logger
-        });
-      } else {
-        await rdaUserExistsChecker({
-          usuario: parsed.data.usuario,
-          agente: parsed.data.agente,
-          contrasenaAgente: parsed.data.contrasena_agente,
-          appConfig,
-          logger
+      const platformStore = getWhatsappQrStore();
+      const owner = await platformStore.resolveOwnerByKey(parsed.data.pagina, parsed.data.ownerContext.ownerKey);
+      if (!owner) {
+        return reply.code(404).send({
+          message: 'No se encontró el owner indicado para la plataforma',
+          code: 'OWNER_NOT_FOUND'
         });
       }
+      const credentials = platformStore.getPlatformCredential
+        ? await platformStore.getPlatformCredential(owner.ownerId, parsed.data.pagina)
+        : null;
+      if (!credentials) {
+        return reply.code(409).send({
+          message: `El cajero no tiene credenciales ${parsed.data.pagina} sincronizadas`,
+          code: 'PLATFORM_CREDENTIAL_MISSING'
+        });
+      }
+
+      const validator = getPlatformUserValidator(parsed.data.pagina, {
+        RdA: rdaUserExistsChecker,
+        ASN: asnUserExistsChecker
+      });
+      await validator.validate({
+        usuario: parsed.data.usuario,
+        agente: credentials.loginUsername,
+        contrasenaAgente: credentials.loginPassword,
+        appConfig,
+        logger
+      });
 
       const store = getPlayerPhoneStore();
       const assignment = await store.assignUsernameByPhone({
@@ -3930,51 +4281,9 @@ export function createServer(
 
     const payload = parsed.data;
     if (payload.operacion === 'reporte') {
-      if (payload.pagina === 'ASN' && !reportAsnEnabled) {
-        return reply.code(503).send({
-          message: 'ASN report processing is temporarily disabled',
-          code: 'ASN_REPORTS_DISABLED'
-        });
-      }
-      const createdAt = new Date().toISOString();
-      const id = randomUUID();
-      const reportRequest: ReportJobRequest =
-        payload.pagina === 'RdA'
-          ? {
-              id,
-              jobType: 'report',
-              createdAt,
-              payload: {
-                pagina: 'RdA',
-                operacion: 'reporte',
-                usuario: payload.usuario,
-                agente: payload.agente,
-                contrasena_agente: payload.contrasena_agente,
-                ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
-              },
-              options: resolveDepositExecutionOptions(appConfig, payload)
-            }
-          : {
-              id,
-              jobType: 'report',
-              createdAt,
-              payload: {
-                pagina: 'ASN',
-                operacion: 'reporte',
-                usuario: payload.usuario,
-                agente: payload.agente,
-                contrasena_agente: payload.contrasena_agente,
-                ...(typeof payload.cantidad === 'number' ? { cantidad: payload.cantidad } : {})
-              },
-              options: resolveDepositExecutionOptions(appConfig, payload)
-            };
-
-      internalQueue.enqueue(reportRequest);
-
-      return reply.code(202).send({
-        jobId: id,
-        status: 'queued',
-        statusUrl: `/jobs/${id}`
+      return reply.code(410).send({
+        message: 'Use the authenticated /reports/{platform}/run endpoint with an explicit reportDate',
+        code: 'REPORT_LEGACY_ENDPOINT_DISABLED'
       });
     }
 
@@ -4048,13 +4357,17 @@ export function createServer(
           code: 'ASN_REPORTS_DISABLED'
         });
       }
+      if (payload.pagina === 'ASN' && !isAsnPrincipalAllowed(payload.principalKey)) {
+        return reply.code(403).send({
+          message: 'ASN report processing is not enabled for this principal',
+          code: 'ASN_REPORT_PRINCIPAL_NOT_ALLOWED'
+        });
+      }
       const store = getReportRunStore();
       const run = await store.createRun({
         pagina: payload.pagina,
         principalKey: payload.principalKey,
-        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
-        agente: payload.agente,
-        contrasenaAgente: payload.contrasena_agente
+        reportDate: payload.reportDate ?? getBuenosAiresDateToken()
       });
       runId = run.id;
       await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
@@ -4097,6 +4410,12 @@ export function createServer(
         code: 'ASN_REPORTS_DISABLED'
       });
     }
+    if (!isAsnPrincipalAllowed(parsed.data.principalKey)) {
+      return reply.code(403).send({
+        message: 'ASN report processing is not enabled for this principal',
+        code: 'ASN_REPORT_PRINCIPAL_NOT_ALLOWED'
+      });
+    }
 
     let runId: string | null = null;
     try {
@@ -4105,9 +4424,7 @@ export function createServer(
       const run = await store.createRun({
         pagina: 'ASN',
         principalKey: payload.principalKey,
-        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
-        agente: payload.agente,
-        contrasenaAgente: payload.contrasena_agente
+        reportDate: payload.reportDate as string
       });
       runId = run.id;
       await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
@@ -4151,9 +4468,7 @@ export function createServer(
       const run = await store.createRun({
         pagina: 'RdA',
         principalKey: payload.principalKey,
-        reportDate: payload.reportDate ?? getBuenosAiresDateToken(),
-        agente: payload.agente,
-        contrasenaAgente: payload.contrasena_agente
+        reportDate: payload.reportDate ?? getBuenosAiresDateToken()
       });
       runId = run.id;
       await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);

@@ -350,8 +350,8 @@ export interface AsnReportJobResult {
   fechaActual: string;
   cargadoTexto: string;
   cargadoNumero: number;
-  cargadoHoyTexto: string;
-  cargadoHoyNumero: number;
+  cargadoHoyTexto: string | null;
+  cargadoHoyNumero: number | null;
 }
 
 export interface RdaReportJobResult {

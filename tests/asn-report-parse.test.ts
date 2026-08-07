@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAsnReportResult,
   extractAsnDayCargadoFromText,
   getBuenosAiresDateToken,
   extractAsnMonthTotalCargadoFromText,
   getBuenosAiresMonthToken,
   parseAsnReportCargadoNumber,
   pickAsnDayCargadoRow,
-  pickAsnMonthTotalCargadoRow
+  pickAsnMonthTotalCargadoRow,
+  runAsnReportJob
 } from '../src/asn-report-job';
 
 describe('asn-report helpers', () => {
@@ -56,5 +58,62 @@ describe('asn-report helpers', () => {
     const text = 'algo 2026-03-06 42.000,00 0,00 42.000,00 TOTAL del mes 2026-03 172.044,00 20.017,35 152.026,65';
     expect(extractAsnDayCargadoFromText(text, '2026-03-06')).toBe('42.000,00');
     expect(extractAsnDayCargadoFromText(text, '2026-03-09')).toBeNull();
+  });
+
+  it('keeps the requested ASN daily amount unknown when the date row is absent', () => {
+    expect(
+      buildAsnReportResult({
+        usuario: 'player-asn',
+        reportDate: '2026-03-09',
+        monthRow: {
+          label: 'TOTAL del mes 2026-03',
+          cargado: '172.044,00',
+          descargado: '20.017,35',
+          resultado: '152.026,65'
+        },
+        dayRow: null
+      })
+    ).toEqual(
+      expect.objectContaining({
+        kind: 'asn-reporte-cargado-mes',
+        pagina: 'ASN',
+        cargadoNumero: 172044,
+        cargadoHoyTexto: null,
+        cargadoHoyNumero: null
+      })
+    );
+  });
+
+  it('returns REPORT_DATE_UNAVAILABLE instead of fabricating another month', () => {
+    expect(() =>
+      buildAsnReportResult({
+        usuario: 'player-asn',
+        reportDate: '2026-01-10',
+        monthRow: null,
+        dayRow: null
+      })
+    ).toThrow('REPORT_DATE_UNAVAILABLE:');
+  });
+
+  it('rejects an ASN report job without an explicit reportDate before opening a browser', async () => {
+    await expect(
+      runAsnReportJob(
+        {
+          id: 'missing-date',
+          jobType: 'report',
+          createdAt: '2026-08-07T00:00:00.000Z',
+          options: {} as any,
+          payload: {
+            pagina: 'ASN',
+            operacion: 'reporte',
+            usuario: 'player-asn',
+            agente: 'agent',
+            contrasena_agente: 'secret'
+          }
+        },
+        {} as any,
+        {} as any
+      )
+    ).rejects.toThrow('REPORT_DATE_UNAVAILABLE: ASN reportDate is required');
   });
 });

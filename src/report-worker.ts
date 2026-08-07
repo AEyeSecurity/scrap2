@@ -60,7 +60,7 @@ export class ReportRunWorker {
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.executor = executor;
     this.alertSender = options.alertSender;
-    this.asnEnabled = options.asnEnabled ?? true;
+    this.asnEnabled = options.asnEnabled ?? false;
     this.expectedScheduleStartHour = Math.min(23, Math.max(0, Math.trunc(options.expectedScheduleStartHour ?? 2)));
     this.expectedScheduleEndHour = Math.min(23, Math.max(0, Math.trunc(options.expectedScheduleEndHour ?? 6)));
     this.currentPollMs = this.pollMs;
@@ -193,7 +193,11 @@ export class ReportRunWorker {
         (message.startsWith('PLATFORM_AUTH_FAILED') || message === 'ASN_REPORTS_DISABLED') &&
         this.store.failRemainingRunItems
       ) {
-        await this.store.failRemainingRunItems(lease.runId, message);
+        await this.store.failRemainingRunItems(
+          lease.runId,
+          message,
+          message.startsWith('PLATFORM_AUTH_FAILED') ? lease.ownerId : undefined
+        );
         if (message.startsWith('PLATFORM_AUTH_FAILED')) {
           await this.sendOperationalAlert(lease, 'Autenticación de plataforma fallida', 'platform_auth_failed', message);
         }
@@ -293,7 +297,8 @@ export function createReportJobExecutor(
   const adapters = createPlatformReportAdapters(appConfig, logger, options, sessionManager);
   const authenticationFailures = new Map<string, PlatformAuthenticationError>();
   const executor: ReportJobExecutor = async (lease) => {
-    const previousAuthFailure = authenticationFailures.get(lease.runId);
+    const authenticationKey = `${lease.runId}:${lease.ownerId}`;
+    const previousAuthFailure = authenticationFailures.get(authenticationKey);
     if (previousAuthFailure) {
       throw previousAuthFailure;
     }
@@ -306,14 +311,17 @@ export function createReportJobExecutor(
           error instanceof Error ? error.message : String(error),
           { cause: error }
         );
-        authenticationFailures.set(lease.runId, authError);
+        authenticationFailures.set(authenticationKey, authError);
         throw authError;
       }
       throw error;
     }
   };
   executor.closeRun = async (runId) => {
-    authenticationFailures.delete(runId);
+    const runPrefix = `${runId}:`;
+    for (const key of authenticationFailures.keys()) {
+      if (key.startsWith(runPrefix)) authenticationFailures.delete(key);
+    }
     await sessionManager.closeRun(runId);
   };
   return executor;

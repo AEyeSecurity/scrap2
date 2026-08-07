@@ -14,6 +14,7 @@ import {
   ownerContextFromWhatsappQrOwner,
   type WhatsappQrChatState,
   type WhatsappQrContactRecord,
+  type WhatsappQrMessageRecord,
   type UpsertWhatsappQrSessionPatch,
   type WhatsappQrOwner,
   type WhatsappQrSessionRecord,
@@ -910,31 +911,66 @@ export class WhatsappQrManager {
               if (!phone) {
                 return;
               }
-              const state = await this.recordChatMessage(owner, phone, message);
-              if (!this.isCurrentMonthChat(state)) {
+              if (typeof this.options.store.listSessionRoutes !== 'function') {
+                const state = await this.recordChatMessage(owner, phone, message);
+                if (!this.isCurrentMonthChat(state)) {
+                  return;
+                }
+                await this.maybeRecordIntake(owner, currentSession, phone, state, message.sourceContext);
+                await this.options.autoAssignService.processMessage({
+                  owner,
+                  session: currentSession,
+                  ...message,
+                  clientPhoneE164: phone
+                });
                 return;
               }
-              await this.maybeRecordIntake(owner, currentSession, phone, state, message.sourceContext);
-              await this.options.autoAssignService.processMessage({
+              const result = await this.options.autoAssignService.processMessage({
                 owner,
                 session: currentSession,
                 ...message,
                 clientPhoneE164: phone
               });
+              if (!result.resolvedOwner) {
+                this.options.logger.info(
+                  { sessionId: currentSession.id, phoneE164: phone, routeStatus: result.routeStatus },
+                  'WhatsApp QR message awaiting route resolution'
+                );
+                return;
+              }
+              const state = await this.recordChatMessage(result.resolvedOwner, phone, message);
+              if (!this.isCurrentMonthChat(state)) {
+                return;
+              }
+              await this.maybeRecordIntake(result.resolvedOwner, currentSession, phone, state, message.sourceContext);
             });
           },
           onContact: async (contact) => {
             await runRuntimeHandler('contact processing', async () => {
-              const phone = await this.persistContact(owner, currentSession, contact);
+              const phone = contact.clientPhoneE164 ?? normalizeWhatsappJidPhone(contact.remoteJid);
               if (!phone) {
                 return;
               }
-              const state = await this.getChatState(owner, phone);
-              if (!this.isCurrentMonthChat(state)) {
+              if (typeof this.options.store.listSessionRoutes !== 'function') {
+                await this.persistContact(owner, currentSession, contact);
+                const state = await this.getChatState(owner, phone);
+                if (!this.isCurrentMonthChat(state)) {
+                  return;
+                }
+                await this.maybeRecordIntake(owner, currentSession, phone, state);
+                await this.options.autoAssignService.processMessage({
+                  owner,
+                  session: currentSession,
+                  direction: 'contact_sync',
+                  remoteJid: contact.remoteJid,
+                  clientPhoneE164: phone,
+                  contactName: contact.contactName,
+                  pushName: contact.pushName,
+                  text: null
+                });
                 return;
               }
-              await this.maybeRecordIntake(owner, currentSession, phone, state);
-              await this.options.autoAssignService.processMessage({
+              const result = await this.options.autoAssignService.processMessage({
                 owner,
                 session: currentSession,
                 direction: 'contact_sync',
@@ -944,6 +980,15 @@ export class WhatsappQrManager {
                 pushName: contact.pushName,
                 text: null
               });
+              if (!result.resolvedOwner) {
+                return;
+              }
+              await this.persistContact(result.resolvedOwner, currentSession, contact);
+              const state = await this.getChatState(result.resolvedOwner, phone);
+              if (!this.isCurrentMonthChat(state)) {
+                return;
+              }
+              await this.maybeRecordIntake(result.resolvedOwner, currentSession, phone, state);
             });
           }
         },
@@ -1155,6 +1200,92 @@ export class WhatsappQrManager {
       runtimeEnabled: this.runtimeEnabled,
       ownerSummaries
     };
+  }
+
+  async listRoutes(owner: WhatsappQrOwner): Promise<import('./whatsapp-qr-store').WhatsappQrSessionRouteRecord[]> {
+    const session = await this.options.store.getSessionByOwner(owner.ownerId);
+    if (!session) {
+      return [];
+    }
+    if (typeof this.options.store.listSessionRoutes !== 'function') {
+      return [{
+        id: `legacy:${session.id}:${owner.ownerId}`,
+        sessionId: session.id,
+        ...owner,
+        status: 'active',
+        isPrimary: true,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt
+      }];
+    }
+    return this.options.store.listSessionRoutes(session.id, false);
+  }
+
+  async addRoute(sessionOwner: WhatsappQrOwner, routeOwner: WhatsappQrOwner): Promise<import('./whatsapp-qr-store').WhatsappQrSessionRouteRecord> {
+    const session = await this.options.store.getSessionByOwner(sessionOwner.ownerId);
+    if (!session) {
+      throw new Error('WHATSAPP_QR_SESSION_NOT_FOUND');
+    }
+    if (typeof this.options.store.upsertSessionRoute !== 'function') {
+      throw new Error('WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE');
+    }
+    return this.options.store.upsertSessionRoute({
+      sessionId: session.id,
+      owner: routeOwner,
+      status: 'active',
+      isPrimary: routeOwner.ownerId === session.ownerId
+    });
+  }
+
+  async resolveMessageRoute(messageId: string, owner: WhatsappQrOwner): Promise<WhatsappQrMessageRecord> {
+    if (
+      typeof this.options.store.getMessageById !== 'function' ||
+      typeof this.options.store.listSessionRoutes !== 'function' ||
+      typeof this.options.store.setMessageRoute !== 'function'
+    ) {
+      throw new Error('WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE');
+    }
+    const message = await this.options.store.getMessageById(messageId);
+    if (!message) {
+      throw new Error('WHATSAPP_QR_MESSAGE_NOT_FOUND');
+    }
+    const routes = await this.options.store.listSessionRoutes(message.sessionId, true);
+    if (!routes.some((route) => route.ownerId === owner.ownerId && route.pagina === owner.pagina)) {
+      throw new Error('WHATSAPP_QR_ROUTE_NOT_ACTIVE');
+    }
+
+    const routed = await this.options.store.setMessageRoute({
+      messageId,
+      status: 'resolved',
+      ownerId: owner.ownerId,
+      resolution: 'manual_owner_selection'
+    });
+    const session = (await this.options.store.listSessions()).find((row) => row.id === message.sessionId);
+    if (!session) {
+      throw new Error('WHATSAPP_QR_SESSION_NOT_FOUND');
+    }
+
+    if (message.direction === 'contact_sync') {
+      await this.options.store.upsertContact({
+        sessionId: session.id,
+        ownerId: owner.ownerId,
+        phoneE164: message.clientPhoneE164,
+        contactName: message.contactName,
+        notify: message.pushName,
+        seenAt: message.eventAt
+      });
+      return routed;
+    }
+
+    const state = await this.recordChatMessage(owner, message.clientPhoneE164, {
+      direction: message.direction,
+      messageTimestamp: message.eventAt,
+      sourceContext: message.sourceContext
+    });
+    if (this.isCurrentMonthChat(state)) {
+      await this.maybeRecordIntake(owner, session, message.clientPhoneE164, state, message.sourceContext);
+    }
+    return routed;
   }
 
   async connect(owner: WhatsappQrOwner): Promise<WhatsappQrSessionRecord> {

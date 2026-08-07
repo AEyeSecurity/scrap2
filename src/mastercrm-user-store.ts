@@ -56,8 +56,9 @@ export interface UpsertMastercrmOwnerFinancialsInput {
   commissionPct: number;
 }
 
-export type MastercrmAnalyticsChannel = 'landing' | 'meta_ctwa';
-export type MastercrmAnalyticsClientChannel = MastercrmAnalyticsChannel | 'organic';
+export type MastercrmPaidAnalyticsChannel = 'landing' | 'meta_ctwa';
+export type MastercrmAnalyticsChannel = MastercrmPaidAnalyticsChannel | 'organic';
+export type MastercrmAnalyticsClientChannel = MastercrmAnalyticsChannel;
 export type MastercrmIntakeTransport = 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown';
 export type MastercrmMarketingBudgetLevel = 'ad';
 
@@ -74,7 +75,7 @@ export interface GetMastercrmAnalyticsInput {
 export interface UpsertMastercrmMarketingBudgetInput {
   userId: number;
   id?: string;
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   level: MastercrmMarketingBudgetLevel;
   campaignKey: string;
   campaignName: string;
@@ -87,7 +88,7 @@ export interface UpsertMastercrmMarketingBudgetInput {
 }
 
 export interface DistributeMastercrmMarketingBudgetAdInput {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   campaignKey: string;
   campaignName: string;
   adKey: string;
@@ -104,6 +105,19 @@ export interface DistributeMastercrmMarketingBudgetsInput {
 }
 
 export interface DeleteMastercrmMarketingBudgetInput {
+  userId: number;
+  budgetId: string;
+}
+
+export interface UpsertMastercrmOrganicQrBudgetInput {
+  userId: number;
+  id?: string;
+  dailyBudgetArs: number;
+  activeFrom: string;
+  activeTo?: string | null;
+}
+
+export interface DeleteMastercrmOrganicQrBudgetInput {
   userId: number;
   budgetId: string;
 }
@@ -278,13 +292,22 @@ export interface MastercrmClientsDashboardRecord {
 
 export interface MastercrmMarketingBudgetRecord {
   id: string;
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   level: MastercrmMarketingBudgetLevel;
   campaignKey: string;
   campaignName: string;
   adKey: string | null;
   adName: string | null;
   linkUrl: string | null;
+  dailyBudgetArs: number;
+  activeFrom: string;
+  activeTo: string | null;
+  effectiveSpendArs: number;
+  updatedAt: string | null;
+}
+
+export interface MastercrmOrganicQrBudgetRecord {
+  id: string;
   dailyBudgetArs: number;
   activeFrom: string;
   activeTo: string | null;
@@ -311,6 +334,7 @@ export interface MastercrmAnalyticsMetricsRecord {
 export interface MastercrmAnalyticsChannelRecord extends MastercrmAnalyticsMetricsRecord {
   channel: MastercrmAnalyticsChannel;
   label: string;
+  investmentSource: 'manual_budget' | null;
 }
 
 export interface MastercrmAnalyticsTransportRecord extends MastercrmAnalyticsMetricsRecord {
@@ -335,7 +359,7 @@ export interface MastercrmAnalyticsFunnelRecord {
 }
 
 export interface MastercrmAnalyticsCampaignRecord extends MastercrmAnalyticsMetricsRecord {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   campaignKey: string;
   campaignName: string;
   linkUrl: string | null;
@@ -345,7 +369,7 @@ export interface MastercrmAnalyticsCampaignRecord extends MastercrmAnalyticsMetr
 }
 
 export interface MastercrmAnalyticsAdRecord extends MastercrmAnalyticsMetricsRecord {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   campaignKey: string;
   campaignName: string;
   adKey: string;
@@ -405,6 +429,7 @@ export interface MastercrmAnalyticsRecord {
   ads: MastercrmAnalyticsAdRecord[];
   clients: MastercrmAnalyticsClientRecord[];
   budgets: MastercrmMarketingBudgetRecord[];
+  organicQrBudgets: MastercrmOrganicQrBudgetRecord[];
   audit: MastercrmAnalyticsAuditRecord;
 }
 
@@ -420,6 +445,8 @@ export interface MastercrmUserStore {
   upsertMarketingBudget(input: UpsertMastercrmMarketingBudgetInput): Promise<MastercrmMarketingBudgetRecord>;
   distributeMarketingBudgets(input: DistributeMastercrmMarketingBudgetsInput): Promise<MastercrmMarketingBudgetRecord[]>;
   deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }>;
+  upsertOrganicQrBudget(input: UpsertMastercrmOrganicQrBudgetInput): Promise<MastercrmOrganicQrBudgetRecord>;
+  deleteOrganicQrBudget(input: DeleteMastercrmOrganicQrBudgetInput): Promise<{ deleted: true; id: string }>;
 }
 
 interface MastercrmUserRow {
@@ -520,13 +547,21 @@ interface OwnerClientEventRow {
 
 interface OwnerMarketingDailyBudgetRow {
   id: string;
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   level: MastercrmMarketingBudgetLevel;
   campaign_key: string;
   campaign_name: string;
   ad_key: string | null;
   ad_name: string | null;
   link_url: string | null;
+  daily_budget_ars: number | string;
+  active_from: string;
+  active_to: string | null;
+  updated_at: string | null;
+}
+
+interface OwnerOrganicQrDailyBudgetRow {
+  id: string;
   daily_budget_ars: number | string;
   active_from: string;
   active_to: string | null;
@@ -591,7 +626,7 @@ export function normalizeMastercrmOwnerKey(value: string): string {
 
 function mapDatabaseError(error: DatabaseErrorLike, fallbackMessage: string): MastercrmUserStoreError {
   const code = error.code ?? '';
-  if (code === '23505') {
+  if (code === '23505' || code === '23P01') {
     return new MastercrmUserStoreError('CONFLICT', fallbackMessage);
   }
   if (code === '23514' || code === '22023' || code === '22P02') {
@@ -902,8 +937,18 @@ function pickFirstChronologicalEvent(rows: OwnerClientEventRow[]): OwnerClientEv
   return [...rows].sort((left, right) => compareIsoDatesDesc(right.occurred_at, left.occurred_at))[0] ?? null;
 }
 
+export function isOrganicQrAcquisition(
+  transport: MastercrmIntakeTransport,
+  sourceContexts: Array<MetaSourceContext | null>
+): boolean {
+  return (
+    transport === 'whatsapp_qr' &&
+    sourceContexts.every((sourceContext) => attributionFromSourceContext(sourceContext).kind === 'unknown')
+  );
+}
+
 interface AnalyticsAttributionShape {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   label: string;
   campaignKey: string;
   campaignName: string;
@@ -921,7 +966,7 @@ interface MutableAnalyticsMetrics {
 }
 
 interface MutableCampaignAnalytics extends MutableAnalyticsMetrics {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   campaignKey: string;
   campaignName: string;
   linkUrl: string | null;
@@ -931,7 +976,7 @@ interface MutableCampaignAnalytics extends MutableAnalyticsMetrics {
 }
 
 interface MutableAdAnalytics extends MutableAnalyticsMetrics {
-  channel: MastercrmAnalyticsChannel;
+  channel: MastercrmPaidAnalyticsChannel;
   campaignKey: string;
   campaignName: string;
   adKey: string;
@@ -1010,7 +1055,10 @@ function buildAnalyticsAttribution(attribution: MastercrmClientAttribution): Ana
 }
 
 function analyticsChannelLabel(channel: MastercrmAnalyticsChannel): string {
-  return channel === 'landing' ? 'Landing' : 'Meta WhatsApp';
+  if (channel === 'landing') {
+    return 'Landing';
+  }
+  return channel === 'meta_ctwa' ? 'Meta WhatsApp' : 'Orgánico QR';
 }
 
 function analyticsGroupKey(...parts: Array<string | null | undefined>): string {
@@ -1018,7 +1066,7 @@ function analyticsGroupKey(...parts: Array<string | null | undefined>): string {
 }
 
 function calculateBudgetOverlapSpend(
-  budget: Pick<OwnerMarketingDailyBudgetRow, 'daily_budget_ars' | 'active_from' | 'active_to'>,
+  budget: Pick<OwnerMarketingDailyBudgetRow | OwnerOrganicQrDailyBudgetRow, 'daily_budget_ars' | 'active_from' | 'active_to'>,
   dateFrom: string,
   dateTo: string
 ): number {
@@ -1030,6 +1078,21 @@ function calculateBudgetOverlapSpend(
 
   const dailyBudget = toFiniteNumber(budget.daily_budget_ars) ?? 0;
   return roundTo(dailyBudget * countInclusiveDays(overlapFrom, overlapTo));
+}
+
+function normalizeOrganicQrBudgetRow(
+  row: OwnerOrganicQrDailyBudgetRow,
+  dateFrom: string,
+  dateTo: string
+): MastercrmOrganicQrBudgetRecord {
+  return {
+    id: row.id,
+    dailyBudgetArs: toFiniteNumber(row.daily_budget_ars) ?? 0,
+    activeFrom: row.active_from,
+    activeTo: row.active_to,
+    effectiveSpendArs: calculateBudgetOverlapSpend(row, dateFrom, dateTo),
+    updatedAt: row.updated_at
+  };
 }
 
 function normalizeBudgetRow(row: OwnerMarketingDailyBudgetRow, dateFrom: string, dateTo: string): MastercrmMarketingBudgetRecord {
@@ -1133,9 +1196,8 @@ function finalizeAnalyticsMetrics(
     leads: metrics.leads,
     assigned: metrics.assigned,
     depositors: metrics.depositors,
-    cplArs: metrics.leads > 0 && investmentArs > 0 ? roundTo(investmentArs / metrics.leads) : null,
-    costPerDepositorArs:
-      metrics.depositors > 0 && investmentArs > 0 ? roundTo(investmentArs / metrics.depositors) : null,
+    cplArs: metrics.leads > 0 ? roundTo(investmentArs / metrics.leads) : null,
+    costPerDepositorArs: metrics.depositors > 0 ? roundTo(investmentArs / metrics.depositors) : null,
     leadToAssignedPct: metrics.leads > 0 ? roundTo((metrics.assigned / metrics.leads) * 100) : null,
     leadToDepositorPct: metrics.leads > 0 ? roundTo((metrics.depositors / metrics.leads) * 100) : null,
     averageRevenueArs: metrics.depositors > 0 ? roundTo(revenueArs / metrics.depositors) : null
@@ -1461,6 +1523,7 @@ function buildEmptyAnalytics(
     ads: [],
     clients: [],
     budgets: [],
+    organicQrBudgets: [],
     audit: {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
@@ -2146,8 +2209,13 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     const window = buildDateRangeWindow(input.dateFrom, input.dateTo);
     const requestedChannel = input.channel ?? 'all';
-    if (requestedChannel !== 'all' && requestedChannel !== 'landing' && requestedChannel !== 'meta_ctwa') {
-      throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing, meta_ctwa or all');
+    if (
+      requestedChannel !== 'all' &&
+      requestedChannel !== 'landing' &&
+      requestedChannel !== 'meta_ctwa' &&
+      requestedChannel !== 'organic'
+    ) {
+      throw new MastercrmUserStoreError('VALIDATION', 'channel must be landing, meta_ctwa, organic or all');
     }
     const requestedTransport = input.transport ?? 'all';
     if (!['all', 'whatsapp_qr', 'n8n_webhook', 'landing', 'unknown'].includes(requestedTransport)) {
@@ -2178,6 +2246,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       snapshotRows,
       financialSettingsResult,
       budgetSourceRows,
+      organicQrBudgetSourceRows,
       qrMessageRows,
       qrMatchRows
     ] = await Promise.all([
@@ -2241,12 +2310,23 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
             .order('id', { ascending: true }),
         'Could not read owner marketing budgets'
       ),
+      selectAllSupabasePages<OwnerOrganicQrDailyBudgetRow>(
+        () =>
+          this.client
+            .from('owner_organic_qr_daily_budgets')
+            .select('id, daily_budget_ars, active_from, active_to, updated_at')
+            .eq('owner_id', owner.id)
+            .order('active_from', { ascending: true })
+            .order('id', { ascending: true }),
+        'Could not read owner organic QR budgets'
+      ),
       selectAllSupabasePages<{ client_phone_e164: string; event_at: string }>(
         () =>
           this.client
             .from('mastercrm_whatsapp_qr_messages')
             .select('client_phone_e164, event_at')
             .eq('owner_id', owner.id)
+            .eq('route_status', 'resolved')
             .gte('event_at', window.startedAtIso)
             .lt('event_at', window.endedAtIso)
             .order('event_at', { ascending: true }),
@@ -2256,8 +2336,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         () =>
           this.client
             .from('mastercrm_whatsapp_qr_matches')
-            .select('client_phone_e164, status, event_at')
+            .select('client_phone_e164, status, event_at, mastercrm_whatsapp_qr_messages!inner(route_status)')
             .eq('owner_id', owner.id)
+            .eq('mastercrm_whatsapp_qr_messages.route_status', 'resolved')
             .gte('event_at', window.startedAtIso)
             .lt('event_at', window.endedAtIso)
             .order('event_at', { ascending: true }),
@@ -2375,6 +2456,23 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       })
       .map((row) => normalizeBudgetRow(row, window.dateFrom, window.dateTo));
 
+    const includeOrganic =
+      (requestedChannel === 'all' || requestedChannel === 'organic') &&
+      (requestedTransport === 'all' || requestedTransport === 'whatsapp_qr') &&
+      !campaignFilter &&
+      !adFilter;
+    const organicQrBudgetRows = organicQrBudgetSourceRows
+      .filter((row) => {
+        if (!includeOrganic || row.active_from > window.dateTo) {
+          return false;
+        }
+        return !row.active_to || row.active_to >= window.dateFrom;
+      })
+      .map((row) => normalizeOrganicQrBudgetRow(row, window.dateFrom, window.dateTo));
+    const organicQrInvestmentArs = roundTo(
+      organicQrBudgetRows.reduce((total, budget) => total + budget.effectiveSpendArs, 0)
+    );
+
     const adBudgetByKey = new Map<string, number>();
     for (const budget of budgetRows) {
       if (budget.effectiveSpendArs <= 0) {
@@ -2391,7 +2489,7 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const ads = new Map<string, MutableAdAnalytics>();
     const clients: MastercrmAnalyticsClientRecord[] = [];
     const organicSummary = makeMutableMetrics();
-    const includeOrganicInSummary = requestedChannel === 'all' && !campaignFilter && !adFilter;
+    organicSummary.investmentArs = organicQrInvestmentArs;
     const audit: MastercrmAnalyticsAuditRecord = {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
@@ -2422,21 +2520,17 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         continue;
       }
 
-      const attributionEvent = pickFirstAttributionEvent(clientEvents) ?? firstEvent;
-      const sourceContext = extractMetaSourceContext(attributionEvent.payload);
+      const firstSourceContext = extractMetaSourceContext(firstEvent.payload);
       const transport: MastercrmIntakeTransport =
-        sourceContext?.intakeTransport ?? (sourceContext?.landingSessionId ? 'landing' : 'unknown');
+        firstSourceContext?.intakeTransport ?? (firstSourceContext?.landingSessionId ? 'landing' : 'unknown');
       if (requestedTransport !== 'all' && transport !== requestedTransport) {
         continue;
       }
-      const attribution = attributionFromSourceContext(sourceContext);
-      const analyticsAttribution = buildAnalyticsAttribution(attribution);
-      if (!analyticsAttribution) {
-        if (attribution.kind === 'landing_unmatched') {
-          audit.landingUnmatchedLeads += 1;
-        } else {
-          audit.unknownLeads += 1;
-        }
+      const isOrganicQr = isOrganicQrAcquisition(
+        transport,
+        clientEvents.map((event) => extractMetaSourceContext(event.payload))
+      );
+      if (isOrganicQr) {
         audit.organicLeads += 1;
 
         const fact = factByClientId.get(clientId);
@@ -2445,16 +2539,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         const isAssigned = fact?.status_at_month_end === 'assigned';
         const isDepositor = revenueArs > 0;
 
-        if (includeOrganicInSummary) {
+        if (includeOrganic) {
           organicSummary.leads += 1;
           organicSummary.revenueArs = roundTo(organicSummary.revenueArs + revenueArs);
           organicSummary.assigned += isAssigned ? 1 : 0;
           organicSummary.depositors += isDepositor ? 1 : 0;
-        } else {
-          audit.excludedLeads += 1;
-        }
-
-        if (includeOrganicInSummary) {
           clients.push({
             clientId,
             username: fact?.username_at_month_end ?? usernameByClientId.get(clientId) ?? null,
@@ -2463,14 +2552,30 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
             channel: 'organic',
             transport,
             campaignKey: '',
-            campaignName: 'Sin atribucion',
+            campaignName: 'Orgánico QR',
             adKey: '',
-            adName: 'Sin atribucion',
+            adName: 'Orgánico QR',
             linkUrl: null,
             acquiredAt: firstEvent.occurred_at,
             revenueArs
           });
+        } else {
+          audit.excludedLeads += 1;
         }
+        continue;
+      }
+
+      const attributionEvent = pickFirstAttributionEvent(clientEvents) ?? firstEvent;
+      const sourceContext = extractMetaSourceContext(attributionEvent.payload);
+      const attribution = attributionFromSourceContext(sourceContext);
+      const analyticsAttribution = buildAnalyticsAttribution(attribution);
+      if (!analyticsAttribution) {
+        if (attribution.kind === 'landing_unmatched') {
+          audit.landingUnmatchedLeads += 1;
+        } else {
+          audit.unknownLeads += 1;
+        }
+        audit.excludedLeads += 1;
         continue;
       }
 
@@ -2647,12 +2752,16 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       channelMetrics.depositors += campaign.depositors;
       channelsByKey.set(campaign.channel, channelMetrics);
     }
+    if (includeOrganic && (requestedChannel === 'organic' || organicSummary.leads > 0 || organicQrBudgetRows.length > 0)) {
+      channelsByKey.set('organic', organicSummary);
+    }
 
     const finalizedChannels = [...channelsByKey.entries()]
       .map(([channel, metrics]) => ({
         ...finalizeAnalyticsMetrics(metrics, commissionPct),
         channel,
-        label: analyticsChannelLabel(channel)
+        label: analyticsChannelLabel(channel),
+        investmentSource: channel === 'organic' ? ('manual_budget' as const) : null
       }))
       .sort((left, right) => right.revenueArs - left.revenueArs);
 
@@ -2664,6 +2773,11 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       metrics.depositors += client.revenueArs > 0 ? 1 : 0;
       metrics.revenueArs = roundTo(metrics.revenueArs + client.revenueArs);
       transportsByKey.set(client.transport, metrics);
+    }
+    if (includeOrganic && organicQrInvestmentArs > 0) {
+      const qrMetrics = transportsByKey.get('whatsapp_qr') ?? makeMutableMetrics();
+      qrMetrics.investmentArs = roundTo(qrMetrics.investmentArs + organicQrInvestmentArs);
+      transportsByKey.set('whatsapp_qr', qrMetrics);
     }
     const transportLabels: Record<MastercrmIntakeTransport, string> = {
       whatsapp_qr: 'WhatsApp QR',
@@ -2709,13 +2823,6 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
       summaryMutable.assigned += channel.assigned;
       summaryMutable.depositors += channel.depositors;
     }
-    if (includeOrganicInSummary) {
-      summaryMutable.revenueArs = roundTo(summaryMutable.revenueArs + organicSummary.revenueArs);
-      summaryMutable.leads += organicSummary.leads;
-      summaryMutable.assigned += organicSummary.assigned;
-      summaryMutable.depositors += organicSummary.depositors;
-    }
-
     const summary = finalizeAnalyticsMetrics(summaryMutable, commissionPct);
     const funnelWithReport = clients.filter((client) => monthlySnapshotByClientId.has(client.clientId)).length;
     const funnelQrClients = clients.filter((client) => client.transport === 'whatsapp_qr');
@@ -2757,6 +2864,10 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
         if (left.channel !== right.channel) return left.channel.localeCompare(right.channel);
         if (left.campaignName !== right.campaignName) return left.campaignName.localeCompare(right.campaignName);
         return (left.adName ?? '').localeCompare(right.adName ?? '');
+      }),
+      organicQrBudgets: organicQrBudgetRows.sort((left, right) => {
+        if (left.activeFrom !== right.activeFrom) return left.activeFrom.localeCompare(right.activeFrom);
+        return left.id.localeCompare(right.id);
       }),
       audit
     };
@@ -2971,6 +3082,72 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
 
     if (error) {
       throw mapPostgrestError(error, 'Could not delete owner marketing budget');
+    }
+
+    return { deleted: true, id: input.budgetId };
+  }
+
+  async upsertOrganicQrBudget(input: UpsertMastercrmOrganicQrBudgetInput): Promise<MastercrmOrganicQrBudgetRecord> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+
+    const activeFrom = normalizeMastercrmDate(input.activeFrom, 'active_from');
+    const activeTo = input.activeTo ? normalizeMastercrmDate(input.activeTo, 'active_to') : null;
+    const dailyBudgetArs = Number(input.dailyBudgetArs);
+    if (activeTo && activeTo < activeFrom) {
+      throw new MastercrmUserStoreError('VALIDATION', 'active_to must be after active_from');
+    }
+    if (!Number.isFinite(dailyBudgetArs) || dailyBudgetArs < 0) {
+      throw new MastercrmUserStoreError('VALIDATION', 'daily_budget_ars must be a positive number or zero');
+    }
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const { data, error } = await this.client.rpc('upsert_owner_organic_qr_daily_budget_v1', {
+      p_owner_id: owner.id,
+      p_mastercrm_user_id: input.userId,
+      p_budget_id: nullableText(input.id),
+      p_daily_budget_ars: roundTo(dailyBudgetArs),
+      p_active_from: activeFrom,
+      p_active_to: activeTo
+    });
+    if (error) {
+      throw mapPostgrestError(error, 'Could not persist owner organic QR budget');
+    }
+
+    const row = (Array.isArray(data) ? data[0] : data) as OwnerOrganicQrDailyBudgetRow | null;
+    if (!row) {
+      throw new MastercrmUserStoreError('INTERNAL', 'Organic QR budget RPC returned no row');
+    }
+    return normalizeOrganicQrBudgetRow(row, activeFrom, activeTo ?? activeFrom);
+  }
+
+  async deleteOrganicQrBudget(input: DeleteMastercrmOrganicQrBudgetInput): Promise<{ deleted: true; id: string }> {
+    if (!Number.isInteger(input.userId) || input.userId < 1) {
+      throw new MastercrmUserStoreError('VALIDATION', 'user_id must be a positive integer');
+    }
+    if (!nullableText(input.budgetId)) {
+      throw new MastercrmUserStoreError('VALIDATION', 'budget_id is required');
+    }
+
+    await this.getActiveUserById(input.userId);
+    const owner = await this.getLinkedOwnerRow(input.userId);
+    if (!owner) {
+      throw new MastercrmUserStoreError('NOT_FOUND', 'Cashier owner link not found for user');
+    }
+
+    const { error } = await this.client
+      .from('owner_organic_qr_daily_budgets')
+      .delete()
+      .eq('owner_id', owner.id)
+      .eq('id', input.budgetId);
+    if (error) {
+      throw mapPostgrestError(error, 'Could not delete owner organic QR budget');
     }
 
     return { deleted: true, id: input.budgetId };

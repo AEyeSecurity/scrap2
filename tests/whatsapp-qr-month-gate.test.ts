@@ -12,6 +12,12 @@ const owner: WhatsappQrOwner = {
   ownerLabel: 'Luqui10',
   pagina: 'RdA'
 };
+const asnOwner: WhatsappQrOwner = {
+  ownerId: 'owner-asn',
+  ownerKey: 'asnlucas10:lucas10',
+  ownerLabel: 'Lucas10 ASN',
+  pagina: 'ASN'
+};
 
 const PHONE_JID = '5493511111111@s.whatsapp.net';
 const PHONE_E164 = '+5493511111111';
@@ -85,7 +91,10 @@ interface Harness {
   intakePendingCliente: ReturnType<typeof vi.fn>;
 }
 
-async function startManager(storeOverrides: Record<string, unknown> = {}): Promise<Harness> {
+async function startManager(
+  storeOverrides: Record<string, unknown> = {},
+  processResult: Record<string, unknown> = { message: null, match: null }
+): Promise<Harness> {
   const connected = buildSession('session-connected', 'connected');
   tempRootDir = await mkdtemp(join(tmpdir(), 'qr-gate-'));
   const sessionDir = join(tempRootDir, connected.runtimeSessionId);
@@ -97,7 +106,7 @@ async function startManager(storeOverrides: Record<string, unknown> = {}): Promi
     handlers = h;
     return { stop: vi.fn(async () => undefined) };
   });
-  const processMessage = vi.fn(async () => ({ message: null, match: null }));
+  const processMessage = vi.fn(async () => processResult);
   const intakePendingCliente = vi.fn(async () => ({
     cajeroId: 'c',
     jugadorId: 'j',
@@ -243,5 +252,31 @@ describe('WhatsappQrManager month gate + intake', () => {
     await withoutState.handlers.onContact({ remoteJid: PHONE_JID, contactName: 'juan123' });
     expect(withoutState.store.upsertContact).toHaveBeenCalled();
     expect(withoutState.processMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not materialize intake while a shared-session message is unrouted', async () => {
+    const harness = await startManager(
+      { listSessionRoutes: vi.fn(async () => []) },
+      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwner: null, routeStatus: 'unrouted' }
+    );
+
+    await harness.handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' });
+
+    expect(harness.processMessage).toHaveBeenCalledTimes(1);
+    expect(harness.store.recordChatMessage).not.toHaveBeenCalled();
+    expect(harness.intakePendingCliente).not.toHaveBeenCalled();
+  });
+
+  it('materializes intake only for the owner selected by shared routing', async () => {
+    const harness = await startManager(
+      { listSessionRoutes: vi.fn(async () => []) },
+      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwner: asnOwner, routeStatus: 'resolved' }
+    );
+
+    await harness.handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' });
+
+    expect(harness.store.recordChatMessage).toHaveBeenCalledWith(expect.objectContaining({ ownerId: asnOwner.ownerId }));
+    expect(harness.intakePendingCliente).toHaveBeenCalledTimes(1);
+    expect(harness.intakePendingCliente).toHaveBeenCalledWith(expect.objectContaining({ pagina: 'ASN' }));
   });
 });

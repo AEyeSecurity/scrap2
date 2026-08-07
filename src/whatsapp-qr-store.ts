@@ -1,12 +1,14 @@
 import { createClient, type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
 import { normalizeMastercrmOwnerKey } from './mastercrm-user-store';
 import { normalizePhone } from './player-phone-store';
-import type { OwnerContext, PaginaCode } from './types';
+import type { MetaSourceContext, OwnerContext, PaginaCode } from './types';
 
 export type WhatsappQrStatus = 'idle' | 'waiting_qr' | 'connected' | 'disconnected' | 'error';
 export type WhatsappQrDirection = 'inbound' | 'outbound' | 'contact_sync';
 export type WhatsappQrMatchSource = 'contact_name' | 'outbound_message';
 export type WhatsappQrMatchStatus = 'candidate' | 'validated' | 'assigned' | 'not_found' | 'conflict' | 'error';
+export type WhatsappQrSessionRouteStatus = 'active' | 'inactive';
+export type WhatsappQrMessageRouteStatus = 'unrouted' | 'resolved' | 'conflict' | 'not_found' | 'error';
 export type WhatsappQrRecheckReason =
   | 'outbound_candidate'
   | 'contact_seen'
@@ -48,6 +50,15 @@ export interface WhatsappQrSessionRecord {
   hasPlatformCredentials?: boolean;
 }
 
+export interface WhatsappQrSessionRouteRecord extends WhatsappQrOwner {
+  id: string;
+  sessionId: string;
+  status: WhatsappQrSessionRouteStatus;
+  isPrimary: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WhatsappQrMessageRecord {
   id: string;
   sessionId: string;
@@ -61,6 +72,12 @@ export interface WhatsappQrMessageRecord {
   matchSource: WhatsappQrMatchSource | null;
   messageTimestamp: string | null;
   eventAt: string;
+  routeStatus: WhatsappQrMessageRouteStatus;
+  resolvedOwnerId: string | null;
+  resolvedPagina: PaginaCode | null;
+  routeResolution: string | null;
+  routeResolvedAt: string | null;
+  sourceContext: MetaSourceContext | null;
   createdAt: string;
 }
 
@@ -208,6 +225,7 @@ export interface RecordWhatsappQrMessageInput {
   candidateUsername?: string | null;
   matchSource?: WhatsappQrMatchSource | null;
   messageTimestamp?: string | null;
+  sourceContext?: MetaSourceContext | null;
 }
 
 export interface CreateWhatsappQrMatchInput {
@@ -233,10 +251,24 @@ export interface WhatsappQrStore {
   listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]>;
   upsertSession(owner: WhatsappQrOwner, patch?: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
   updateSession(id: string, patch: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
+  listSessionRoutes?(sessionId: string, activeOnly?: boolean): Promise<WhatsappQrSessionRouteRecord[]>;
+  upsertSessionRoute?(input: {
+    sessionId: string;
+    owner: WhatsappQrOwner;
+    status?: WhatsappQrSessionRouteStatus;
+    isPrimary?: boolean;
+  }): Promise<WhatsappQrSessionRouteRecord>;
+  setMessageRoute?(input: {
+    messageId: string;
+    status: WhatsappQrMessageRouteStatus;
+    ownerId?: string | null;
+    resolution?: string | null;
+  }): Promise<WhatsappQrMessageRecord>;
   touchSessionHeartbeat?(id: string, heartbeatAt?: string): Promise<void>;
   listUnalertedDisconnectedSessions(): Promise<WhatsappQrSessionRecord[]>;
   markDisconnectedAlerted(sessionId: string, alertedAt: string): Promise<void>;
   recordMessage(input: RecordWhatsappQrMessageInput): Promise<WhatsappQrMessageRecord>;
+  getMessageById?(id: string): Promise<WhatsappQrMessageRecord | null>;
   upsertContact(input: {
     sessionId?: string | null;
     ownerId: string;
@@ -415,7 +447,31 @@ function asMessage(row: any): WhatsappQrMessageRecord {
     matchSource: row.match_source ?? null,
     messageTimestamp: row.message_timestamp ?? null,
     eventAt: row.event_at ?? row.message_timestamp ?? row.created_at,
+    routeStatus: row.route_status ?? 'resolved',
+    resolvedOwnerId: row.resolved_owner_id ?? row.owner_id ?? null,
+    resolvedPagina: row.resolved_pagina ? asPagina(row.resolved_pagina) : null,
+    routeResolution: row.route_resolution ?? null,
+    routeResolvedAt: row.route_resolved_at ?? null,
+    sourceContext:
+      row.source_context && typeof row.source_context === 'object' && !Array.isArray(row.source_context)
+        ? (row.source_context as MetaSourceContext)
+        : null,
     createdAt: row.created_at
+  };
+}
+
+function asSessionRoute(row: any): WhatsappQrSessionRouteRecord {
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    ownerId: row.owner_id,
+    ownerKey: row.owner_key,
+    ownerLabel: row.owner_label,
+    pagina: asPagina(row.pagina),
+    status: row.status,
+    isPrimary: Boolean(row.is_primary),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   };
 }
 
@@ -830,10 +886,24 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async getSessionByOwner(ownerId: string): Promise<WhatsappQrSessionRecord | null> {
+    const { data: routeData, error: routeError } = await this.client
+      .from('mastercrm_whatsapp_qr_session_routes')
+      .select('session_id')
+      .eq('owner_id', ownerId)
+      .eq('status', 'active')
+      .maybeSingle();
+    if (routeError) {
+      throw mapPostgrestError(routeError, 'Could not resolve WhatsApp QR session route');
+    }
+    const sessionId = typeof routeData?.session_id === 'string' ? routeData.session_id : null;
+    if (!sessionId) {
+      return null;
+    }
+
     const { data, error } = await this.client
       .from('mastercrm_whatsapp_qr_sessions')
       .select(SESSION_SELECT)
-      .eq('owner_id', ownerId)
+      .eq('id', sessionId)
       .maybeSingle();
 
     if (error) {
@@ -864,7 +934,21 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       .order('updated_at', { ascending: false });
 
     if (ownerIds && ownerIds.length > 0) {
-      query = query.in('owner_id', ownerIds);
+      const { data: routeData, error: routeError } = await this.client
+        .from('mastercrm_whatsapp_qr_session_routes')
+        .select('session_id')
+        .in('owner_id', ownerIds)
+        .eq('status', 'active');
+      if (routeError) {
+        throw mapPostgrestError(routeError, 'Could not resolve WhatsApp QR sessions by route owner');
+      }
+      const sessionIds = [...new Set(((routeData as Array<{ session_id?: string | null }> | null) ?? [])
+        .map((row) => row.session_id)
+        .filter((id): id is string => Boolean(id)))];
+      if (sessionIds.length === 0) {
+        return [];
+      }
+      query = query.in('id', sessionIds);
     }
 
     const { data, error } = await query;
@@ -895,8 +979,27 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     if (error) {
       throw mapPostgrestError(error, 'Could not upsert WhatsApp QR session');
     }
+    const session = asSession(data);
+    const { error: routeError } = await this.client
+      .from('mastercrm_whatsapp_qr_session_routes')
+      .upsert(
+        {
+          session_id: session.id,
+          owner_id: owner.ownerId,
+          pagina: owner.pagina,
+          owner_key: ownerKey,
+          owner_label: owner.ownerLabel.trim(),
+          status: 'active',
+          is_primary: true,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'session_id,owner_id' }
+      );
+    if (routeError) {
+      throw mapPostgrestError(routeError, 'Could not ensure primary WhatsApp QR session route');
+    }
 
-    return asSession(data);
+    return session;
   }
 
   async updateSession(id: string, patch: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord> {
@@ -912,6 +1015,75 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
 
     return asSession(data);
+  }
+
+  async listSessionRoutes(sessionId: string, activeOnly = true): Promise<WhatsappQrSessionRouteRecord[]> {
+    let query = this.client
+      .from('mastercrm_whatsapp_qr_session_routes')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('is_primary', { ascending: false })
+      .order('created_at', { ascending: true });
+    if (activeOnly) {
+      query = query.eq('status', 'active');
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      throw mapPostgrestError(error, 'Could not list WhatsApp QR session routes');
+    }
+    return ((data as any[] | null) ?? []).map(asSessionRoute);
+  }
+
+  async upsertSessionRoute(input: {
+    sessionId: string;
+    owner: WhatsappQrOwner;
+    status?: WhatsappQrSessionRouteStatus;
+    isPrimary?: boolean;
+  }): Promise<WhatsappQrSessionRouteRecord> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_session_routes')
+      .upsert(
+        {
+          session_id: input.sessionId,
+          owner_id: input.owner.ownerId,
+          pagina: input.owner.pagina,
+          owner_key: normalizeMastercrmOwnerKey(input.owner.ownerKey),
+          owner_label: input.owner.ownerLabel.trim(),
+          status: input.status ?? 'active',
+          is_primary: input.isPrimary ?? false,
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'session_id,owner_id' }
+      )
+      .select('*')
+      .single();
+    if (error) {
+      throw mapPostgrestError(error, 'Could not upsert WhatsApp QR session route');
+    }
+    return asSessionRoute(data);
+  }
+
+  async setMessageRoute(input: {
+    messageId: string;
+    status: WhatsappQrMessageRouteStatus;
+    ownerId?: string | null;
+    resolution?: string | null;
+  }): Promise<WhatsappQrMessageRecord> {
+    const { data, error } = await this.client.rpc('set_whatsapp_qr_message_route_v1', {
+      p_message_id: input.messageId,
+      p_status: input.status,
+      p_owner_id: input.ownerId ?? null,
+      p_resolution: nullableText(input.resolution)
+    });
+    if (error) {
+      throw mapPostgrestError(error, 'Could not set WhatsApp QR message route');
+    }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row) {
+      throw new WhatsappQrStoreError('NOT_FOUND', 'Could not read routed WhatsApp QR message');
+    }
+    return asMessage(row);
   }
 
   async touchSessionHeartbeat(id: string, heartbeatAt = new Date().toISOString()): Promise<void> {
@@ -954,31 +1126,67 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
   }
 
   async recordMessage(input: RecordWhatsappQrMessageInput): Promise<WhatsappQrMessageRecord> {
-    const { data, error } = await this.client
-      .from('mastercrm_whatsapp_qr_messages')
-      .upsert({
-        session_id: input.sessionId,
-        owner_id: input.ownerId,
-        direction: input.direction,
-        remote_jid: nullableText(input.remoteJid),
-        message_id: nullableText(input.messageId),
-        client_phone_e164: normalizePhone(input.clientPhoneE164),
-        contact_name: nullableText(input.contactName),
-        push_name: nullableText(input.pushName),
-        text_excerpt: nullableText(input.textExcerpt),
-        candidate_username: nullableText(input.candidateUsername),
-        match_source: input.matchSource ?? null,
-        message_timestamp: input.messageTimestamp ?? null,
-        event_at: input.messageTimestamp ?? new Date().toISOString()
-      }, { onConflict: 'session_id,message_id' })
-      .select('*')
-      .single();
+    const row = {
+      session_id: input.sessionId,
+      owner_id: input.ownerId,
+      direction: input.direction,
+      remote_jid: nullableText(input.remoteJid),
+      message_id: nullableText(input.messageId),
+      client_phone_e164: normalizePhone(input.clientPhoneE164),
+      contact_name: nullableText(input.contactName),
+      push_name: nullableText(input.pushName),
+      text_excerpt: nullableText(input.textExcerpt),
+      candidate_username: nullableText(input.candidateUsername),
+      match_source: input.matchSource ?? null,
+      message_timestamp: input.messageTimestamp ?? null,
+      event_at: input.messageTimestamp ?? new Date().toISOString(),
+      route_status: 'unrouted',
+      resolved_owner_id: null,
+      resolved_pagina: null,
+      route_resolution: null,
+      route_resolved_at: null,
+      source_context: input.sourceContext ?? null
+    };
+
+    if (row.message_id) {
+      const { error: insertError } = await this.client
+        .from('mastercrm_whatsapp_qr_messages')
+        .upsert(row, { onConflict: 'session_id,message_id', ignoreDuplicates: true });
+      if (insertError) {
+        throw mapPostgrestError(insertError, 'Could not record WhatsApp QR message');
+      }
+
+      const { data, error } = await this.client
+        .from('mastercrm_whatsapp_qr_messages')
+        .select('*')
+        .eq('session_id', input.sessionId)
+        .eq('message_id', row.message_id)
+        .single();
+      if (error) {
+        throw mapPostgrestError(error, 'Could not read WhatsApp QR message');
+      }
+      return asMessage(data);
+    }
+
+    const { data, error } = await this.client.from('mastercrm_whatsapp_qr_messages').insert(row).select('*').single();
 
     if (error) {
       throw mapPostgrestError(error, 'Could not record WhatsApp QR message');
     }
 
     return asMessage(data);
+  }
+
+  async getMessageById(id: string): Promise<WhatsappQrMessageRecord | null> {
+    const { data, error } = await this.client
+      .from('mastercrm_whatsapp_qr_messages')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read WhatsApp QR message');
+    }
+    return data ? asMessage(data) : null;
   }
 
   async upsertContact(input: {
@@ -1073,7 +1281,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
             error_message: nullableText(input.errorMessage),
             event_at: input.eventAt ?? new Date().toISOString()
           },
-          { onConflict: 'message_id,username,source', ignoreDuplicates: true }
+          { onConflict: 'message_id,owner_id,username,source', ignoreDuplicates: true }
         );
       if (insertError) {
         throw mapPostgrestError(insertError, 'Could not create WhatsApp QR match');
@@ -1083,6 +1291,7 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
         .from('mastercrm_whatsapp_qr_matches')
         .select('*')
         .eq('message_id', input.messageId)
+        .eq('owner_id', input.ownerId)
         .eq('username', input.username)
         .eq('source', input.source)
         .single();

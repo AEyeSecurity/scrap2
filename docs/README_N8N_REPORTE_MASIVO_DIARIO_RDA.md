@@ -28,8 +28,6 @@ Usa estos valores en el nodo `Edit Fields`:
 baseUrl                -> http://127.0.0.1:3000
 pagina                 -> RdA
 principalKey           -> luqui10
-agente                 -> elpity24
-contrasena_agente      -> <clave RdA guardada en n8n>
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
 pollSeconds            -> 20
 itemsLimit             -> 500
@@ -53,8 +51,6 @@ El nodo `HTTP - Crear corrida RdA` debe mandar:
 {
   "pagina": "RdA",
   "principalKey": "luqui10",
-  "agente": "elpity24",
-  "contrasena_agente": "<clave RdA guardada en n8n>",
   "reportDate": "2026-04-08"
 }
 ```
@@ -79,7 +75,7 @@ Ese valor se guarda en:
 - `rawResult.depositoTotalNumero`
 - `cargadoMes`
 
-`cargadoHoy` queda en `0` por diseno actual del job RdA. Para reportes RdA, mira `cargadoMes` o `rawResult.depositoTotalNumero`.
+`cargadoHoy` se deriva contra el snapshot anterior del mismo mes. Cuando no existe baseline confiable queda en `null`, nunca en un cero inventado.
 
 ## Usuarios que entran al reporte
 

@@ -102,8 +102,8 @@ class FakeReportRunStore implements ReportRunStore {
       principalKey: input.principalKey.toLowerCase(),
       reportDate: input.reportDate,
       status: 'queued',
-      agente: input.agente,
-      contrasenaAgente: input.contrasenaAgente,
+      agente: '[per-owner-platform-credential]',
+      contrasenaAgente: '[redacted]',
       requestedAt: new Date().toISOString(),
       startedAt: null,
       finishedAt: null,
@@ -501,7 +501,7 @@ describe('report run system', () => {
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
       undefined,
-      { reportRunStore: store, reportWorkerEnabled: false }
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
     );
 
     try {
@@ -523,6 +523,54 @@ describe('report run system', () => {
     }
   });
 
+  it('requires an explicit ASN report date before creating a run', async () => {
+    const store = createSeededStore();
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 1, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/reports/asn/run',
+      payload: { principalKey: 'asnlucas10' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.stringify(response.json())).toContain('ASN reportDate is required');
+    await server.close();
+  });
+
+  it('restricts an enabled ASN pilot to the configured principal allowlist', async () => {
+    const previous = process.env.REPORT_ASN_ALLOWED_PRINCIPAL_KEYS;
+    process.env.REPORT_ASN_ALLOWED_PRINCIPAL_KEYS = 'asnlucas10:lucas10';
+    const store = createSeededStore();
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 1, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
+    );
+
+    try {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/reports/asn/run',
+        payload: { principalKey: 'asnlucas10', reportDate: '2026-03-10' }
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().code).toBe('ASN_REPORT_PRINCIPAL_NOT_ALLOWED');
+    } finally {
+      await server.close();
+      if (previous === undefined) delete process.env.REPORT_ASN_ALLOWED_PRINCIPAL_KEYS;
+      else process.env.REPORT_ASN_ALLOWED_PRINCIPAL_KEYS = previous;
+    }
+  });
+
   it('creates a report run and lists seeded users from the current owner model', async () => {
     const store = createSeededStore();
     const logger = createLogger('silent', false);
@@ -532,7 +580,7 @@ describe('report run system', () => {
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
       undefined,
-      { reportRunStore: store, reportWorkerEnabled: false }
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
     );
 
     const response = await server.inject({
@@ -542,7 +590,7 @@ describe('report run system', () => {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
         agente: 'Pity24',
-        contrasena_agente: 'pityboca1509',
+        contrasena_agente: 'test-password',
         reportDate: '2026-03-10'
       }
     });
@@ -725,6 +773,7 @@ describe('report run system', () => {
       undefined,
       {
         reportRunStore: store,
+        reportAsnEnabled: true,
         reportWorkerEnabled: true,
         reportWorkerPollMs: 5,
         reportWorkerMaxPollMs: 100,
@@ -742,7 +791,7 @@ describe('report run system', () => {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
         agente: 'Pity24',
-        contrasena_agente: 'pityboca1509',
+        contrasena_agente: 'test-password',
         reportDate: '2026-03-10'
       }
     });
@@ -800,6 +849,7 @@ describe('report run system', () => {
       undefined,
       {
         reportRunStore: store,
+        reportAsnEnabled: true,
         reportWorkerEnabled: true,
         reportWorkerPollMs: 5,
         reportWorkerMaxPollMs: 100,
@@ -823,7 +873,7 @@ describe('report run system', () => {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
         agente: 'Pity24',
-        contrasena_agente: 'pityboca1509',
+        contrasena_agente: 'test-password',
         reportDate: '2026-03-11'
       }
     });
@@ -867,14 +917,14 @@ describe('report run system', () => {
       { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
       logger,
       undefined,
-      { reportRunStore: store, reportWorkerEnabled: false }
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
     );
 
     const payload = {
       pagina: 'ASN',
       principalKey: 'asnlucas10',
       agente: 'Pity24',
-      contrasena_agente: 'pityboca1509',
+      contrasena_agente: 'test-password',
       reportDate: '2026-03-10'
     };
 

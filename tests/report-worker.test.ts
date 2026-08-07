@@ -4,6 +4,7 @@ const { runRdaReportJob, runAsnReportJob } = vi.hoisted(() => ({
   runRdaReportJob: vi.fn(async () => ({
     result: {
       kind: 'rda-reporte-deposito-total',
+      pagina: 'RdA',
       depositoTotal: '$ 0',
       depositoTotalNumero: 0
     }
@@ -11,6 +12,7 @@ const { runRdaReportJob, runAsnReportJob } = vi.hoisted(() => ({
   runAsnReportJob: vi.fn(async () => ({
     result: {
       kind: 'asn-reporte-cargado-mes',
+      pagina: 'ASN',
       cargadoMes: '$ 0',
       cargadoMesNumero: 0
     }
@@ -121,6 +123,36 @@ describe('report worker executor', () => {
     );
   });
 
+  it('rejects an RdA-shaped result returned by the ASN adapter', async () => {
+    runAsnReportJob.mockResolvedValueOnce({
+      result: {
+        kind: 'rda-reporte-deposito-total',
+        pagina: 'RdA'
+      }
+    } as any);
+    const executor = createReportJobExecutor(
+      { siteProfiles: [] } as any,
+      { child: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() })) } as any,
+      { headless: true, debug: false, slowMo: 0, timeoutMs: 30_000 } as any,
+      {
+        withSession: vi.fn(async (_lease, action) => action({ runId: 'run-asn-kind', pagina: 'ASN' } as any)),
+        closeRun: vi.fn(async () => undefined)
+      }
+    );
+
+    await expect(
+      executor({
+        runId: 'run-asn-kind',
+        itemId: 'item-asn-kind',
+        pagina: 'ASN',
+        username: 'player-asn',
+        agente: 'agente',
+        contrasenaAgente: 'clave',
+        reportDate: '2026-05-02'
+      } as any)
+    ).rejects.toThrow('supported report result for pagina=ASN');
+  });
+
   it('caches a platform authentication failure so the run only attempts one login', async () => {
     runAsnReportJob.mockRejectedValueOnce(new Error('Authentication did not complete: login form is still visible'));
     const sessionManager = {
@@ -136,6 +168,7 @@ describe('report worker executor', () => {
     const lease = {
       runId: 'run-auth',
       itemId: 'item-1',
+      ownerId: 'owner-1',
       pagina: 'ASN',
       username: 'player-1',
       agente: 'bad-agent',
@@ -149,5 +182,11 @@ describe('report worker executor', () => {
     );
     expect(runAsnReportJob).toHaveBeenCalledOnce();
     expect(sessionManager.withSession).toHaveBeenCalledOnce();
+
+    await expect(
+      executor({ ...lease, ownerId: 'owner-2', itemId: 'item-3', username: 'player-3' })
+    ).resolves.toBeTruthy();
+    expect(runAsnReportJob).toHaveBeenCalledTimes(2);
+    expect(sessionManager.withSession).toHaveBeenCalledTimes(2);
   });
 });

@@ -9,6 +9,7 @@ import type { AppConfig, JobExecutionOptions, PaginaCode } from './types';
 
 export interface ReportBrowserSession {
   runId: string;
+  ownerId: string;
   pagina: PaginaCode;
   browser: Browser;
   context: BrowserContext;
@@ -29,32 +30,48 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
   ) {}
 
   async withSession<T>(lease: ReportRunLease, action: (session: ReportBrowserSession) => Promise<T>): Promise<T> {
-    let sessionPromise = this.sessions.get(lease.runId);
+    const sessionKey = this.sessionKey(lease);
+    let sessionPromise = this.sessions.get(sessionKey);
     if (!sessionPromise) {
       sessionPromise = this.createSession(lease);
-      this.sessions.set(lease.runId, sessionPromise);
-      sessionPromise.catch(() => this.sessions.delete(lease.runId));
+      this.sessions.set(sessionKey, sessionPromise);
+      sessionPromise.catch(() => this.sessions.delete(sessionKey));
     }
 
     const session = await sessionPromise;
     if (session.pagina !== lease.pagina) {
       throw new Error(`Report run ${lease.runId} cannot mix ${session.pagina} and ${lease.pagina}`);
     }
+    if (session.ownerId !== lease.ownerId) {
+      throw new Error(`Report session owner mismatch for run ${lease.runId}`);
+    }
     return action(session);
   }
 
   async closeRun(runId: string): Promise<void> {
-    const sessionPromise = this.sessions.get(runId);
-    this.sessions.delete(runId);
-    if (!sessionPromise) return;
-
-    try {
-      const session = await sessionPromise;
-      await session.context.close().catch(() => undefined);
-      await session.browser.close().catch(() => undefined);
-    } catch {
-      // Session creation already performs its own cleanup.
+    const runPrefix = `${runId}:`;
+    const sessionPromises: Promise<ReportBrowserSession>[] = [];
+    for (const [key, sessionPromise] of this.sessions) {
+      if (key.startsWith(runPrefix)) {
+        this.sessions.delete(key);
+        sessionPromises.push(sessionPromise);
+      }
     }
+    await Promise.all(
+      sessionPromises.map(async (sessionPromise) => {
+        try {
+          const session = await sessionPromise;
+          await session.context.close().catch(() => undefined);
+          await session.browser.close().catch(() => undefined);
+        } catch {
+          // Session creation already performs its own cleanup.
+        }
+      })
+    );
+  }
+
+  private sessionKey(lease: ReportRunLease): string {
+    return `${lease.runId}:${lease.ownerId}`;
   }
 
   private async createSession(lease: ReportRunLease): Promise<ReportBrowserSession> {
@@ -92,7 +109,7 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
       } finally {
         await page.close().catch(() => undefined);
       }
-      return { runId: lease.runId, pagina: lease.pagina, browser, context };
+      return { runId: lease.runId, ownerId: lease.ownerId, pagina: lease.pagina, browser, context };
     } catch (error) {
       await context.close().catch(() => undefined);
       await browser.close().catch(() => undefined);

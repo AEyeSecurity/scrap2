@@ -131,6 +131,10 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
   async getRdaCredential(): Promise<typeof this.credentials | null> {
     return this.credentials;
   }
+
+  async getPlatformCredential(): Promise<typeof this.credentials | null> {
+    return this.credentials;
+  }
 }
 
 describe('WhatsApp QR parser', () => {

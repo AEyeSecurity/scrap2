@@ -140,7 +140,7 @@ Notas:
   "operacion": "reporte",
   "usuario": "Ariel728",
   "agente": "luuucas10",
-  "contrasena_agente": "australopitecus12725"
+  "contrasena_agente": "<AGENT_PASSWORD>"
 }
 ```
 
@@ -151,7 +151,7 @@ Notas:
   "pagina": "ASN",
   "principalKey": "wf_123",
   "agente": "luuucas10",
-  "contrasena_agente": "australopitecus12725",
+  "contrasena_agente": "<AGENT_PASSWORD>",
   "reportDate": "2026-03-10"
 }
 ```

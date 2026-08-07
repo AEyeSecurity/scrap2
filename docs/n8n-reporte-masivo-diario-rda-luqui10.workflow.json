@@ -55,18 +55,6 @@
               "type": "string"
             },
             {
-              "id": "259da328-f653-4d74-99d6-55d7a80684fd",
-              "name": "agente",
-              "value": "={{ $env.RDA_REPORT_AGENT_USERNAME }}",
-              "type": "string"
-            },
-            {
-              "id": "65c311fd-7f39-4caf-8e71-3cdcc3950be8",
-              "name": "contrasena_agente",
-              "value": "={{ $env.RDA_REPORT_AGENT_PASSWORD }}",
-              "type": "string"
-            },
-            {
               "id": "388988d8-27d8-4cec-a5c2-07af8ddb6868",
               "name": "reportDate",
               "value": "={{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}",
@@ -105,7 +93,7 @@
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, agente: $json.agente, contrasena_agente: $json.contrasena_agente, reportDate: $json.reportDate }) }}",
+        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, reportDate: $json.reportDate }) }}",
         "options": {}
       },
       "id": "e1693647-c2f2-4cff-bdc1-644ec0658e89",

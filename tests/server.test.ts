@@ -6,14 +6,17 @@ import { RdaUserCheckError } from '../src/rda-user-check';
 import {
   MastercrmUserStoreError,
   type DeleteMastercrmMarketingBudgetInput,
+  type DeleteMastercrmOrganicQrBudgetInput,
   type GetMastercrmAnalyticsInput,
   type DistributeMastercrmMarketingBudgetsInput,
   type MastercrmClientsDashboardRecord,
   type MastercrmAnalyticsRecord,
   type MastercrmMarketingBudgetRecord,
+  type MastercrmOrganicQrBudgetRecord,
   type MastercrmUserCashierLinkRecord,
   type MastercrmUserStore,
-  type UpsertMastercrmMarketingBudgetInput
+  type UpsertMastercrmMarketingBudgetInput,
+  type UpsertMastercrmOrganicQrBudgetInput
 } from '../src/mastercrm-user-store';
 import { issueMastercrmSessionToken, verifyMastercrmSessionToken } from '../src/mastercrm-session';
 import { normalizeLandingMessageKey, type LandingSessionRecord, type LandingSessionStore } from '../src/landing-session-store';
@@ -22,6 +25,7 @@ import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conv
 import { PlayerPhoneStoreError, type PlayerPhoneStore } from '../src/player-phone-store';
 import { createServer } from '../src/server';
 import type { JobRequest, JobStoreEntry } from '../src/types';
+import type { WhatsappQrStore } from '../src/whatsapp-qr-store';
 
 const allowAsnUserExists = async (): Promise<void> => undefined;
 const MASTERCRM_TEST_SESSION_SECRET = 'server-test-mastercrm-session-secret-32';
@@ -45,6 +49,27 @@ function mastercrmAuthorization(userId: number, username = 'juan'): { authorizat
   );
 
   return { authorization: `Bearer ${session.token}` };
+}
+
+function createPlatformCredentialStore(): WhatsappQrStore {
+  return {
+    resolveOwnerByKey: async (pagina, ownerKey) => ({
+      ownerId: `owner-${pagina.toLowerCase()}-${ownerKey}`,
+      ownerKey,
+      ownerLabel: ownerKey,
+      pagina
+    }),
+    getPlatformCredential: async (ownerId, pagina) => ({
+      ownerId,
+      ownerKey: ownerId.replace(`owner-${pagina.toLowerCase()}-`, ''),
+      pagina,
+      loginUsername: 'synced-agent',
+      loginPassword: 'synced-password',
+      source: 'test',
+      sourceRef: null,
+      updatedAt: new Date().toISOString()
+    })
+  } as unknown as WhatsappQrStore;
 }
 
 async function withEnv<T>(values: Record<string, string | undefined>, callback: () => Promise<T>): Promise<T> {
@@ -499,6 +524,8 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   public readonly marketingBudgetInputs: UpsertMastercrmMarketingBudgetInput[] = [];
   public readonly distributeMarketingBudgetInputs: DistributeMastercrmMarketingBudgetsInput[] = [];
   public readonly deleteMarketingBudgetInputs: DeleteMastercrmMarketingBudgetInput[] = [];
+  public readonly organicQrBudgetInputs: UpsertMastercrmOrganicQrBudgetInput[] = [];
+  public readonly deleteOrganicQrBudgetInputs: DeleteMastercrmOrganicQrBudgetInput[] = [];
 
   public readonly linkInputs: Array<{
     userId: number;
@@ -691,6 +718,7 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     ads: [],
     clients: [],
     budgets: [],
+    organicQrBudgets: [],
     audit: {
       unknownLeads: 0,
       landingUnmatchedLeads: 0,
@@ -742,6 +770,21 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
     deleted: true,
     id: input.budgetId
   });
+
+  public upsertOrganicQrBudgetBehavior: (
+    input: UpsertMastercrmOrganicQrBudgetInput
+  ) => Promise<MastercrmOrganicQrBudgetRecord> = async (input) => ({
+    id: input.id ?? 'organic-budget-1',
+    dailyBudgetArs: input.dailyBudgetArs,
+    activeFrom: input.activeFrom,
+    activeTo: input.activeTo ?? null,
+    effectiveSpendArs: input.dailyBudgetArs,
+    updatedAt: '2026-08-07T12:00:00.000Z'
+  });
+
+  public deleteOrganicQrBudgetBehavior: (
+    input: DeleteMastercrmOrganicQrBudgetInput
+  ) => Promise<{ deleted: true; id: string }> = async (input) => ({ deleted: true, id: input.budgetId });
 
   async createUser(input: {
     username: string;
@@ -838,6 +881,16 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   async deleteMarketingBudget(input: DeleteMastercrmMarketingBudgetInput): Promise<{ deleted: true; id: string }> {
     this.deleteMarketingBudgetInputs.push(input);
     return this.deleteMarketingBudgetBehavior(input);
+  }
+
+  async upsertOrganicQrBudget(input: UpsertMastercrmOrganicQrBudgetInput): Promise<MastercrmOrganicQrBudgetRecord> {
+    this.organicQrBudgetInputs.push(input);
+    return this.upsertOrganicQrBudgetBehavior(input);
+  }
+
+  async deleteOrganicQrBudget(input: DeleteMastercrmOrganicQrBudgetInput): Promise<{ deleted: true; id: string }> {
+    this.deleteOrganicQrBudgetInputs.push(input);
+    return this.deleteOrganicQrBudgetBehavior(input);
   }
 }
 
@@ -1986,6 +2039,77 @@ describe('server routes', () => {
     expect(response.statusCode).toBe(200);
     expect(store.deleteMarketingBudgetInputs).toEqual([{ userId: 101, budgetId: 'budget-1' }]);
     expect(response.json()).toEqual({ deleted: true, id: 'budget-1' });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-organic-qr-budgets upserts a manual daily budget', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-organic-qr-budgets',
+      headers: mastercrmAuthorization(101),
+      payload: {
+        user_id: 101,
+        presupuesto_diario_ars: 2500,
+        vigente_desde: '2026-08-01',
+        vigente_hasta: '2026-08-31'
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.organicQrBudgetInputs).toEqual([
+      {
+        userId: 101,
+        dailyBudgetArs: 2500,
+        activeFrom: '2026-08-01',
+        activeTo: '2026-08-31'
+      }
+    ]);
+    expect(response.json()).toMatchObject({
+      id: 'organic-budget-1',
+      dailyBudgetArs: 2500,
+      activeFrom: '2026-08-01',
+      activeTo: '2026-08-31'
+    });
+
+    await server.close();
+  });
+
+  it('POST /mastercrm-organic-qr-budgets/delete deletes only the authenticated user budget', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
+    const logger = createLogger('silent', false);
+    const server = createServer(
+      appConfig,
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      logger,
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/mastercrm-organic-qr-budgets/delete',
+      headers: mastercrmAuthorization(101),
+      payload: { user_id: 101, budget_id: 'organic-budget-1' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(store.deleteOrganicQrBudgetInputs).toEqual([{ userId: 101, budgetId: 'organic-budget-1' }]);
+    expect(response.json()).toEqual({ deleted: true, id: 'organic-budget-1' });
 
     await server.close();
   });
@@ -3950,7 +4074,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/assign-phone validates payload and requires contrasena_agente', async () => {
+  it('POST /users/assign-phone validates payload and requires ownerContext', async () => {
     const queue = new FakeQueue();
     const store = new FakePlayerPhoneStore();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -3962,6 +4086,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -3996,6 +4121,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4041,6 +4167,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined,
         rdaUserExistsChecker: async (input) => {
           rdaChecks.push({
@@ -4069,7 +4196,7 @@ describe('server routes', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(rdaChecks).toEqual([{ usuario: 'player_1', agente: 'agent_1', contrasenaAgente: 'secret' }]);
+    expect(rdaChecks).toEqual([{ usuario: 'player_1', agente: 'synced-agent', contrasenaAgente: 'synced-password' }]);
     expect(store.assignByPhoneInputs).toHaveLength(1);
     expect(store.assignByPhoneInputs[0]?.pagina).toBe('RdA');
 
@@ -4088,6 +4215,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         rdaUserExistsChecker: async () => {
           throw new RdaUserCheckError('NOT_FOUND', 'No se ha encontrado el usuario missing_player');
         }
@@ -4133,6 +4261,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => {
           throw new AsnUserCheckError('NOT_FOUND', 'El usuario no existe');
         }
@@ -4184,6 +4313,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4235,6 +4365,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4291,6 +4422,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4339,6 +4471,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4385,6 +4518,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4431,6 +4565,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4478,6 +4613,7 @@ describe('server routes', () => {
       queue,
       {
         playerPhoneStore: store,
+        whatsappQrStore: createPlatformCredentialStore(),
         asnUserExistsChecker: async () => undefined
       }
     );
@@ -4711,7 +4847,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/deposit enqueues ASN report job for reporte', async () => {
+  it('POST /users/deposit rejects the legacy ASN report path', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -4731,23 +4867,13 @@ describe('server routes', () => {
         operacion: 'reporte',
         usuario: 'Ariel728',
         agente: 'luuucas10',
-        contrasena_agente: 'australopitecus12725'
+        contrasena_agente: 'test-password'
       }
     });
 
-    expect(response.statusCode).toBe(202);
-    const body = response.json();
-    const queued = queue.requests.find((item) => item.id === body.jobId);
-    expect(queued?.jobType).toBe('report');
-    if (queued?.jobType === 'report') {
-      expect(queued.payload.pagina).toBe('ASN');
-      expect(queued.payload.operacion).toBe('reporte');
-      expect(queued.payload.usuario).toBe('Ariel728');
-      expect(queued.options.headless).toBe(true);
-      expect(queued.options.debug).toBe(false);
-      expect(queued.options.slowMo).toBe(0);
-      expect(queued.options.timeoutMs).toBe(15_000);
-    }
+    expect(response.statusCode).toBe(410);
+    expect(response.json().code).toBe('REPORT_LEGACY_ENDPOINT_DISABLED');
+    expect(queue.requests).toHaveLength(0);
 
     await server.close();
   });
@@ -4956,7 +5082,7 @@ describe('server routes', () => {
     await server.close();
   });
 
-  it('POST /users/deposit does not run ASN user precheck for reporte', async () => {
+  it('POST /users/deposit does not run ASN user precheck for the disabled legacy report path', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -4984,14 +5110,14 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(202);
-    expect(queue.requests).toHaveLength(1);
-    expect(queue.requests[0]?.jobType).toBe('report');
+    expect(response.statusCode).toBe(410);
+    expect(response.json().code).toBe('REPORT_LEGACY_ENDPOINT_DISABLED');
+    expect(queue.requests).toHaveLength(0);
 
     await server.close();
   });
 
-  it('POST /users/deposit enqueues RdA report job for reporte', async () => {
+  it('POST /users/deposit rejects the legacy RdA report path', async () => {
     const queue = new FakeQueue();
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
     const logger = createLogger('silent', false);
@@ -5014,19 +5140,9 @@ describe('server routes', () => {
       }
     });
 
-    expect(response.statusCode).toBe(202);
-    const body = response.json();
-    const queued = queue.requests.find((item) => item.id === body.jobId);
-    expect(queued?.jobType).toBe('report');
-    if (queued?.jobType === 'report') {
-      expect(queued.payload.pagina).toBe('RdA');
-      expect(queued.payload.operacion).toBe('reporte');
-      expect(queued.payload.usuario).toBe('Ariel728');
-      expect(queued.options.headless).toBe(true);
-      expect(queued.options.debug).toBe(false);
-      expect(queued.options.slowMo).toBe(0);
-      expect(queued.options.timeoutMs).toBe(15_000);
-    }
+    expect(response.statusCode).toBe(410);
+    expect(response.json().code).toBe('REPORT_LEGACY_ENDPOINT_DISABLED');
+    expect(queue.requests).toHaveLength(0);
 
     await server.close();
   });
@@ -5196,17 +5312,12 @@ describe('server routes', () => {
         operacion: 'report',
         usuario: 'Ariel728',
         agente: 'luuucas10',
-        contrasena_agente: 'australopitecus12725'
+        contrasena_agente: 'test-password'
       }
     });
 
-    expect(reportOperationResponse.statusCode).toBe(202);
-    const reportBody = reportOperationResponse.json();
-    const reportQueued = queue.requests.find((item) => item.id === reportBody.jobId);
-    expect(reportQueued?.jobType).toBe('report');
-    if (reportQueued?.jobType === 'report') {
-      expect(reportQueued.payload.operacion).toBe('reporte');
-    }
+    expect(reportOperationResponse.statusCode).toBe(410);
+    expect(reportOperationResponse.json().code).toBe('REPORT_LEGACY_ENDPOINT_DISABLED');
 
     const badOperationResponse = await server.inject({
       method: 'POST',

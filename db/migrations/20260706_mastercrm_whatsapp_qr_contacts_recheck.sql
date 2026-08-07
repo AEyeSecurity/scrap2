@@ -22,7 +22,7 @@ create table if not exists public.mastercrm_whatsapp_qr_recheck_queue (
   session_id uuid null references public.mastercrm_whatsapp_qr_sessions(id) on delete set null,
   month_start date not null,
   phone_e164 text not null check (phone_e164 ~ '^\+[1-9][0-9]{7,14}$'),
-  reason text not null check (reason in ('outbound_candidate', 'contact_seen', 'technical_error', 'first_load', 'manual')),
+  reason text not null check (reason in ('outbound_candidate', 'contact_seen', 'technical_error', 'first_load', 'manual', 'backfill_no_signal')),
   status text not null default 'pending' check (status in ('pending', 'done', 'expired')),
   attempts integer not null default 0 check (attempts >= 0),
   next_run_at timestamptz not null default now(),

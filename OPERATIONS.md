@@ -391,8 +391,6 @@ Payload esperado:
 {
   "pagina": "ASN",
   "usuario": "cindy45",
-  "agente": "Pity24",
-  "contrasena_agente": "secret",
   "telefono": "+5492996051841",
   "ownerContext": {
     "ownerKey": "asnlucas10:lucas10",
@@ -406,7 +404,7 @@ Reglas de negocio:
 - la validacion ASN se hace antes de persistir
 - la asignacion sigue siendo por `ownerContext`
 - aplica tanto a `pending` como a `assigned`
-- el frontend no guarda credenciales ASN; las pide en cada submit
+- el frontend no recibe ni envía credenciales; el backend usa la credencial de plataforma sincronizada para el owner
 
 Mensajes HTTP visibles ya cerrados para esta ruta:
 
@@ -433,9 +431,7 @@ Smoke real validado para el flujo CRM:
 
 - `+5492325478199 -> gabrie16`
 - `+5492996051841 -> cindy45`
-- con login ASN:
-  - `agente = Pity24`
-  - `contrasena_agente = pityboca1509`
+- con credencial ASN almacenada fuera del payload y asociada al owner
 
 ### `POST /users/unassign-phone` consumido por el CRM
 
@@ -569,7 +565,7 @@ Validacion hecha el `2026-03-16` con imagen construida desde el `Dockerfile` y A
 Credenciales ASN usadas:
 
 - agente: `luuucas10`
-- password: `australopitecus12725`
+- password: `<AGENT_PASSWORD>`
 
 Operacion 1:
 
@@ -1017,7 +1013,7 @@ Estado validado el `2026-03-13` para principal `asnlucas10`:
 - `total_items = 59`
 - `done_items = 59`
 - `failed_items = 0`
-- `agente = Pity24`
+- autenticación resuelta mediante referencia de credencial, sin secretos en `report_runs`
 - `report_date = 2026-03-13`
 
 Estado resultante para `asnlucas10:lucas10` despues de esa corrida:

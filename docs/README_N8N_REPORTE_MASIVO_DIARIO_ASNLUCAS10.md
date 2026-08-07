@@ -19,8 +19,6 @@ Usa estos valores en un nodo `Edit Fields`:
 - `baseUrl`: URL publica de tu API. Ejemplo local: `http://127.0.0.1:3000`
 - `pagina`: `ASN`
 - `principalKey`: `asnlucas10`
-- `agente`: `Pity24`
-- `contrasena_agente`: `pityboca1509`
 - `reportDate`: `{{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}`
 - `pollSeconds`: `20`
 - `itemsLimit`: `500`
@@ -54,8 +52,6 @@ Carga manualmente estos campos:
 baseUrl                -> http://127.0.0.1:3000
 pagina                 -> ASN
 principalKey           -> asnlucas10
-agente                 -> Pity24
-contrasena_agente      -> pityboca1509
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
 pollSeconds            -> 20
 itemsLimit             -> 500
@@ -69,6 +65,7 @@ Tipo: `HTTP Request`
 
 - method: `POST`
 - url: `{{ $json.baseUrl }}/reports/asn/run`
+- header: `Authorization: Bearer {{ $env.REPORT_API_TOKEN }}`
 - send body as: `JSON`
 
 Body:
@@ -77,8 +74,6 @@ Body:
 {
   "pagina": "{{ $json.pagina }}",
   "principalKey": "{{ $json.principalKey }}",
-  "agente": "{{ $json.agente }}",
-  "contrasena_agente": "{{ $json.contrasena_agente }}",
   "reportDate": "{{ $json.reportDate }}"
 }
 ```
@@ -220,8 +215,6 @@ Este es el JSON efectivo que el nodo `HTTP - Crear corrida ASN` tiene que mandar
 {
   "pagina": "ASN",
   "principalKey": "asnlucas10",
-  "agente": "Pity24",
-  "contrasena_agente": "pityboca1509",
   "reportDate": "2026-03-10"
 }
 ```
@@ -239,5 +232,7 @@ Si falla:
 
 - revisa que `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` existan en el backend
 - revisa que `REPORT_WORKER_ENABLED=true`
+- revisa que exista una credencial ASN sincronizada para cada owner activo
+- revisa que `REPORT_API_TOKEN` coincida entre n8n y el backend
 - revisa que existan usuarios asociados a `principalKey = asnlucas10`
 - revisa conectividad entre n8n y `baseUrl`
