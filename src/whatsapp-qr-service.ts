@@ -269,13 +269,19 @@ export class WhatsappQrAutoAssignService {
       event.direction === 'outbound' ? extractUsernameFromOutboundMessage(event.text) : null;
     const candidateUsername = contactCandidate ?? outboundCandidate;
     const matchSource = contactCandidate ? 'contact_name' : outboundCandidate ? 'outbound_message' : null;
+    // Baileys contact-sync events do not carry a WhatsApp message id and may be
+    // replayed after every reconnect. Use a stable per-session contact key so
+    // the existing (session_id, message_id) constraint also makes them
+    // idempotent while preserving the first event_at as the acquisition time.
+    const messageId =
+      event.messageId ?? (event.direction === 'contact_sync' ? `contact_sync:${clientPhoneE164}` : null);
 
     let message = await this.options.store.recordMessage({
       sessionId: event.session.id,
       ownerId: event.owner.ownerId,
       direction: event.direction,
       remoteJid: event.remoteJid ?? null,
-      messageId: event.messageId ?? null,
+      messageId,
       clientPhoneE164,
       contactName: event.contactName ?? null,
       pushName: event.pushName ?? null,

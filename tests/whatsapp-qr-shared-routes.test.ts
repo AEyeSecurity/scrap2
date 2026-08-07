@@ -372,6 +372,28 @@ describe('WhatsApp QR shared session routing', () => {
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
 
+  it('stores a replayed contact sync without a WhatsApp message id exactly once', async () => {
+    const { service, store, assignUsernameByPhone } = buildService({ rdaFound: true, asnFound: true });
+    const event = {
+      owner: rdaOwner,
+      session,
+      direction: 'contact_sync' as const,
+      remoteJid: '5493513333333@s.whatsapp.net',
+      contactName: null,
+      pushName: 'Contacto sin usuario',
+      text: null
+    };
+
+    const first = await service.processMessage(event);
+    const replay = await service.processMessage(event);
+
+    expect(first.routeStatus).toBe('unrouted');
+    expect(replay.routeStatus).toBe('unrouted');
+    expect(store.messages).toHaveLength(1);
+    expect((store.messages[0] as any).externalMessageId).toBe('contact_sync:+5493513333333');
+    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+  });
+
   it('uses an exact existing phone link before requiring a username candidate', async () => {
     const { service } = buildService({ rdaFound: false, asnFound: false, existingPhonePagina: 'ASN' });
     const result = await service.processMessage({
