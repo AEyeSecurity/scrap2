@@ -120,7 +120,7 @@ async function startManager(
     updateSession: vi.fn(async (_id: string, patch: Partial<WhatsappQrSessionRecord>) => ({ ...connected, ...patch })),
     listSessions: vi.fn(async () => []),
     listMatches: vi.fn(async () => []),
-    listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
+    listPlatformCredentialOwnerIds: vi.fn(async () => new Set<string>()),
     listUnalertedDisconnectedSessions: vi.fn(async () => []),
     markDisconnectedAlerted: vi.fn(),
     upsertContact: vi.fn(async () => ({})),
@@ -257,7 +257,7 @@ describe('WhatsappQrManager month gate + intake', () => {
   it('does not materialize intake while a shared-session message is unrouted', async () => {
     const harness = await startManager(
       { listSessionRoutes: vi.fn(async () => []) },
-      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwner: null, routeStatus: 'unrouted' }
+      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwners: [], routeStatus: 'unrouted' }
     );
 
     await harness.handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' });
@@ -270,7 +270,7 @@ describe('WhatsappQrManager month gate + intake', () => {
   it('materializes intake only for the owner selected by shared routing', async () => {
     const harness = await startManager(
       { listSessionRoutes: vi.fn(async () => []) },
-      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwner: asnOwner, routeStatus: 'resolved' }
+      { message: { id: 'message-1' }, match: null, matches: [], resolvedOwners: [asnOwner], routeStatus: 'resolved' }
     );
 
     await harness.handlers.onMessage({ direction: 'inbound', remoteJid: PHONE_JID, messageTimestamp: NOW_ISO, text: 'hola' });
@@ -287,7 +287,6 @@ describe('WhatsappQrManager month gate + intake', () => {
         message: { id: 'message-dual' },
         match: null,
         matches: [],
-        resolvedOwner: owner,
         resolvedOwners: [owner, asnOwner],
         routeStatus: 'resolved'
       }

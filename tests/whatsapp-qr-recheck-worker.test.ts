@@ -58,7 +58,7 @@ function buildMatch(overrides: Partial<WhatsappQrMatchRecord> = {}): WhatsappQrM
     username: 'player_123',
     source: 'outbound_message',
     status: 'error',
-    rdaValidatedAt: null,
+    platformValidatedAt: null,
     assignedAt: null,
     errorMessage: 'Could not refresh owner monthly facts',
     createdAt: '2026-07-06T12:00:00.000Z',
@@ -112,7 +112,7 @@ describe('WhatsappQrRecheckWorker', () => {
       listContactsByPhones: vi.fn(async () => []),
       listMessagesForMonth: vi.fn(async () => []),
       listMatchesForMonth: vi.fn(async () => [match]),
-      getRdaCredential: vi.fn(async () => ({
+      getPlatformCredential: vi.fn(async () => ({
         ownerId: 'owner-1',
         ownerKey: 'luqui10:luqui10',
         pagina: 'RdA',

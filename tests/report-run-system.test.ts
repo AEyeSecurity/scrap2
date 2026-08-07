@@ -64,7 +64,7 @@ class FakeReportRunStore implements ReportRunStore {
   public readonly clients = new Map<string, SeedClient>();
   public readonly links = new Map<string, SeedLink>();
   public readonly identities = new Map<string, SeedIdentity>();
-  public readonly runs = new Map<string, ReportRunRecord & { contrasenaAgente: string }>();
+  public readonly runs = new Map<string, ReportRunRecord & { loginUsername: string; loginPassword: string }>();
   public readonly items = new Map<string, ReportRunItemRecord>();
   public readonly snapshots = new Map<string, Record<string, unknown>>();
   public readonly outbox: OutboxEntry[] = [];
@@ -89,21 +89,27 @@ class FakeReportRunStore implements ReportRunStore {
 
   async createRun(input: CreateReportRunInput): Promise<ReportRunRecord> {
     for (const run of this.runs.values()) {
-      if (run.pagina === input.pagina && run.principalKey === input.principalKey && run.reportDate === input.reportDate) {
-        throw new ReportRunStoreError('CONFLICT', 'Could not create report run');
+      if (
+        run.pagina === input.pagina &&
+        run.principalKey === input.principalKey &&
+        run.reportDate === input.reportDate &&
+        run.requestKey === input.requestKey
+      ) {
+        return this.toRun(run);
       }
     }
 
     this.runSequence += 1;
     const id = `run-${this.runSequence}`;
-    const record: ReportRunRecord & { contrasenaAgente: string } = {
+    const record: ReportRunRecord & { loginUsername: string; loginPassword: string } = {
       id,
       pagina: input.pagina,
       principalKey: input.principalKey.toLowerCase(),
       reportDate: input.reportDate,
+      requestKey: input.requestKey,
       status: 'queued',
-      agente: '[per-owner-platform-credential]',
-      contrasenaAgente: '[redacted]',
+      loginUsername: 'owner-platform-login',
+      loginPassword: 'owner-platform-password',
       requestedAt: new Date().toISOString(),
       startedAt: null,
       finishedAt: null,
@@ -187,11 +193,12 @@ class FakeReportRunStore implements ReportRunStore {
       inserted += 1;
     }
 
-    if (inserted === 0) {
+    const existingCount = Array.from(this.items.values()).filter((item) => item.runId === runId).length;
+    if (inserted === 0 && existingCount === 0) {
       throw new ReportRunStoreError('NOT_FOUND', 'No report users found for principalKey');
     }
 
-    run.totalItems = Array.from(this.items.values()).filter((item) => item.runId === runId).length;
+    run.totalItems = existingCount;
     return inserted;
   }
 
@@ -237,8 +244,8 @@ class FakeReportRunStore implements ReportRunStore {
       pagina: run.pagina,
       principalKey: run.principalKey,
       reportDate: run.reportDate,
-      agente: run.agente,
-      contrasenaAgente: run.contrasenaAgente,
+      loginUsername: run.loginUsername,
+      loginPassword: run.loginPassword,
       ownerId: item.ownerId,
       identityId: item.identityId,
       clientId: item.clientId,
@@ -363,7 +370,6 @@ class FakeReportRunStore implements ReportRunStore {
         }))
       }
     });
-    run.contrasenaAgente = '[redacted]';
   }
 
   async getRunById(runId: string): Promise<ReportRunRecord> {
@@ -380,7 +386,7 @@ class FakeReportRunStore implements ReportRunStore {
     };
   }
 
-  private requireRun(runId: string): ReportRunRecord & { contrasenaAgente: string } {
+  private requireRun(runId: string): ReportRunRecord & { loginUsername: string; loginPassword: string } {
     const run = this.runs.get(runId);
     if (!run) {
       throw new ReportRunStoreError('NOT_FOUND', 'Report run not found');
@@ -396,14 +402,14 @@ class FakeReportRunStore implements ReportRunStore {
     return item;
   }
 
-  private toRun(run: ReportRunRecord & { contrasenaAgente: string }): ReportRunRecord {
+  private toRun(run: ReportRunRecord & { loginUsername: string; loginPassword: string }): ReportRunRecord {
     return {
       id: run.id,
       pagina: run.pagina,
       principalKey: run.principalKey,
       reportDate: run.reportDate,
+      requestKey: run.requestKey,
       status: run.status,
-      agente: run.agente,
       requestedAt: run.requestedAt,
       startedAt: run.startedAt,
       finishedAt: run.finishedAt,
@@ -535,13 +541,15 @@ describe('report run system', () => {
 
     const response = await server.inject({
       method: 'POST',
-      url: '/reports/asn/run',
-      payload: { principalKey: 'asnlucas10' }
+      url: '/reports/run',
+      payload: { pagina: 'ASN', principalKey: 'asnlucas10', requestKey: 'missing-date' }
     });
 
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe('REPORT_DATE_UNAVAILABLE');
-    expect(JSON.stringify(response.json())).toContain('ASN reportDate is required');
+    expect(response.json().issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: 'reportDate' })])
+    );
     await server.close();
   });
 
@@ -558,11 +566,54 @@ describe('report run system', () => {
     const response = await server.inject({
       method: 'POST',
       url: '/reports/run',
-      payload: { pagina: 'ASN', principalKey: 'asnlucas10:lucas10' }
+      payload: { pagina: 'ASN', principalKey: 'asnlucas10:lucas10', requestKey: 'missing-date-generic' }
     });
 
     expect(response.statusCode).toBe(400);
     expect(response.json().code).toBe('REPORT_DATE_UNAVAILABLE');
+    await server.close();
+  });
+
+  it('rejects removed per-run credential fields', async () => {
+    const store = createSeededStore();
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 1, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      undefined,
+      { reportRunStore: store, reportWorkerEnabled: false, reportAsnEnabled: true }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/reports/run',
+      payload: {
+        pagina: 'ASN',
+        principalKey: 'asnlucas10',
+        reportDate: '2026-08-07',
+        requestKey: 'legacy-secret-rejected',
+        agente: 'legacy-login'
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(store.runs.size).toBe(0);
+    await server.close();
+  });
+
+  it('does not expose removed platform-specific report routes', async () => {
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 1, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      undefined,
+      { reportRunStore: createSeededStore(), reportWorkerEnabled: false, reportAsnEnabled: true }
+    );
+
+    for (const url of ['/reports/asn/run', '/reports/rda/run']) {
+      const response = await server.inject({ method: 'POST', url, payload: {} });
+      expect(response.statusCode).toBe(404);
+    }
     await server.close();
   });
 
@@ -581,8 +632,8 @@ describe('report run system', () => {
     try {
       const response = await server.inject({
         method: 'POST',
-        url: '/reports/asn/run',
-        payload: { principalKey: 'asnlucas10', reportDate: '2026-03-10' }
+        url: '/reports/run',
+        payload: { pagina: 'ASN', principalKey: 'asnlucas10', reportDate: '2026-03-10', requestKey: 'allowlist-test' }
       });
       expect(response.statusCode).toBe(403);
       expect(response.json().code).toBe('ASN_REPORT_PRINCIPAL_NOT_ALLOWED');
@@ -607,12 +658,11 @@ describe('report run system', () => {
 
     const response = await server.inject({
       method: 'POST',
-      url: '/reports/asn/run',
+      url: '/reports/run',
       payload: {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
-        agente: 'Pity24',
-        contrasena_agente: 'test-password',
+        requestKey: 'seeded-users',
         reportDate: '2026-03-10'
       }
     });
@@ -624,7 +674,7 @@ describe('report run system', () => {
 
     const itemsResponse = await server.inject({
       method: 'GET',
-      url: `/reports/asn/run/${body.runId}/items`
+      url: `/reports/run/${body.runId}/items`
     });
 
     expect(itemsResponse.statusCode).toBe(200);
@@ -698,8 +748,7 @@ describe('report run system', () => {
       payload: {
         pagina: 'RdA',
         principalKey: 'principal',
-        agente: 'luqui10',
-        contrasena_agente: '123abc',
+        requestKey: 'rda-generic',
         reportDate: '2026-04-07'
       }
     });
@@ -718,7 +767,7 @@ describe('report run system', () => {
     await server.close();
   });
 
-  it('creates RdA alias runs on different dates without interfering with the next day', async () => {
+  it('creates canonical RdA runs on different dates and idempotently reuses a request key', async () => {
     const store = new FakeReportRunStore({
       owners: [{ id: 'owner-rda', ownerKey: 'luqui10:luqui10', ownerLabel: 'Lucas 10 RdA', pagina: 'RdA' }],
       clients: [{ id: 'client-rda', phone: '+5492222222222', pagina: 'RdA' }],
@@ -746,40 +795,41 @@ describe('report run system', () => {
     );
 
     const basePayload = {
+      pagina: 'RdA',
       principalKey: 'luqui10',
-      agente: 'elpity24',
-      contrasena_agente: '123abc'
+      requestKey: 'daily-rda'
     };
 
     const today = await server.inject({
       method: 'POST',
-      url: '/reports/rda/run',
+      url: '/reports/run',
       payload: { ...basePayload, reportDate: '2026-04-22' }
     });
     expect(today.statusCode).toBe(202);
-    expect(today.json().statusUrl).toBe(`/reports/rda/run/${today.json().runId}`);
+    expect(today.json().statusUrl).toBe(`/reports/run/${today.json().runId}`);
 
     const tomorrow = await server.inject({
       method: 'POST',
-      url: '/reports/rda/run',
-      payload: { ...basePayload, reportDate: '2026-04-23' }
+      url: '/reports/run',
+      payload: { ...basePayload, requestKey: 'daily-rda-next', reportDate: '2026-04-23' }
     });
     expect(tomorrow.statusCode).toBe(202);
-    expect(tomorrow.json().statusUrl).toBe(`/reports/rda/run/${tomorrow.json().runId}`);
+    expect(tomorrow.json().statusUrl).toBe(`/reports/run/${tomorrow.json().runId}`);
 
     const todayItems = await server.inject({
       method: 'GET',
-      url: `/reports/rda/run/${today.json().runId}/items`
+      url: `/reports/run/${today.json().runId}/items`
     });
     expect(todayItems.statusCode).toBe(200);
     expect(todayItems.json().total).toBe(1);
 
     const duplicateToday = await server.inject({
       method: 'POST',
-      url: '/reports/rda/run',
+      url: '/reports/run',
       payload: { ...basePayload, reportDate: '2026-04-22' }
     });
-    expect(duplicateToday.statusCode).toBe(409);
+    expect(duplicateToday.statusCode).toBe(202);
+    expect(duplicateToday.json().runId).toBe(today.json().runId);
 
     await server.close();
   });
@@ -808,12 +858,11 @@ describe('report run system', () => {
 
     const response = await server.inject({
       method: 'POST',
-      url: '/reports/asn/run',
+      url: '/reports/run',
       payload: {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
-        agente: 'Pity24',
-        contrasena_agente: 'test-password',
+        requestKey: 'full-run',
         reportDate: '2026-03-10'
       }
     });
@@ -823,7 +872,7 @@ describe('report run system', () => {
 
     let runStatus = 'queued';
     for (let attempt = 0; attempt < 150; attempt += 1) {
-      const runResponse = await server.inject({ method: 'GET', url: `/reports/asn/run/${runId}` });
+      const runResponse = await server.inject({ method: 'GET', url: `/reports/run/${runId}` });
       expect(runResponse.statusCode).toBe(200);
       runStatus = runResponse.json().status;
       if (runStatus === 'completed') {
@@ -837,7 +886,6 @@ describe('report run system', () => {
     expect(store.outbox).toHaveLength(1);
     expect(store.outbox[0]?.status).toBe('consumed');
     expect(store.outbox[0]?.consumedAt).toBeTypeOf('string');
-    expect(store.runs.get(runId)?.contrasenaAgente).toBe('[redacted]');
 
     const grouped = Array.from(store.snapshots.values()).reduce<Record<string, { hoy: number; mes: number; count: number }>>(
       (acc, snapshot) => {
@@ -890,12 +938,11 @@ describe('report run system', () => {
 
     const response = await server.inject({
       method: 'POST',
-      url: '/reports/asn/run',
+      url: '/reports/run',
       payload: {
         pagina: 'ASN',
         principalKey: 'asnlucas10',
-        agente: 'Pity24',
-        contrasena_agente: 'test-password',
+        requestKey: 'retry-run',
         reportDate: '2026-03-11'
       }
     });
@@ -910,7 +957,7 @@ describe('report run system', () => {
 
     let finalStatus = 'queued';
     for (let attempt = 0; attempt < 150; attempt += 1) {
-      const runResponse = await server.inject({ method: 'GET', url: `/reports/asn/run/${runId}` });
+      const runResponse = await server.inject({ method: 'GET', url: `/reports/run/${runId}` });
       finalStatus = runResponse.json().status;
       if (finalStatus === 'completed') {
         break;
@@ -930,7 +977,7 @@ describe('report run system', () => {
     await server.close();
   });
 
-  it('rejects duplicate runs for the same principal and date', async () => {
+  it('reuses the same request key and allows another audited run for the same date', async () => {
     const store = createSeededStore();
     const logger = createLogger('silent', false);
     const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
@@ -945,17 +992,24 @@ describe('report run system', () => {
     const payload = {
       pagina: 'ASN',
       principalKey: 'asnlucas10',
-      agente: 'Pity24',
-      contrasena_agente: 'test-password',
+      requestKey: 'same-request',
       reportDate: '2026-03-10'
     };
 
-    const first = await server.inject({ method: 'POST', url: '/reports/asn/run', payload });
+    const first = await server.inject({ method: 'POST', url: '/reports/run', payload });
     expect(first.statusCode).toBe(202);
 
-    const second = await server.inject({ method: 'POST', url: '/reports/asn/run', payload });
-    expect(second.statusCode).toBe(409);
-    expect(second.json().message).toBe('Could not create report run');
+    const second = await server.inject({ method: 'POST', url: '/reports/run', payload });
+    expect(second.statusCode).toBe(202);
+    expect(second.json().runId).toBe(first.json().runId);
+
+    const third = await server.inject({
+      method: 'POST',
+      url: '/reports/run',
+      payload: { ...payload, requestKey: 'second-audited-run' }
+    });
+    expect(third.statusCode).toBe(202);
+    expect(third.json().runId).not.toBe(first.json().runId);
 
     await server.close();
   });

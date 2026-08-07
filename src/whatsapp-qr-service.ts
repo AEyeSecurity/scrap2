@@ -40,7 +40,6 @@ export interface WhatsappQrProcessResult {
   message: WhatsappQrMessageRecord | null;
   match: WhatsappQrMatchRecord | null;
   matches: WhatsappQrMatchRecord[];
-  resolvedOwner: WhatsappQrOwner | null;
   resolvedOwners: WhatsappQrOwner[];
   routeStatus: import('./whatsapp-qr-store').WhatsappQrMessageRouteStatus | null;
 }
@@ -110,11 +109,11 @@ export class WhatsappQrAutoAssignService {
   }
 
   private async routesFor(event: WhatsappQrMessageEvent): Promise<WhatsappQrOwner[]> {
-    if (typeof this.options.store.listSessionRoutes !== 'function') {
-      return [event.owner];
-    }
     const routes = await this.options.store.listSessionRoutes(event.session.id, true);
-    return routes.length > 0 ? routes.map((route) => this.ownerFromRoute(route)) : [event.owner];
+    if (routes.length === 0) {
+      throw new Error('WHATSAPP_QR_ROUTE_NOT_ACTIVE');
+    }
+    return routes.map((route) => this.ownerFromRoute(route));
   }
 
   private ownerFromRoute(route: WhatsappQrSessionRouteRecord): WhatsappQrOwner {
@@ -153,7 +152,7 @@ export class WhatsappQrAutoAssignService {
   }
 
   private async getOwnerPair(owners: WhatsappQrOwner[]): Promise<WhatsappQrPlatformOwnerPairRecord | null> {
-    if (owners.length !== 2 || typeof this.options.store.getActivePlatformOwnerPair !== 'function') {
+    if (owners.length !== 2) {
       return null;
     }
     const rdaOwner = owners.find((owner) => owner.pagina === 'RdA');
@@ -168,45 +167,12 @@ export class WhatsappQrAutoAssignService {
     owners: WhatsappQrOwner[],
     resolution: string
   ): Promise<WhatsappQrMessageRecord> {
-    if (typeof this.options.store.setMessageRoutes === 'function') {
-      return this.options.store.setMessageRoutes({
-        messageId: message.id,
-        status,
-        ownerIds: owners.map((owner) => owner.ownerId),
-        resolution
-      });
-    }
-    const owner = owners[0] ?? null;
-    if (typeof this.options.store.setMessageRoute !== 'function') {
-      return {
-        ...message,
-        routeStatus: status,
-        resolvedOwnerId: status === 'resolved' ? owner?.ownerId ?? null : null,
-        resolvedOwners:
-          status === 'resolved'
-            ? owners.map((resolvedOwner, index) => ({
-                ownerId: resolvedOwner.ownerId,
-                pagina: resolvedOwner.pagina,
-                resolution,
-                isPrimary: index === 0,
-                resolvedAt: new Date().toISOString()
-              }))
-            : [],
-        resolvedPagina: status === 'resolved' ? owner?.pagina ?? null : null,
-        routeResolution: resolution,
-        routeResolvedAt: status === 'resolved' ? new Date().toISOString() : null
-      };
-    }
-    return this.options.store.setMessageRoute({
+    return this.options.store.setMessageRoutes({
       messageId: message.id,
       status,
-      ownerId: owner?.ownerId ?? null,
+      ownerIds: owners.map((owner) => owner.ownerId),
       resolution
     });
-  }
-
-  private resolvedOwnerFromMessage(message: WhatsappQrMessageRecord, owners: WhatsappQrOwner[]): WhatsappQrOwner | null {
-    return owners.find((owner) => owner.ownerId === message.resolvedOwnerId) ?? owners[0] ?? null;
   }
 
   private async validateRoute(
@@ -292,7 +258,7 @@ export class WhatsappQrAutoAssignService {
     const clientPhoneE164 = event.clientPhoneE164 ?? normalizeWhatsappJidPhone(event.remoteJid);
     if (!clientPhoneE164) {
       this.options.logger.warn({ remoteJid: event.remoteJid, ownerKey: event.owner.ownerKey }, 'QR message ignored without phone');
-      return { message: null, match: null, matches: [], resolvedOwner: null, resolvedOwners: [], routeStatus: null };
+      return { message: null, match: null, matches: [], resolvedOwners: [], routeStatus: null };
     }
 
     const contactCandidate =
@@ -330,11 +296,11 @@ export class WhatsappQrAutoAssignService {
     const phoneRoute = await this.routeFromExistingPhone(routes, clientPhoneE164);
     if (phoneRoute.status === 'error') {
       message = await this.setRoutes(message, 'error', [], 'existing_phone_route_lookup_failed');
-      return { message, match: null, matches: [], resolvedOwner: null, resolvedOwners: [], routeStatus: 'error' };
+      return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'error' };
     }
     if (phoneRoute.owners.length > 1 && !(await this.getOwnerPair(phoneRoute.owners))) {
       message = await this.setRoutes(message, 'conflict', [], 'phone_linked_to_multiple_active_routes');
-      return { message, match: null, matches: [], resolvedOwner: null, resolvedOwners: [], routeStatus: 'conflict' };
+      return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'conflict' };
     }
     const candidateRoutes = phoneRoute.owners.length > 0 ? phoneRoute.owners : routes;
 
@@ -346,13 +312,12 @@ export class WhatsappQrAutoAssignService {
           message,
           match: null,
           matches: [],
-          resolvedOwner: this.resolvedOwnerFromMessage(message, candidateRoutes),
           resolvedOwners: candidateRoutes,
           routeStatus: 'resolved'
         };
       }
       message = await this.setRoutes(message, 'unrouted', [], 'candidate_required_for_shared_session');
-      return { message, match: null, matches: [], resolvedOwner: null, resolvedOwners: [], routeStatus: 'unrouted' };
+      return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'unrouted' };
     }
 
     await Promise.all(
@@ -369,12 +334,12 @@ export class WhatsappQrAutoAssignService {
     if (errors.length > 0) {
       const matches = attempts.map((attempt) => attempt.match);
       message = await this.setRoutes(message, 'error', [], 'route_validation_incomplete');
-      return { message, match: matches.find((item) => item.status === 'error') ?? null, matches, resolvedOwner: null, resolvedOwners: [], routeStatus: 'error' };
+      return { message, match: matches.find((item) => item.status === 'error') ?? null, matches, resolvedOwners: [], routeStatus: 'error' };
     }
 
     if (validated.length > 1) {
       const pair = await this.getOwnerPair(validated.map((attempt) => attempt.owner));
-      if (pair && typeof this.options.playerPhoneStore.assignUsernameToPlatformOwnerPair === 'function') {
+      if (pair) {
         const validatedAt = new Date().toISOString();
         try {
           await this.options.playerPhoneStore.assignUsernameToPlatformOwnerPair({
@@ -395,7 +360,7 @@ export class WhatsappQrAutoAssignService {
             )
           );
           message = await this.setRoutes(message, 'error', [], 'dual_assignment_failed');
-          return { message, match: matches[0] ?? null, matches, resolvedOwner: null, resolvedOwners: [], routeStatus: 'error' };
+          return { message, match: matches[0] ?? null, matches, resolvedOwners: [], routeStatus: 'error' };
         }
         const matches = await Promise.all(
           attempts.map((attempt) =>
@@ -413,7 +378,6 @@ export class WhatsappQrAutoAssignService {
           message,
           match: matches[0] ?? null,
           matches,
-          resolvedOwner: this.resolvedOwnerFromMessage(message, resolvedOwners),
           resolvedOwners,
           routeStatus: 'resolved'
         };
@@ -429,13 +393,13 @@ export class WhatsappQrAutoAssignService {
         })
       );
       message = await this.setRoutes(message, 'conflict', [], 'username_exists_in_multiple_routes');
-      return { message, match: matches.find((item) => item.status === 'conflict') ?? null, matches, resolvedOwner: null, resolvedOwners: [], routeStatus: 'conflict' };
+      return { message, match: matches.find((item) => item.status === 'conflict') ?? null, matches, resolvedOwners: [], routeStatus: 'conflict' };
     }
 
     if (validated.length === 0) {
       const matches = attempts.map((attempt) => attempt.match);
       message = await this.setRoutes(message, 'not_found', [], 'username_not_found_in_active_routes');
-      return { message, match: matches[0] ?? null, matches, resolvedOwner: null, resolvedOwners: [], routeStatus: 'not_found' };
+      return { message, match: matches[0] ?? null, matches, resolvedOwners: [], routeStatus: 'not_found' };
     }
 
     const selected = validated[0];
@@ -462,7 +426,7 @@ export class WhatsappQrAutoAssignService {
         errorMessage: null
       });
       const matches = attempts.map((attempt) => (attempt.match.id === match.id ? match : attempt.match));
-      return { message, match, matches, resolvedOwner: selected.owner, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
+      return { message, match, matches, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
     } catch (error) {
       if (error instanceof PlayerPhoneStoreError && error.code === 'CONFLICT') {
         match = await this.options.store.updateMatch(match.id, {
@@ -471,17 +435,17 @@ export class WhatsappQrAutoAssignService {
           errorMessage: error.message
         });
         const matches = attempts.map((attempt) => (attempt.match.id === match.id ? match : attempt.match));
-        return { message, match, matches, resolvedOwner: selected.owner, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
+        return { message, match, matches, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
       }
 
       match = await this.options.store.updateMatch(match.id, {
         status: 'error',
-        rdaValidatedAt: validatedAt,
+        platformValidatedAt: validatedAt,
         errorMessage: error instanceof Error ? error.message : 'assignment_failed'
       });
       await this.enqueueRecheck(event, selected.owner, clientPhoneE164, 'technical_error');
       const matches = attempts.map((attempt) => (attempt.match.id === match.id ? match : attempt.match));
-      return { message, match, matches, resolvedOwner: selected.owner, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
+      return { message, match, matches, resolvedOwners: [selected.owner], routeStatus: 'resolved' };
     }
   }
 }

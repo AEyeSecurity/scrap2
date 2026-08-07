@@ -26,8 +26,10 @@ Aplicar, en este orden, sobre el esquema actual:
 2. `20260806160100_whatsapp_qr_event_idempotency.sql`
 3. `20260806160200_mastercrm_platform_credentials.sql`
 4. `20260806160300_report_run_lease_tokens.sql`
+5. `20260807210000_remove_report_qr_legacy.sql`
 
-Las migraciones conservan los aliases RdA y copian las credenciales existentes a la tabla neutral. No contienen secretos; los valores se migran dentro de la base.
+La migración final verifica los backfills canónicos y elimina físicamente los
+aliases, columnas y tablas legacy del dominio QR/reportes.
 
 Validaciones posteriores:
 
@@ -35,10 +37,14 @@ Validaciones posteriores:
 select count(*) from public.mastercrm_platform_credentials where pagina = 'RdA';
 select count(*) from public.mastercrm_whatsapp_qr_messages where event_at is null;
 select count(*) from public.mastercrm_whatsapp_qr_matches where event_at is null;
-select count(*) from public.report_runs where contrasena_agente <> '[redacted]' and credential_id is not null;
+select to_regclass('public.mastercrm_rda_credentials');
+select to_regclass('public.mastercrm_report_credentials');
+select count(*) from information_schema.columns
+where table_schema = 'public' and table_name = 'report_runs'
+  and column_name in ('agente', 'contrasena_agente', 'credential_id');
 ```
 
-El último resultado debe ser cero. Las filas históricas sin `credential_id` se mantienen temporalmente para compatibilidad y se redactan al cerrar su corrida.
+Las dos primeras consultas deben devolver `null` y la última, cero.
 
 ## Compuerta RdA 1: reporte
 

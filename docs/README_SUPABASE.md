@@ -10,7 +10,7 @@ Supabase no es obligatorio para levantar la API, pero si es obligatorio para est
 - endpoints `POST /users/intake-pending` y `POST /users/assign-phone`;
 - sincronizacion posterior a `POST /users/create-player` cuando el payload incluye `telefono`;
 - usuarios web de MasterCRM (`/mastercrm-register`, `/mastercrm-login`, `/mastercrm-clients`);
-- cola persistente de reportes ASN/RdA (`POST /reports/asn/run`, `POST /reports/run` y endpoints de consulta asociados);
+- cola persistente de reportes ASN/RdA (`POST /reports/run` y endpoints de consulta asociados);
 - snapshots diarios y KPIs del dashboard de MasterCRM en Postgres.
 
 No se usa Supabase Storage para el dashboard del CRM. Los snapshots viven en tablas de Postgres como `report_daily_snapshots`, `report_run_items` y `report_outbox`.
@@ -141,7 +141,7 @@ Senales practicas de que la conexion quedo bien:
 
 - `POST /mastercrm-register` inserta correctamente en `mastercrm_users`;
 - `POST /users/intake-pending` responde `200` y devuelve ids de la relacion creada;
-- `POST /reports/asn/run` responde `202` y crea una corrida persistida;
+- `POST /reports/run` responde `202` y crea una corrida persistida;
 - el worker de reportes avanza items en Supabase cuando esta habilitado.
 
 ## Nota operativa sobre crecimiento

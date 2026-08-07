@@ -79,4 +79,20 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).not.toContain("('luqui10:lucas10', 'asnlucas10:lucas10')");
     expect(sql).not.toContain("'asnlucas10:lucas5'");
   });
+
+  it('removes report and QR legacy contracts after verifying canonical backfills', () => {
+    const sql = migration('20260807210000_remove_report_qr_legacy.sql');
+    expect(sql).toContain('request_key text');
+    expect(sql).toContain('uq_report_runs_request');
+    expect(sql).toContain('drop table if exists public.mastercrm_report_credentials');
+    expect(sql).toContain('drop table if exists public.mastercrm_rda_credentials');
+    expect(sql).toContain('drop column if exists agente');
+    expect(sql).toContain('drop column if exists contrasena_agente');
+    expect(sql).toContain('drop column if exists resolved_owner_id');
+    expect(sql).toContain('drop column if exists resolved_pagina');
+    expect(sql).toContain('drop column if exists rda_validated_at');
+    expect(sql).toContain('drop function if exists public.set_whatsapp_qr_message_route_v1');
+    expect(sql).toContain('create function public.set_whatsapp_qr_message_routes_v1');
+    expect(sql).toContain('cannot remove qr legacy columns: unresolved canonical backfill');
+  });
 });

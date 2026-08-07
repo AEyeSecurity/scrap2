@@ -457,17 +457,10 @@ const reportRunBodySchema = z
   .object({
     pagina: paginaCodeSchema,
     principalKey: z.string().trim().min(1),
-    reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    reportDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    requestKey: z.string().trim().min(1).max(160)
   })
-  .superRefine((value, ctx) => {
-    if (value.pagina === 'ASN' && !value.reportDate) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['reportDate'],
-        message: 'ASN reportDate is required'
-      });
-    }
-  });
+  .strict();
 
 const reportRunParamsSchema = z.object({
   runId: z.string().trim().min(1)
@@ -671,10 +664,9 @@ const mastercrmWhatsappQrRouteResolveBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
     message_id: z.string().optional(),
-    owner_id: z.string().optional(),
-    owner_ids: z.array(z.string()).min(1).max(2).optional()
+    owner_ids: z.array(z.string()).min(1).max(2)
   })
-  .passthrough();
+  .strict();
 
 const mastercrmOrganicQrBudgetBodySchema = z
   .object({
@@ -959,8 +951,7 @@ function whatsappQrSessionToResponse(session: WhatsappQrSessionRecord): Record<s
     lastDisconnectedAt: safeSession.lastDisconnectedAt,
     lastError: safeSession.lastError,
     botGroupKey: safeSession.botGroupKey,
-    hasRdaCredentials: Boolean(safeSession.hasRdaCredentials),
-    hasPlatformCredentials: Boolean(safeSession.hasPlatformCredentials ?? safeSession.hasRdaCredentials),
+    hasPlatformCredentials: Boolean(safeSession.hasPlatformCredentials),
     updatedAt: safeSession.updatedAt
   };
 }
@@ -1872,10 +1863,9 @@ function parseMastercrmWhatsappQrRouteResolvePayload(body: unknown): {
   const issues: ValidationIssue[] = [];
   const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
   const messageId = resolveAliasStringField(parsed.data, ['message_id'], 'message_id', issues);
-  const legacyOwnerId = resolveAliasStringField(parsed.data, ['owner_id'], 'owner_id', issues, { required: false });
-  const ownerIds = [...new Set([...(parsed.data.owner_ids ?? []), ...(legacyOwnerId ? [legacyOwnerId] : [])].map((value) => value.trim()).filter(Boolean))];
+  const ownerIds = [...new Set(parsed.data.owner_ids.map((value) => value.trim()).filter(Boolean))];
   if (ownerIds.length < 1 || ownerIds.length > 2) {
-    issues.push({ path: 'owner_ids', message: 'owner_id or one/two owner_ids are required' });
+    issues.push({ path: 'owner_ids', message: 'one or two owner_ids are required' });
   }
   if (issues.length > 0 || !userId || !messageId || ownerIds.length < 1 || ownerIds.length > 2) {
     return { issues };
@@ -3567,8 +3557,6 @@ export function createServer(
       return reply.code(200).send({
         messageId: routed.id,
         routeStatus: routed.routeStatus,
-        ownerId: routed.resolvedOwnerId,
-        pagina: routed.resolvedPagina,
         resolvedOwners: targetOwners.map((owner) => ({
           ownerId: owner.ownerId,
           pagina: owner.pagina,
@@ -4387,7 +4375,8 @@ export function createServer(
       const run = await store.createRun({
         pagina: payload.pagina,
         principalKey: payload.principalKey,
-        reportDate: payload.reportDate ?? getBuenosAiresDateToken()
+        reportDate: payload.reportDate,
+        requestKey: payload.requestKey
       });
       runId = run.id;
       await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
@@ -4414,111 +4403,6 @@ export function createServer(
     }
   });
 
-  fastify.post('/reports/asn/run', async (request, reply) => {
-    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
-    const parsed = reportRunBodySchema.safeParse({ ...body, pagina: 'ASN' });
-    if (!parsed.success) {
-      const missingReportDate = parsed.error.issues.some(
-        (issue) => issue.path.length === 1 && issue.path[0] === 'reportDate'
-      );
-      return reply.code(400).send({
-        message: 'Invalid payload',
-        ...(missingReportDate ? { code: 'REPORT_DATE_UNAVAILABLE' } : {}),
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
-      });
-    }
-
-    if (!reportAsnEnabled) {
-      return reply.code(503).send({
-        message: 'ASN report processing is temporarily disabled',
-        code: 'ASN_REPORTS_DISABLED'
-      });
-    }
-    if (!isAsnPrincipalAllowed(parsed.data.principalKey)) {
-      return reply.code(403).send({
-        message: 'ASN report processing is not enabled for this principal',
-        code: 'ASN_REPORT_PRINCIPAL_NOT_ALLOWED'
-      });
-    }
-
-    let runId: string | null = null;
-    try {
-      const payload = parsed.data;
-      const store = getReportRunStore();
-      const run = await store.createRun({
-        pagina: 'ASN',
-        principalKey: payload.principalKey,
-        reportDate: payload.reportDate as string
-      });
-      runId = run.id;
-      await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
-
-      return reply.code(202).send({
-        runId: run.id,
-        status: 'queued',
-        statusUrl: `/reports/asn/run/${run.id}`
-      });
-    } catch (error) {
-      if (runId) {
-        await getReportRunStore()
-          .deleteRun(runId)
-          .catch((cleanupError) => logger.warn({ error: cleanupError, runId }, 'Could not clean report run after enqueue failure'));
-      }
-
-      const mappedError = toReportHttpError(error);
-      if (mappedError) {
-        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
-      }
-
-      logger.error({ error }, 'Unexpected /reports/asn/run error');
-      return reply.code(500).send({ message: 'Unexpected report persistence error' });
-    }
-  });
-
-  fastify.post('/reports/rda/run', async (request, reply) => {
-    const body = typeof request.body === 'object' && request.body !== null ? request.body : {};
-    const parsed = reportRunBodySchema.safeParse({ ...body, pagina: 'RdA' });
-    if (!parsed.success) {
-      return reply.code(400).send({
-        message: 'Invalid payload',
-        issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message }))
-      });
-    }
-
-    let runId: string | null = null;
-    try {
-      const payload = parsed.data;
-      const store = getReportRunStore();
-      const run = await store.createRun({
-        pagina: 'RdA',
-        principalKey: payload.principalKey,
-        reportDate: payload.reportDate ?? getBuenosAiresDateToken()
-      });
-      runId = run.id;
-      await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
-
-      return reply.code(202).send({
-        runId: run.id,
-        status: 'queued',
-        statusUrl: `/reports/rda/run/${run.id}`
-      });
-    } catch (error) {
-      if (runId) {
-        await getReportRunStore()
-          .deleteRun(runId)
-          .catch((cleanupError) => logger.warn({ error: cleanupError, runId }, 'Could not clean report run after enqueue failure'));
-      }
-
-      const mappedError = toReportHttpError(error);
-      if (mappedError) {
-        return reply.code(mappedError.statusCode).send({ message: mappedError.message });
-      }
-
-      logger.error({ error }, 'Unexpected /reports/rda/run error');
-      return reply.code(500).send({ message: 'Unexpected report persistence error' });
-    }
-  });
-
   async function handleGetReportRun(runId: string, reply: FastifyReply, logLabel: string) {
     try {
       const run = await getReportRunStore().getRunById(runId);
@@ -4541,24 +4425,6 @@ export function createServer(
     }
 
     return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/run/:runId error');
-  });
-
-  fastify.get('/reports/asn/run/:runId', async (request, reply) => {
-    const parsed = reportRunParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      return reply.code(400).send({ message: 'Invalid run id' });
-    }
-
-    return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/asn/run/:runId error');
-  });
-
-  fastify.get('/reports/rda/run/:runId', async (request, reply) => {
-    const parsed = reportRunParamsSchema.safeParse(request.params);
-    if (!parsed.success) {
-      return reply.code(400).send({ message: 'Invalid run id' });
-    }
-
-    return handleGetReportRun(parsed.data.runId, reply, 'Unexpected /reports/rda/run/:runId error');
   });
 
   async function handleListReportRunItems(
@@ -4600,24 +4466,6 @@ export function createServer(
     }
 
     return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/run/:runId/items error');
-  });
-
-  fastify.get('/reports/asn/run/:runId/items', async (request, reply) => {
-    const parsedParams = reportRunParamsSchema.safeParse(request.params);
-    if (!parsedParams.success) {
-      return reply.code(400).send({ message: 'Invalid run id' });
-    }
-
-    return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/asn/run/:runId/items error');
-  });
-
-  fastify.get('/reports/rda/run/:runId/items', async (request, reply) => {
-    const parsedParams = reportRunParamsSchema.safeParse(request.params);
-    if (!parsedParams.success) {
-      return reply.code(400).send({ message: 'Invalid run id' });
-    }
-
-    return handleListReportRunItems(parsedParams.data.runId, request.query, reply, 'Unexpected /reports/rda/run/:runId/items error');
   });
 
   fastify.get('/jobs/:id', async (request, reply) => {

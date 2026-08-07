@@ -440,7 +440,7 @@ describe('WhatsappQrManager startup reattach', () => {
         listOwnerClientPhonesForMonth: vi.fn(async () => new Set<string>()),
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
-        listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
+        listPlatformCredentialOwnerIds: vi.fn(async () => new Set<string>()),
         listUnalertedDisconnectedSessions: vi.fn(async () => []),
         markDisconnectedAlerted: vi.fn()
       } as any,
@@ -481,7 +481,7 @@ describe('WhatsappQrManager startup reattach', () => {
         listOwnerClientPhonesForMonth: vi.fn(async () => new Set<string>()),
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
-        listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
+        listPlatformCredentialOwnerIds: vi.fn(async () => new Set<string>()),
         listUnalertedDisconnectedSessions: vi.fn(async () => []),
         markDisconnectedAlerted: vi.fn()
       } as any,
@@ -521,7 +521,7 @@ describe('WhatsappQrManager startup reattach', () => {
         listOwnerClientPhonesForMonth: vi.fn(async () => new Set<string>()),
         listSessions: vi.fn(async () => []),
         listMatches: vi.fn(async () => []),
-        listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
+        listPlatformCredentialOwnerIds: vi.fn(async () => new Set<string>()),
         listUnalertedDisconnectedSessions: vi.fn(async () => []),
         markDisconnectedAlerted: vi.fn()
       } as any,

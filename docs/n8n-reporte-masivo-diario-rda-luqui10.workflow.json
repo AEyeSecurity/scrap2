@@ -61,6 +61,12 @@
               "type": "string"
             },
             {
+              "id": "15fc27c0-11da-4ba7-a92c-42d3c37bf324",
+              "name": "requestKey",
+              "value": "={{ 'daily:RdA:' + $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') + ':luqui10' }}",
+              "type": "string"
+            },
+            {
               "id": "460b09dd-bb68-4f72-a9ab-55b88891f170",
               "name": "pollSeconds",
               "value": 20,
@@ -88,12 +94,12 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.baseUrl + '/reports/rda/run' }}",
+        "url": "={{ $json.baseUrl + '/reports/run' }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, reportDate: $json.reportDate }) }}",
+        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, reportDate: $json.reportDate, requestKey: $json.requestKey }) }}",
         "options": {}
       },
       "id": "e1693647-c2f2-4cff-bdc1-644ec0658e89",
@@ -124,7 +130,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId }}",
+        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/run/' + $('HTTP - Crear corrida RdA').item.json.runId }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}
@@ -163,7 +169,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/rda/run/' + $('HTTP - Crear corrida RdA').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos RdA Luqui10').item.json.itemsLimit + '&offset=0' }}",
+        "url": "={{ $('Edit Fields - Prefijos RdA Luqui10').item.json.baseUrl + '/reports/run/' + $('HTTP - Crear corrida RdA').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos RdA Luqui10').item.json.itemsLimit + '&offset=0' }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}

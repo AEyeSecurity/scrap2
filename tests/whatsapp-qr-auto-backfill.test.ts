@@ -60,6 +60,12 @@ function buildMessage(overrides: Partial<WhatsappQrMessageRecord>): WhatsappQrMe
     candidateUsername: 'player_1',
     matchSource: 'contact_name',
     messageTimestamp: '2026-07-06T12:00:00.000Z',
+    eventAt: '2026-07-06T12:00:00.000Z',
+    routeStatus: 'unrouted',
+    resolvedOwners: [],
+    routeResolution: null,
+    routeResolvedAt: null,
+    sourceContext: null,
     createdAt: '2026-07-06T12:00:00.000Z',
     ...overrides
   };
@@ -76,7 +82,7 @@ function buildMatch(overrides: Partial<WhatsappQrMatchRecord>): WhatsappQrMatchR
     username: 'player_1',
     source: 'contact_name',
     status: 'candidate',
-    rdaValidatedAt: null,
+    platformValidatedAt: null,
     assignedAt: null,
     errorMessage: null,
     createdAt: '2026-07-06T12:00:00.000Z',
@@ -147,11 +153,14 @@ function createStore(overrides: Partial<WhatsappQrStore> = {}): WhatsappQrStore 
     }),
     getLatestMessageForPhone: vi.fn(async () => null),
     getLatestMatchForPhone: vi.fn(async () => null),
-    getRdaCredential: vi.fn(async () => null),
-    upsertRdaCredential: vi.fn(async () => {
+    listSessionRoutes: vi.fn(async () => []),
+    setMessageRoutes: vi.fn(async () => buildMessage({})),
+    getActivePlatformOwnerPair: vi.fn(async () => null),
+    getPlatformCredential: vi.fn(async () => null),
+    upsertPlatformCredential: vi.fn(async () => {
       throw new Error('not implemented');
     }),
-    listCredentialOwnerIds: vi.fn(async () => new Set<string>()),
+    listPlatformCredentialOwnerIds: vi.fn(async () => new Set<string>()),
     listUnalertedDisconnectedSessions: vi.fn(async () => []),
     markDisconnectedAlerted: vi.fn(async () => undefined),
     ...overrides

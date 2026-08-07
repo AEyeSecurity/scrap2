@@ -22,6 +22,7 @@ export interface CreateReportRunInput {
   pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
+  requestKey: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -30,8 +31,8 @@ export interface ReportRunRecord {
   pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
+  requestKey: string;
   status: ReportRunStatus;
-  agente: string;
   requestedAt: string;
   startedAt: string | null;
   finishedAt: string | null;
@@ -72,8 +73,8 @@ export interface ReportRunLease {
   pagina: PaginaCode;
   principalKey: string;
   reportDate: string;
-  agente: string;
-  contrasenaAgente: string;
+  loginUsername: string;
+  loginPassword: string;
   ownerId: string;
   identityId: string;
   clientId: string;
@@ -190,8 +191,8 @@ type ReportRunRow = {
   pagina: PaginaCode;
   principal_key: string;
   report_date: string;
+  request_key: string;
   status: ReportRunStatus;
-  agente: string;
   requested_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -233,8 +234,8 @@ type ClaimRow = {
   pagina: PaginaCode;
   principal_key: string;
   report_date: string;
-  agente: string;
-  contrasena_agente: string;
+  login_username: string;
+  login_password: string;
   owner_id: string;
   identity_id: string;
   client_id: string;
@@ -247,16 +248,14 @@ type ClaimRow = {
   lease_token?: string;
 };
 
-const REDACTED_REPORT_SECRET = '[redacted]';
-
 function asRunRecord(row: ReportRunRow): ReportRunRecord {
   return {
     id: row.id,
     pagina: row.pagina,
     principalKey: row.principal_key,
     reportDate: row.report_date,
+    requestKey: row.request_key,
     status: row.status,
-    agente: row.agente,
     requestedAt: row.requested_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
@@ -301,8 +300,8 @@ function asLease(row: ClaimRow): ReportRunLease {
     pagina: row.pagina,
     principalKey: row.principal_key,
     reportDate: row.report_date,
-    agente: row.agente,
-    contrasenaAgente: row.contrasena_agente,
+    loginUsername: row.login_username,
+    loginPassword: row.login_password,
     ownerId: row.owner_id,
     identityId: row.identity_id,
     clientId: row.client_id,
@@ -322,6 +321,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
   async createRun(input: CreateReportRunInput): Promise<ReportRunRecord> {
     const principalKey = normalizeKey(input.principalKey, 'principalKey');
     const reportDate = normalizeDate(input.reportDate);
+    const requestKey = normalizeText(input.requestKey, 'requestKey');
 
     const { data, error } = await this.client
       .from('report_runs')
@@ -329,15 +329,29 @@ export class SupabaseReportRunStore implements ReportRunStore {
         pagina: input.pagina,
         principal_key: principalKey,
         report_date: reportDate,
+        request_key: requestKey,
         status: 'queued',
-        agente: '[per-owner-platform-credential]',
-        contrasena_agente: REDACTED_REPORT_SECRET,
-        credential_id: null,
         metadata: input.metadata ?? {}
       })
       .select('*')
       .single();
 
+    if (error?.code === '23505') {
+      const { data: existing, error: existingError } = await this.client
+        .from('report_runs')
+        .select('*')
+        .eq('pagina', input.pagina)
+        .eq('principal_key', principalKey)
+        .eq('report_date', reportDate)
+        .eq('request_key', requestKey)
+        .maybeSingle();
+      if (existingError) {
+        throw mapPostgrestError(existingError, 'Could not read idempotent report run');
+      }
+      if (existing) {
+        return asRunRecord(existing as ReportRunRow);
+      }
+    }
     if (error) {
       throw mapPostgrestError(error, 'Could not create report run');
     }

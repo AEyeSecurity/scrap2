@@ -45,9 +45,6 @@ describe('strict n8n platform credential sync', () => {
         pagina: 'ASN',
         telefono: null
       })),
-      upsertRdaCredential: vi.fn(() => {
-        throw new Error('legacy credential storage must not be called');
-      }),
       upsertPlatformCredential
     };
 
@@ -68,7 +65,6 @@ describe('strict n8n platform credential sync', () => {
     expect(upsertPlatformCredential).toHaveBeenCalledWith(
       expect.objectContaining({ pagina: 'ASN', ownerId: 'owner-1', ownerKey: 'asnlucas10:lucas10' })
     );
-    expect(store.upsertRdaCredential).not.toHaveBeenCalled();
   });
 
   it('fails writes when generic platform credential storage is unavailable', async () => {

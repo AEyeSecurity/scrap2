@@ -80,8 +80,7 @@ class SharedRouteStore {
       messageTimestamp: input.messageTimestamp ?? null,
       eventAt: input.messageTimestamp ?? '2026-08-07T12:00:00.000Z',
       routeStatus: 'unrouted' as const,
-      resolvedOwnerId: null,
-      resolvedPagina: null,
+      resolvedOwners: [],
       routeResolution: null,
       routeResolvedAt: null,
       sourceContext: input.sourceContext ?? null,
@@ -91,14 +90,21 @@ class SharedRouteStore {
     return message;
   }
 
-  async setMessageRoute(input: any): Promise<WhatsappQrMessageRecord> {
+  async setMessageRoutes(input: any): Promise<WhatsappQrMessageRecord> {
     const message = this.messages.find((row) => row.id === input.messageId)!;
+    const ownerIds: string[] = input.ownerIds ?? [];
     Object.assign(message, {
-      ownerId: input.status === 'resolved' ? input.ownerId : message.ownerId,
+      ownerId: input.status === 'resolved' ? ownerIds[0] : message.ownerId,
       routeStatus: input.status,
-      resolvedOwnerId: input.status === 'resolved' ? input.ownerId : null,
-      resolvedPagina:
-        input.status === 'resolved' ? (input.ownerId === asnOwner.ownerId ? 'ASN' : 'RdA') : null,
+      resolvedOwners: input.status === 'resolved'
+        ? ownerIds.map((ownerId, index) => ({
+            ownerId,
+            pagina: ownerId === asnOwner.ownerId ? 'ASN' : 'RdA',
+            resolution: input.resolution,
+            isPrimary: index === 0,
+            resolvedAt: '2026-08-07T12:01:00.000Z'
+          }))
+        : [],
       routeResolution: input.resolution,
       routeResolvedAt: input.status === 'resolved' ? '2026-08-07T12:01:00.000Z' : null
     });
@@ -124,7 +130,6 @@ class SharedRouteStore {
       username: input.username,
       source: input.source,
       status: input.status ?? 'candidate',
-      rdaValidatedAt: null,
       platformValidatedAt: null,
       assignedAt: null,
       errorMessage: null,
@@ -171,13 +176,15 @@ function buildService(input: {
   dualAssignFails?: boolean;
 }) {
   const store = new SharedRouteStore();
-  if (input.paired) {
-    (store as any).getActivePlatformOwnerPair = vi.fn(async (rdaOwnerId: string, asnOwnerId: string) =>
+  (store as any).getActivePlatformOwnerPair = vi.fn(async (rdaOwnerId: string, asnOwnerId: string) =>
+    input.paired
+      ? (
       rdaOwnerId === rdaOwner.ownerId && asnOwnerId === asnOwner.ownerId
         ? { id: 'pair-rda-asn', rdaOwnerId, asnOwnerId, activeFrom: session.createdAt, activeTo: null }
         : null
-    );
-  }
+      )
+      : null
+  );
   const assignUsernameByPhone = vi.fn(async () => ({}));
   const assignUsernameToPlatformOwnerPair = vi.fn(async () => {
     if (input.dualAssignFails) throw new Error('pair transaction rolled back');
@@ -327,7 +334,7 @@ describe('WhatsApp QR shared session routing', () => {
     });
 
     expect(result.routeStatus).toBe('resolved');
-    expect(result.resolvedOwner).toEqual(rdaOwner);
+    expect(result.resolvedOwners).toEqual([rdaOwner]);
     expect(result.message?.ownerId).toBe(rdaOwner.ownerId);
     expect(store.matches).toEqual(
       expect.arrayContaining([
@@ -418,7 +425,7 @@ describe('WhatsApp QR shared session routing', () => {
     });
 
     expect(result.routeStatus).toBe('error');
-    expect(result.resolvedOwner).toBeNull();
+    expect(result.resolvedOwners).toEqual([]);
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
 
@@ -473,7 +480,7 @@ describe('WhatsApp QR shared session routing', () => {
     });
 
     expect(result.routeStatus).toBe('resolved');
-    expect(result.resolvedOwner).toEqual(asnOwner);
+    expect(result.resolvedOwners).toEqual([asnOwner]);
     expect(result.message?.ownerId).toBe(asnOwner.ownerId);
     expect(result.message?.routeResolution).toBe('existing_phone_link');
   });

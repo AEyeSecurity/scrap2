@@ -64,8 +64,8 @@ export function createPlatformReportAdapters(
             pagina: 'RdA',
             operacion: 'reporte',
             usuario: lease.username,
-            agente: lease.agente,
-            contrasena_agente: lease.contrasenaAgente,
+            agente: lease.loginUsername,
+            contrasena_agente: lease.loginPassword,
             reportDate: lease.reportDate
           }
         };
@@ -85,8 +85,8 @@ export function createPlatformReportAdapters(
             pagina: 'ASN',
             operacion: 'reporte',
             usuario: lease.username,
-            agente: lease.agente,
-            contrasena_agente: lease.contrasenaAgente,
+            agente: lease.loginUsername,
+            contrasena_agente: lease.loginPassword,
             reportDate: lease.reportDate
           }
         };

@@ -168,7 +168,7 @@ export interface PlayerPhoneStore {
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
   assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
-  assignUsernameToPlatformOwnerPair?(input: {
+  assignUsernameToPlatformOwnerPair(input: {
     pairId: string;
     telefono: string;
     jugadorUsername: string;

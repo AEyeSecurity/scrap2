@@ -378,7 +378,7 @@ export async function runWhatsappQrMonthBackfill(input: RunWhatsappQrMonthBackfi
     throw new Error(`WhatsApp QR session not found for ${input.ownerKey}`);
   }
 
-  const credential = await store.getRdaCredential(owner.ownerId);
+  const credential = await store.getPlatformCredential(owner.ownerId, 'RdA');
   if (!credential) {
     throw new Error(`RdA credential not found for ${input.ownerKey}`);
   }

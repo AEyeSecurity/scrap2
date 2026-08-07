@@ -79,6 +79,12 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
       candidateUsername: input.candidateUsername ?? null,
       matchSource: input.matchSource ?? null,
       messageTimestamp: input.messageTimestamp ?? null,
+      eventAt: input.messageTimestamp ?? '2026-06-30T12:00:00.000Z',
+      routeStatus: 'unrouted',
+      resolvedOwners: [],
+      routeResolution: null,
+      routeResolvedAt: null,
+      sourceContext: input.sourceContext ?? null,
       createdAt: '2026-06-30T12:00:00.000Z'
     };
     this.messages.push(message);
@@ -96,9 +102,10 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
       username: input.username,
       source: input.source,
       status: input.status ?? 'candidate',
-      rdaValidatedAt: null,
+      platformValidatedAt: null,
       assignedAt: null,
       errorMessage: input.errorMessage ?? null,
+      eventAt: input.eventAt ?? '2026-06-30T12:00:00.000Z',
       createdAt: '2026-06-30T12:00:00.000Z',
       updatedAt: '2026-06-30T12:00:00.000Z'
     };
@@ -110,7 +117,7 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
     id: string,
     patch: {
       status: WhatsappQrMatchRecord['status'];
-      rdaValidatedAt?: string | null;
+      platformValidatedAt?: string | null;
       assignedAt?: string | null;
       errorMessage?: string | null;
     }
@@ -120,7 +127,7 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
 
     Object.assign(match, {
       status: patch.status,
-      rdaValidatedAt: patch.rdaValidatedAt ?? match.rdaValidatedAt,
+      platformValidatedAt: patch.platformValidatedAt ?? match.platformValidatedAt,
       assignedAt: patch.assignedAt ?? match.assignedAt,
       errorMessage: patch.errorMessage ?? match.errorMessage,
       updatedAt: '2026-06-30T12:01:00.000Z'
@@ -128,12 +135,41 @@ class FakeWhatsappQrStore implements Partial<WhatsappQrStore> {
     return match;
   }
 
-  async getRdaCredential(): Promise<typeof this.credentials | null> {
+  async getPlatformCredential(): Promise<typeof this.credentials | null> {
     return this.credentials;
   }
 
-  async getPlatformCredential(): Promise<typeof this.credentials | null> {
-    return this.credentials;
+  async listSessionRoutes() {
+    return [{
+      id: 'route-1',
+      sessionId: session.id,
+      ...owner,
+      status: 'active' as const,
+      isPrimary: true,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt
+    }];
+  }
+
+  async setMessageRoutes(input: { messageId: string; status: any; ownerIds?: string[]; resolution?: string | null }) {
+    const message = this.messages.find((item) => item.id === input.messageId)!;
+    message.routeStatus = input.status;
+    message.routeResolution = input.resolution ?? null;
+    message.routeResolvedAt = input.status === 'resolved' ? '2026-06-30T12:01:00.000Z' : null;
+    message.resolvedOwners = input.status === 'resolved'
+      ? (input.ownerIds ?? []).map((ownerId, index) => ({
+          ownerId,
+          pagina: 'RdA' as const,
+          resolution: input.resolution ?? 'test',
+          isPrimary: index === 0,
+          resolvedAt: '2026-06-30T12:01:00.000Z'
+        }))
+      : [];
+    return message;
+  }
+
+  async getActivePlatformOwnerPair() {
+    return null;
   }
 }
 
@@ -323,7 +359,7 @@ describe('n8n RdA credential sync', () => {
       }
     ]);
 
-    const upsertRdaCredential = vi.fn(async () => normalized.rows[0] as any);
+    const upsertPlatformCredential = vi.fn(async () => normalized.rows[0] as any);
     const result = await runN8nRdaCredentialSync({
       rows: normalized.rows,
       dryRun: true,
@@ -331,7 +367,7 @@ describe('n8n RdA credential sync', () => {
         resolveOwnerByKey: vi.fn(async (_pagina, ownerKey) =>
           ownerKey === 'luqui10:luqui10' ? owner : null
         ),
-        upsertRdaCredential
+        upsertPlatformCredential
       } as any
     });
 
@@ -339,6 +375,6 @@ describe('n8n RdA credential sync', () => {
     expect(result.skippedMissingOwner).toEqual([
       { ownerKey: 'desconocido:desconocido', sourceRef: 'data_table_user_fixture:2' }
     ]);
-    expect(upsertRdaCredential).not.toHaveBeenCalled();
+    expect(upsertPlatformCredential).not.toHaveBeenCalled();
   });
 });

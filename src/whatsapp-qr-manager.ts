@@ -83,7 +83,7 @@ export interface WhatsappQrManagerOptions {
 }
 
 export interface WhatsappQrDashboard {
-  sessions: Array<WhatsappQrSessionRecord & { hasRdaCredentials: boolean; hasPlatformCredentials: boolean }>;
+  sessions: Array<WhatsappQrSessionRecord & { hasPlatformCredentials: boolean }>;
   summary: WhatsappQrQueueSummary;
   queue: WhatsappQrPhoneQueueRow[];
   coverage?: WhatsappQrCoverageSummary | null;
@@ -92,7 +92,7 @@ export interface WhatsappQrDashboard {
   runtimeEnabled: boolean;
   ownerSummaries?: Array<{
     owner: WhatsappQrOwner;
-    session: (WhatsappQrSessionRecord & { hasRdaCredentials: boolean; hasPlatformCredentials: boolean }) | null;
+    session: (WhatsappQrSessionRecord & { hasPlatformCredentials: boolean }) | null;
     summary: WhatsappQrQueueSummary;
   }>;
 }
@@ -931,11 +931,7 @@ export class WhatsappQrManager {
                 ...message,
                 clientPhoneE164: phone
               });
-              const resolvedOwners = result.resolvedOwners?.length
-                ? result.resolvedOwners
-                : result.resolvedOwner
-                  ? [result.resolvedOwner]
-                  : [];
+              const resolvedOwners = result.resolvedOwners;
               if (resolvedOwners.length === 0) {
                 this.options.logger.info(
                   { sessionId: currentSession.id, phoneE164: phone, routeStatus: result.routeStatus },
@@ -987,11 +983,7 @@ export class WhatsappQrManager {
                 pushName: contact.pushName,
                 text: null
               });
-              const resolvedOwners = result.resolvedOwners?.length
-                ? result.resolvedOwners
-                : result.resolvedOwner
-                  ? [result.resolvedOwner]
-                  : [];
+              const resolvedOwners = result.resolvedOwners;
               if (resolvedOwners.length === 0) {
                 return;
               }
@@ -1082,9 +1074,7 @@ export class WhatsappQrManager {
     const monthWindow = buildWhatsappQrMonthWindow(month);
     const [sessions, credentialOwnerIds, monthClients, messages, matches, ignoredPhones, reportHealth] = await Promise.all([
       this.options.store.listSessions(ownerIds),
-      this.options.store.listPlatformCredentialOwnerIds
-        ? this.options.store.listPlatformCredentialOwnerIds(ownerIds)
-        : this.options.store.listCredentialOwnerIds(ownerIds),
+      this.options.store.listPlatformCredentialOwnerIds(ownerIds),
       this.options.store.listMonthClients({
         ownerId: owner.ownerId,
         monthStart: monthWindow.monthStartDate
@@ -1116,7 +1106,6 @@ export class WhatsappQrManager {
     return {
       sessions: sessions.map((session) => ({
         ...session,
-        hasRdaCredentials: credentialOwnerIds.has(session.ownerId),
         hasPlatformCredentials: credentialOwnerIds.has(session.ownerId)
       })),
       summary,
@@ -1138,12 +1127,9 @@ export class WhatsappQrManager {
     }
 
     const ownerIds = [...ownerById.keys()];
-    const credentialOwnerIds = this.options.store.listPlatformCredentialOwnerIds
-      ? await this.options.store.listPlatformCredentialOwnerIds(ownerIds)
-      : await this.options.store.listCredentialOwnerIds(ownerIds);
+    const credentialOwnerIds = await this.options.store.listPlatformCredentialOwnerIds(ownerIds);
     const safeSessions = sessions.map((session) => ({
       ...session,
-      hasRdaCredentials: credentialOwnerIds.has(session.ownerId),
       hasPlatformCredentials: credentialOwnerIds.has(session.ownerId)
     }));
     const sessionByOwnerId = new Map(safeSessions.map((session) => [session.ownerId, session]));
@@ -1259,7 +1245,7 @@ export class WhatsappQrManager {
     if (
       typeof this.options.store.getMessageById !== 'function' ||
       typeof this.options.store.listSessionRoutes !== 'function' ||
-      (typeof this.options.store.setMessageRoutes !== 'function' && typeof this.options.store.setMessageRoute !== 'function')
+      typeof this.options.store.setMessageRoutes !== 'function'
     ) {
       throw new Error('WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE');
     }
@@ -1281,26 +1267,18 @@ export class WhatsappQrManager {
       if (
         !rdaOwner ||
         !asnOwner ||
-        typeof this.options.store.getActivePlatformOwnerPair !== 'function' ||
         !(await this.options.store.getActivePlatformOwnerPair(rdaOwner.ownerId, asnOwner.ownerId))
       ) {
         throw new Error('QR_PAIR_NOT_CONFIGURED');
       }
     }
 
-    const routed = this.options.store.setMessageRoutes
-      ? await this.options.store.setMessageRoutes({
-          messageId,
-          status: 'resolved',
-          ownerIds: uniqueOwners.map((owner) => owner.ownerId),
-          resolution: uniqueOwners.length === 2 ? 'manual_paired_owner_selection' : 'manual_owner_selection'
-        })
-      : await this.options.store.setMessageRoute!({
-          messageId,
-          status: 'resolved',
-          ownerId: uniqueOwners[0].ownerId,
-          resolution: 'manual_owner_selection'
-        });
+    const routed = await this.options.store.setMessageRoutes({
+      messageId,
+      status: 'resolved',
+      ownerIds: uniqueOwners.map((owner) => owner.ownerId),
+      resolution: uniqueOwners.length === 2 ? 'manual_paired_owner_selection' : 'manual_owner_selection'
+    });
     const session = (await this.options.store.listSessions()).find((row) => row.id === message.sessionId);
     if (!session) {
       throw new Error('WHATSAPP_QR_SESSION_NOT_FOUND');

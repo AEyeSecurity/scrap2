@@ -2,7 +2,7 @@
 
 Este flujo dispara la corrida persistida de reportes ASN para todos los usuarios que cuelgan de `principalKey = asnlucas10`, espera a que el worker termine y luego trae el detalle final de items.
 
-El backend ya soporta este caso con `POST /reports/asn/run`.
+El backend usa exclusivamente `POST /reports/run`.
 
 ## Archivo para importar
 
@@ -20,6 +20,7 @@ Usa estos valores en un nodo `Edit Fields`:
 - `pagina`: `ASN`
 - `principalKey`: `asnlucas10`
 - `reportDate`: `{{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}`
+- `requestKey`: clave diaria idempotente para plataforma, fecha y principal
 - `pollSeconds`: `20`
 - `itemsLimit`: `500`
 
@@ -53,6 +54,7 @@ baseUrl                -> http://127.0.0.1:3000
 pagina                 -> ASN
 principalKey           -> asnlucas10
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
+requestKey             -> daily:ASN:{{ reportDate }}:asnlucas10
 pollSeconds            -> 20
 itemsLimit             -> 500
 ```
@@ -64,7 +66,7 @@ Si tu n8n no toma expresiones dentro de un valor literal, activa el modo expresi
 Tipo: `HTTP Request`
 
 - method: `POST`
-- url: `{{ $json.baseUrl }}/reports/asn/run`
+- url: `{{ $json.baseUrl }}/reports/run`
 - header: `Authorization: Bearer {{ $env.REPORT_API_TOKEN }}`
 - send body as: `JSON`
 
@@ -74,7 +76,8 @@ Body:
 {
   "pagina": "{{ $json.pagina }}",
   "principalKey": "{{ $json.principalKey }}",
-  "reportDate": "{{ $json.reportDate }}"
+  "reportDate": "{{ $json.reportDate }}",
+  "requestKey": "{{ $json.requestKey }}"
 }
 ```
 
@@ -84,7 +87,7 @@ Respuesta esperada:
 {
   "runId": "uuid",
   "status": "queued",
-  "statusUrl": "/reports/asn/run/uuid"
+  "statusUrl": "/reports/run/uuid"
 }
 ```
 
@@ -102,7 +105,7 @@ La primera espera evita pegarle al estado demasiado rapido.
 Tipo: `HTTP Request`
 
 - method: `GET`
-- url: `{{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl }}/reports/asn/run/{{ $('HTTP - Crear corrida ASN').item.json.runId }}`
+- url: `{{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl }}/reports/run/{{ $('HTTP - Crear corrida ASN').item.json.runId }}`
 
 Respuesta esperada:
 
@@ -146,7 +149,7 @@ Eso arma el loop de polling.
 Tipo: `HTTP Request`
 
 - method: `GET`
-- url: `{{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl }}/reports/asn/run/{{ $('HTTP - Crear corrida ASN').item.json.runId }}/items?limit={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.itemsLimit }}&offset=0`
+- url: `{{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl }}/reports/run/{{ $('HTTP - Crear corrida ASN').item.json.runId }}/items?limit={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.itemsLimit }}&offset=0`
 
 Respuesta esperada:
 
@@ -215,7 +218,8 @@ Este es el JSON efectivo que el nodo `HTTP - Crear corrida ASN` tiene que mandar
 {
   "pagina": "ASN",
   "principalKey": "asnlucas10",
-  "reportDate": "2026-03-10"
+  "reportDate": "2026-03-10",
+  "requestKey": "daily:ASN:2026-03-10:asnlucas10"
 }
 ```
 
@@ -223,10 +227,10 @@ Este es el JSON efectivo que el nodo `HTTP - Crear corrida ASN` tiene que mandar
 
 Si todo esta bien:
 
-- `POST /reports/asn/run` responde `202`
+- `POST /reports/run` responde `202`
 - el estado pasa de `queued` a `running`
 - termina en `completed` o `completed_with_errors`
-- `GET /reports/asn/run/:runId/items` devuelve los usernames del arbol `asnlucas10:*`
+- `GET /reports/run/:runId/items` devuelve los usernames del arbol `asnlucas10:*`
 
 Si falla:
 

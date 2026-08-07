@@ -139,7 +139,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
           botGroupKey: null,
           createdAt: '2026-06-30T12:00:00.000Z',
           updatedAt: '2026-06-30T12:00:00.000Z',
-          hasRdaCredentials: true
+          hasPlatformCredentials: true
         }
       ],
       summary: {
@@ -194,7 +194,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
           botGroupKey: null,
           createdAt: '2026-06-30T12:00:00.000Z',
           updatedAt: '2026-06-30T12:00:00.000Z',
-          hasRdaCredentials: true
+          hasPlatformCredentials: true
         },
         {
           id: 'session-lea',
@@ -215,7 +215,7 @@ function buildApp(overrides: Record<string, unknown> = {}) {
           botGroupKey: null,
           createdAt: '2026-06-30T12:00:00.000Z',
           updatedAt: '2026-06-30T12:00:00.000Z',
-          hasRdaCredentials: false
+          hasPlatformCredentials: false
         }
       ],
       summary: {

@@ -38,7 +38,7 @@ function buildMatch(overrides: Partial<WhatsappQrMatchRecord>): WhatsappQrMatchR
     username: 'player_contact',
     source: 'contact_name',
     status: 'candidate',
-    rdaValidatedAt: null,
+    platformValidatedAt: null,
     assignedAt: null,
     errorMessage: null,
     createdAt: '2026-07-01T15:43:00.000Z',

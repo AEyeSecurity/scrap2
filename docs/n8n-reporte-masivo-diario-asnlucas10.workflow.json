@@ -61,6 +61,12 @@
               "type": "string"
             },
             {
+              "id": "a89117fd-b188-48ba-860b-87ee807fe094",
+              "name": "requestKey",
+              "value": "={{ 'daily:ASN:' + $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') + ':asnlucas10' }}",
+              "type": "string"
+            },
+            {
               "id": "1799042c-74a7-47c3-a392-3a7c1781dc4f",
               "name": "pollSeconds",
               "value": 20,
@@ -88,12 +94,12 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $json.baseUrl + '/reports/asn/run' }}",
+        "url": "={{ $json.baseUrl + '/reports/run' }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, reportDate: $json.reportDate }) }}",
+        "jsonBody": "={{ JSON.stringify({ pagina: $json.pagina, principalKey: $json.principalKey, reportDate: $json.reportDate, requestKey: $json.requestKey }) }}",
         "options": {}
       },
       "id": "284cf122-c88e-4e59-a798-0263a5480449",
@@ -124,7 +130,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/asn/run/' + $('HTTP - Crear corrida ASN').item.json.runId }}",
+        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/run/' + $('HTTP - Crear corrida ASN').item.json.runId }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}
@@ -163,7 +169,7 @@
     {
       "parameters": {
         "method": "GET",
-        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/asn/run/' + $('HTTP - Crear corrida ASN').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos ASN Lucas10').item.json.itemsLimit + '&offset=0' }}",
+        "url": "={{ $('Edit Fields - Prefijos ASN Lucas10').item.json.baseUrl + '/reports/run/' + $('HTTP - Crear corrida ASN').item.json.runId + '/items?limit=' + $('Edit Fields - Prefijos ASN Lucas10').item.json.itemsLimit + '&offset=0' }}",
         "sendHeaders": true,
         "headerParameters": { "parameters": [{ "name": "Authorization", "value": "={{ 'Bearer ' + $env.REPORT_API_TOKEN }}" }] },
         "options": {}

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Browser, BrowserContext } from 'playwright';
 import type { Logger } from 'pino';
 import { handleAsnPostLoginContinue } from './asn-post-login';
@@ -42,9 +43,6 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
     if (session.pagina !== lease.pagina) {
       throw new Error(`Report run ${lease.runId} cannot mix ${session.pagina} and ${lease.pagina}`);
     }
-    if (session.ownerId !== lease.ownerId) {
-      throw new Error(`Report session owner mismatch for run ${lease.runId}`);
-    }
     return action(session);
   }
 
@@ -71,7 +69,12 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
   }
 
   private sessionKey(lease: ReportRunLease): string {
-    return `${lease.runId}:${lease.ownerId}`;
+    const credentialFingerprint = createHash('sha256')
+      .update(lease.loginUsername)
+      .update('\0')
+      .update(lease.loginPassword)
+      .digest('hex');
+    return `${lease.runId}:${lease.pagina}:${credentialFingerprint}`;
   }
 
   private async createSession(lease: ReportRunLease): Promise<ReportBrowserSession> {
@@ -99,7 +102,7 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
           context,
           page,
           runtimeConfig,
-          { username: lease.agente, password: lease.contrasenaAgente },
+          { username: lease.loginUsername, password: lease.loginPassword },
           runLogger,
           { persistSession: false }
         );

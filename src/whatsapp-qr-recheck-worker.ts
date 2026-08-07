@@ -37,7 +37,7 @@ function phoneToJid(phoneE164: string): string {
 }
 
 function matchAttemptAt(match: WhatsappQrMatchRecord): string {
-  return match.assignedAt ?? match.updatedAt ?? match.platformValidatedAt ?? match.rdaValidatedAt ?? match.createdAt;
+  return match.assignedAt ?? match.updatedAt ?? match.platformValidatedAt ?? match.createdAt;
 }
 
 function pickLatestMatch(matches: WhatsappQrMatchRecord[]): WhatsappQrMatchRecord | null {
@@ -174,7 +174,7 @@ export class WhatsappQrRecheckWorker {
             username: message.candidateUsername!,
             source: message.matchSource!,
             status: 'candidate' as const,
-            rdaValidatedAt: null,
+            platformValidatedAt: null,
             assignedAt: null,
             errorMessage: null,
             createdAt: message.createdAt,
@@ -267,11 +267,7 @@ export class WhatsappQrRecheckWorker {
     owner: WhatsappQrOwner,
     username: string
   ): Promise<boolean> {
-    const credentials = this.store.getPlatformCredential
-      ? await this.store.getPlatformCredential(row.ownerId, owner.pagina)
-      : owner.pagina === 'RdA'
-        ? await this.store.getRdaCredential(row.ownerId)
-        : null;
+    const credentials = await this.store.getPlatformCredential(row.ownerId, owner.pagina);
     if (!credentials) {
       await this.reschedule(row, `missing_${owner.pagina.toLowerCase()}_credentials`);
       return false;

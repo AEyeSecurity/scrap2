@@ -6,19 +6,11 @@ Archivo para importar directo en n8n:
 
 - `docs/n8n-reporte-masivo-diario-rda-luqui10.workflow.json`
 
-Endpoints recomendados para RdA:
-
-- `POST /reports/rda/run`
-- `GET /reports/rda/run/:runId`
-- `GET /reports/rda/run/:runId/items`
-
-Tambien puedes seguir usando los endpoints genericos:
+Endpoints de reportes:
 
 - `POST /reports/run`
 - `GET /reports/run/:runId`
 - `GET /reports/run/:runId/items`
-
-No uses `/reports/asn/run` para RdA, porque esa ruta fuerza `pagina = ASN`.
 
 ## Valores prefijados para este caso
 
@@ -29,6 +21,7 @@ baseUrl                -> http://127.0.0.1:3000
 pagina                 -> RdA
 principalKey           -> luqui10
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
+requestKey             -> daily:RdA:{{ reportDate }}:luqui10
 pollSeconds            -> 20
 itemsLimit             -> 500
 ```
@@ -41,7 +34,8 @@ El workflow propuesto trae `Manual Trigger` y `Schedule Trigger` separados.
 
 Si lo corres ahora con `Manual Trigger` y dejas `reportDate = {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}`, la corrida queda asociada a la fecha de hoy.
 
-La corrida programada de manana usa otra fecha, asi que no choca ni pisa el estado de manana. Solo habria conflicto si intentas crear dos corridas de `RdA` con el mismo `principalKey` y el mismo `reportDate`.
+La corrida programada usa una clave diaria idempotente. Para un piloto manual se
+debe usar una clave unica; así queda auditado sin modificar la corrida diaria.
 
 ## Payload de creacion
 
@@ -51,7 +45,8 @@ El nodo `HTTP - Crear corrida RdA` debe mandar:
 {
   "pagina": "RdA",
   "principalKey": "luqui10",
-  "reportDate": "2026-04-08"
+  "reportDate": "2026-04-08",
+  "requestKey": "daily:RdA:2026-04-08:luqui10"
 }
 ```
 
@@ -61,7 +56,7 @@ Respuesta esperada:
 {
   "runId": "uuid",
   "status": "queued",
-  "statusUrl": "/reports/rda/run/uuid"
+  "statusUrl": "/reports/run/uuid"
 }
 ```
 

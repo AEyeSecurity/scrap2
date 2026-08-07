@@ -46,7 +46,6 @@ export interface WhatsappQrSessionRecord {
   botGroupKey: string | null;
   createdAt: string;
   updatedAt: string;
-  hasRdaCredentials?: boolean;
   hasPlatformCredentials?: boolean;
 }
 
@@ -73,9 +72,7 @@ export interface WhatsappQrMessageRecord {
   messageTimestamp: string | null;
   eventAt: string;
   routeStatus: WhatsappQrMessageRouteStatus;
-  resolvedOwnerId: string | null;
   resolvedOwners: WhatsappQrMessageResolvedOwnerRecord[];
-  resolvedPagina: PaginaCode | null;
   routeResolution: string | null;
   routeResolvedAt: string | null;
   sourceContext: MetaSourceContext | null;
@@ -108,8 +105,7 @@ export interface WhatsappQrMatchRecord {
   username: string;
   source: WhatsappQrMatchSource;
   status: WhatsappQrMatchStatus;
-  rdaValidatedAt: string | null;
-  platformValidatedAt?: string | null;
+  platformValidatedAt: string | null;
   assignedAt: string | null;
   errorMessage: string | null;
   eventAt?: string;
@@ -122,17 +118,6 @@ export interface WhatsappQrMonthClientRecord {
   linkId: string | null;
   phoneE164: string;
   assignedUsername: string | null;
-}
-
-export interface WhatsappQrRdaCredential {
-  ownerId: string;
-  ownerKey: string;
-  pagina: 'RdA';
-  loginUsername: string;
-  loginPassword: string;
-  source: string;
-  sourceRef: string | null;
-  syncedAt: string;
 }
 
 export interface WhatsappQrPlatformCredential {
@@ -268,26 +253,20 @@ export interface WhatsappQrStore {
   listSessions(ownerIds?: string[] | null): Promise<WhatsappQrSessionRecord[]>;
   upsertSession(owner: WhatsappQrOwner, patch?: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
   updateSession(id: string, patch: UpsertWhatsappQrSessionPatch): Promise<WhatsappQrSessionRecord>;
-  listSessionRoutes?(sessionId: string, activeOnly?: boolean): Promise<WhatsappQrSessionRouteRecord[]>;
+  listSessionRoutes(sessionId: string, activeOnly?: boolean): Promise<WhatsappQrSessionRouteRecord[]>;
   upsertSessionRoute?(input: {
     sessionId: string;
     owner: WhatsappQrOwner;
     status?: WhatsappQrSessionRouteStatus;
     isPrimary?: boolean;
   }): Promise<WhatsappQrSessionRouteRecord>;
-  setMessageRoute?(input: {
-    messageId: string;
-    status: WhatsappQrMessageRouteStatus;
-    ownerId?: string | null;
-    resolution?: string | null;
-  }): Promise<WhatsappQrMessageRecord>;
-  setMessageRoutes?(input: {
+  setMessageRoutes(input: {
     messageId: string;
     status: WhatsappQrMessageRouteStatus;
     ownerIds?: string[];
     resolution?: string | null;
   }): Promise<WhatsappQrMessageRecord>;
-  getActivePlatformOwnerPair?(
+  getActivePlatformOwnerPair(
     rdaOwnerId: string,
     asnOwnerId: string
   ): Promise<WhatsappQrPlatformOwnerPairRecord | null>;
@@ -318,7 +297,6 @@ export interface WhatsappQrStore {
     id: string,
     patch: {
       status: WhatsappQrMatchStatus;
-      rdaValidatedAt?: string | null;
       platformValidatedAt?: string | null;
       assignedAt?: string | null;
       errorMessage?: string | null;
@@ -372,9 +350,8 @@ export interface WhatsappQrStore {
     phoneE164: string;
     ignoredByUserId?: number | null;
   }): Promise<void>;
-  getRdaCredential(ownerId: string): Promise<WhatsappQrRdaCredential | null>;
-  getPlatformCredential?(ownerId: string, pagina: PaginaCode): Promise<WhatsappQrPlatformCredential | null>;
-  upsertPlatformCredential?(input: {
+  getPlatformCredential(ownerId: string, pagina: PaginaCode): Promise<WhatsappQrPlatformCredential | null>;
+  upsertPlatformCredential(input: {
     ownerId: string;
     ownerKey: string;
     pagina: PaginaCode;
@@ -384,17 +361,7 @@ export interface WhatsappQrStore {
     sourceRef?: string | null;
     syncedAt?: string;
   }): Promise<WhatsappQrPlatformCredential>;
-  upsertRdaCredential(input: {
-    ownerId: string;
-    ownerKey: string;
-    loginUsername: string;
-    loginPassword: string;
-    source?: string;
-    sourceRef?: string | null;
-    syncedAt?: string;
-  }): Promise<WhatsappQrRdaCredential>;
-  listCredentialOwnerIds(ownerIds?: string[] | null): Promise<Set<string>>;
-  listPlatformCredentialOwnerIds?(ownerIds?: string[] | null): Promise<Set<string>>;
+  listPlatformCredentialOwnerIds(ownerIds?: string[] | null): Promise<Set<string>>;
   getLatestPlatformReportHealth?(ownerId: string, pagina: PaginaCode): Promise<WhatsappQrPlatformHealthRecord | null>;
 }
 
@@ -482,9 +449,7 @@ function asMessage(row: any): WhatsappQrMessageRecord {
     messageTimestamp: row.message_timestamp ?? null,
     eventAt: row.event_at ?? row.message_timestamp ?? row.created_at,
     routeStatus: row.route_status ?? 'resolved',
-    resolvedOwnerId: row.resolved_owner_id ?? row.owner_id ?? null,
     resolvedOwners,
-    resolvedPagina: row.resolved_pagina ? asPagina(row.resolved_pagina) : null,
     routeResolution: row.route_resolution ?? null,
     routeResolvedAt: row.route_resolved_at ?? null,
     sourceContext:
@@ -521,8 +486,7 @@ function asMatch(row: any): WhatsappQrMatchRecord {
     username: row.username,
     source: row.source,
     status: row.status,
-    rdaValidatedAt: row.rda_validated_at ?? null,
-    platformValidatedAt: row.platform_validated_at ?? row.rda_validated_at ?? null,
+    platformValidatedAt: row.platform_validated_at ?? null,
     assignedAt: row.assigned_at ?? null,
     errorMessage: row.error_message ?? null,
     eventAt: row.event_at ?? row.created_at,
@@ -584,19 +548,6 @@ function asBackfillRun(row: any): WhatsappQrBackfillRunRecord {
       row.summary_json && typeof row.summary_json === 'object' && !Array.isArray(row.summary_json) ? row.summary_json : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
-  };
-}
-
-function asCredential(row: any): WhatsappQrRdaCredential {
-  return {
-    ownerId: row.owner_id,
-    ownerKey: row.owner_key,
-    pagina: 'RdA',
-    loginUsername: row.login_username,
-    loginPassword: row.login_password,
-    source: row.source,
-    sourceRef: row.source_ref ?? null,
-    syncedAt: row.synced_at
   };
 }
 
@@ -1099,20 +1050,6 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     return asSessionRoute(data);
   }
 
-  async setMessageRoute(input: {
-    messageId: string;
-    status: WhatsappQrMessageRouteStatus;
-    ownerId?: string | null;
-    resolution?: string | null;
-  }): Promise<WhatsappQrMessageRecord> {
-    return this.setMessageRoutes({
-      messageId: input.messageId,
-      status: input.status,
-      ownerIds: input.ownerId ? [input.ownerId] : [],
-      resolution: input.resolution
-    });
-  }
-
   async setMessageRoutes(input: {
     messageId: string;
     status: WhatsappQrMessageRouteStatus;
@@ -1216,8 +1153,6 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       message_timestamp: input.messageTimestamp ?? null,
       event_at: input.messageTimestamp ?? new Date().toISOString(),
       route_status: 'unrouted',
-      resolved_owner_id: null,
-      resolved_pagina: null,
       route_resolution: null,
       route_resolved_at: null,
       source_context: input.sourceContext ?? null
@@ -1404,7 +1339,6 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     id: string,
       patch: {
         status: WhatsappQrMatchStatus;
-        rdaValidatedAt?: string | null;
         platformValidatedAt?: string | null;
       assignedAt?: string | null;
       errorMessage?: string | null;
@@ -1415,9 +1349,8 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       .from('mastercrm_whatsapp_qr_matches')
       .update({
         status: patch.status,
-        ...(patch.rdaValidatedAt !== undefined ? { rda_validated_at: patch.rdaValidatedAt } : {}),
         ...(patch.platformValidatedAt !== undefined
-          ? { platform_validated_at: patch.platformValidatedAt, rda_validated_at: patch.platformValidatedAt }
+          ? { platform_validated_at: patch.platformValidatedAt }
           : {}),
         ...(patch.assignedAt !== undefined ? { assigned_at: patch.assignedAt } : {}),
         ...(patch.errorMessage !== undefined ? { error_message: nullableText(patch.errorMessage) } : {}),
@@ -1707,11 +1640,6 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
     }
   }
 
-  async getRdaCredential(ownerId: string): Promise<WhatsappQrRdaCredential | null> {
-    const credential = await this.getPlatformCredential(ownerId, 'RdA');
-    return credential ? { ...credential, pagina: 'RdA' } : null;
-  }
-
   async getPlatformCredential(ownerId: string, pagina: PaginaCode): Promise<WhatsappQrPlatformCredential | null> {
     const { data, error } = await this.client
       .from('mastercrm_platform_credentials')
@@ -1760,52 +1688,6 @@ class SupabaseWhatsappQrStore implements WhatsappQrStore {
       throw mapPostgrestError(error, `Could not upsert ${input.pagina} credentials`);
     }
     return asPlatformCredential(data);
-  }
-
-  async upsertRdaCredential(input: {
-    ownerId: string;
-    ownerKey: string;
-    loginUsername: string;
-    loginPassword: string;
-    source?: string;
-    sourceRef?: string | null;
-    syncedAt?: string;
-  }): Promise<WhatsappQrRdaCredential> {
-    const syncedAt = input.syncedAt ?? new Date().toISOString();
-    await this.upsertPlatformCredential({
-      ...input,
-      pagina: 'RdA',
-      source: input.source ?? 'n8n',
-      syncedAt
-    });
-    const { data, error } = await this.client
-      .from('mastercrm_rda_credentials')
-      .upsert(
-        {
-          owner_id: input.ownerId,
-          pagina: 'RdA',
-          owner_key: normalizeMastercrmOwnerKey(input.ownerKey),
-          login_username: input.loginUsername.trim(),
-          login_password: input.loginPassword,
-          source: input.source ?? 'n8n',
-          source_ref: input.sourceRef ?? null,
-          synced_at: syncedAt,
-          updated_at: syncedAt
-        },
-        { onConflict: 'owner_id' }
-      )
-      .select('*')
-      .single();
-
-    if (error) {
-      throw mapPostgrestError(error, 'Could not upsert RdA credentials');
-    }
-
-    return asCredential(data);
-  }
-
-  async listCredentialOwnerIds(ownerIds?: string[] | null): Promise<Set<string>> {
-    return this.listPlatformCredentialOwnerIds(ownerIds);
   }
 
   async listPlatformCredentialOwnerIds(ownerIds?: string[] | null): Promise<Set<string>> {

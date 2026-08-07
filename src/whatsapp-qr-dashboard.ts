@@ -67,7 +67,7 @@ function messageSignalAt(message: WhatsappQrMessageRecord): string | null {
 }
 
 function matchAttemptAt(match: WhatsappQrMatchRecord): string | null {
-  return match.assignedAt ?? match.updatedAt ?? match.rdaValidatedAt ?? match.createdAt;
+  return match.assignedAt ?? match.updatedAt ?? match.platformValidatedAt ?? match.createdAt;
 }
 
 function latestCandidateFromMessages(

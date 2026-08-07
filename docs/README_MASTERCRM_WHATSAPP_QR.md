@@ -1,6 +1,9 @@
 # MasterCRM WhatsApp QR
 
-V1 mantiene n8n como entrada y routing manual. La solapa `WhatsApp QR` permite que cada cajero conecte su numero publicitario por QR tipo WhatsApp Web. El backend procesa eventos en modo solo lectura, detecta candidatos por nombre de contacto o mensaje saliente `Usuario: ...`, valida el username en RdA con credenciales sincronizadas y asigna `telefono -> username -> owner`.
+La solapa `WhatsApp QR` permite conectar una sesión física y enrutarla a uno o
+dos owners. El backend detecta candidatos, valida el username en todas las rutas
+activas con la credencial exacta de plataforma y solo hace una asignación doble
+cuando existe un par RdA/ASN explícito.
 
 Al conectar un QR, el backfill inicial procesa contactos e historial reciente que WhatsApp entrega en `messaging-history.set`, pero solo si el telefono existe en la cartera mensual del cajero (`owner_client_monthly_facts` del mes actual en America/Argentina/Buenos_Aires). No guarda conversaciones completas.
 
@@ -17,13 +20,16 @@ db/migrations/20260706_mastercrm_whatsapp_qr_auto_backfill_runs.sql
 Crea:
 
 - `mastercrm_whatsapp_qr_sessions`
+- `mastercrm_whatsapp_qr_session_routes`
 - `mastercrm_whatsapp_qr_messages`
+- `mastercrm_whatsapp_qr_message_resolutions`
 - `mastercrm_whatsapp_qr_matches`
-- `mastercrm_rda_credentials`
+- `mastercrm_platform_credentials`
 - `mastercrm_whatsapp_qr_ignored_phones`
 - `mastercrm_whatsapp_qr_backfill_runs`
 
-La API usa service role. El CRM no expone claves RdA ni `qr_payload`; solo muestra `qr_data_url`, estado, heartbeat y matches.
+La API usa service role. El CRM no expone contraseñas ni `qr_payload`; solo
+muestra `qr_data_url`, estado, heartbeat y matches.
 
 ## Variables
 
