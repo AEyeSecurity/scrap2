@@ -40,6 +40,8 @@ export interface ReportRunRecord {
   doneItems: number;
   failedItems: number;
   metadata: Record<string, unknown>;
+  /** Internal creation marker used to keep idempotent retries read-only. */
+  wasCreated?: boolean;
 }
 
 export interface ReportRunItemRecord {
@@ -349,14 +351,14 @@ export class SupabaseReportRunStore implements ReportRunStore {
         throw mapPostgrestError(existingError, 'Could not read idempotent report run');
       }
       if (existing) {
-        return asRunRecord(existing as ReportRunRow);
+        return { ...asRunRecord(existing as ReportRunRow), wasCreated: false };
       }
     }
     if (error) {
       throw mapPostgrestError(error, 'Could not create report run');
     }
 
-    return asRunRecord(data as ReportRunRow);
+    return { ...asRunRecord(data as ReportRunRow), wasCreated: true };
   }
 
   async deleteRun(runId: string): Promise<void> {

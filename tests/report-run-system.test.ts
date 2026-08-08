@@ -68,6 +68,7 @@ class FakeReportRunStore implements ReportRunStore {
   public readonly items = new Map<string, ReportRunItemRecord>();
   public readonly snapshots = new Map<string, Record<string, unknown>>();
   public readonly outbox: OutboxEntry[] = [];
+  public enqueueCalls = 0;
 
   private runSequence = 0;
   private itemSequence = 0;
@@ -95,7 +96,7 @@ class FakeReportRunStore implements ReportRunStore {
         run.reportDate === input.reportDate &&
         run.requestKey === input.requestKey
       ) {
-        return this.toRun(run);
+        return { ...this.toRun(run), wasCreated: false };
       }
     }
 
@@ -119,7 +120,7 @@ class FakeReportRunStore implements ReportRunStore {
       metadata: input.metadata ?? {}
     };
     this.runs.set(id, record);
-    return this.toRun(record);
+    return { ...this.toRun(record), wasCreated: true };
   }
 
   async deleteRun(runId: string): Promise<void> {
@@ -132,6 +133,7 @@ class FakeReportRunStore implements ReportRunStore {
   }
 
   async enqueueRunItemsFromPrincipal(runId: string, principalKey: string): Promise<number> {
+    this.enqueueCalls += 1;
     const run = this.requireRun(runId);
     const normalizedPrincipal = principalKey.toLowerCase();
     let inserted = 0;
@@ -1014,6 +1016,8 @@ describe('report run system', () => {
     const second = await server.inject({ method: 'POST', url: '/reports/run', payload });
     expect(second.statusCode).toBe(202);
     expect(second.json().runId).toBe(first.json().runId);
+    expect(store.enqueueCalls).toBe(1);
+    expect(store.runs.has(first.json().runId)).toBe(true);
 
     const third = await server.inject({
       method: 'POST',
@@ -1022,6 +1026,7 @@ describe('report run system', () => {
     });
     expect(third.statusCode).toBe(202);
     expect(third.json().runId).not.toBe(first.json().runId);
+    expect(store.enqueueCalls).toBe(2);
 
     await server.close();
   });

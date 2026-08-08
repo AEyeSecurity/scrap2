@@ -4396,6 +4396,16 @@ export function createServer(
         reportDate: payload.reportDate,
         requestKey: payload.requestKey
       });
+      if (run.wasCreated === false) {
+        return reply.code(202).send({
+          runId: run.id,
+          status: run.status,
+          statusUrl: `/reports/run/${run.id}`
+        });
+      }
+
+      // Only a run created by this request may be removed if seeding fails.
+      // An idempotent retry must never mutate or delete the audited original.
       runId = run.id;
       await store.enqueueRunItemsFromPrincipal(run.id, payload.principalKey);
 
