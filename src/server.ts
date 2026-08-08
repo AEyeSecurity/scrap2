@@ -159,6 +159,7 @@ interface ServerDependencies {
   reportWorkerPollMs?: number;
   reportWorkerMaxPollMs?: number;
   reportWorkerLeaseSeconds?: number;
+  reportWorkerItemTimeoutMs?: number;
   reportWorkerMaxAttempts?: number;
   reportJobExecutor?: ReportJobExecutor;
   retentionWorkerEnabled?: boolean;
@@ -2017,6 +2018,12 @@ export function createServer(
     dependencies?.reportWorkerMaxPollMs ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_POLL_MS, Math.max(reportWorkerPollMs * 6, 30_000));
   const reportWorkerLeaseSeconds =
     dependencies?.reportWorkerLeaseSeconds ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_LEASE_SECONDS, 60);
+  const reportWorkerItemTimeoutMs =
+    dependencies?.reportWorkerItemTimeoutMs ??
+    parsePositiveIntegerEnv(
+      process.env.REPORT_WORKER_ITEM_TIMEOUT_MS,
+      Math.min(120_000, Math.max(1_000, reportWorkerLeaseSeconds * 1_000 - 1_000))
+    );
   const reportWorkerMaxAttempts =
     dependencies?.reportWorkerMaxAttempts ?? parsePositiveIntegerEnv(process.env.REPORT_WORKER_MAX_ATTEMPTS, 3);
   const parsedReportScheduleStartHour = Number.parseInt(process.env.REPORT_EXPECTED_BA_START_HOUR ?? '', 10);
@@ -2475,6 +2482,7 @@ export function createServer(
       pollMs: reportWorkerPollMs,
       maxPollMs: reportWorkerMaxPollMs,
       leaseSeconds: reportWorkerLeaseSeconds,
+      itemTimeoutMs: reportWorkerItemTimeoutMs,
       maxAttempts: reportWorkerMaxAttempts,
       alertSender: getTelegramAlertSender(),
       asnEnabled: reportAsnEnabled,

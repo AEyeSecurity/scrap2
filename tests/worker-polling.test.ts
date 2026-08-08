@@ -219,6 +219,37 @@ describe('adaptive worker polling', () => {
     expect(store.snapshotted).toEqual([]);
   });
 
+  it('times out a stuck report item, closes its authenticated session, and leaves it retryable', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.leases.push(buildReportLease({ attempts: 1, maxAttempts: 3 }));
+    const executor = vi.fn(() => new Promise<never>(() => undefined)) as any;
+    executor.closeRun = vi.fn(async () => undefined);
+    const worker = new ReportRunWorker(
+      store,
+      createLogger('silent', false),
+      {
+        concurrency: 1,
+        pollMs: 100,
+        maxPollMs: 400,
+        leaseSeconds: 60,
+        itemTimeoutMs: 1_000,
+        maxAttempts: 3,
+        asnEnabled: true
+      },
+      executor
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(1_100);
+    await worker.stop();
+
+    expect(executor.closeRun).toHaveBeenCalledWith('run-1');
+    expect(store.failed).toEqual(['item-1']);
+    expect(store.terminalFailures).toEqual([false]);
+    expect(store.snapshotted).toEqual([]);
+  });
+
   it('cancels queued ASN work without opening a browser when ASN is not explicitly enabled', async () => {
     vi.useFakeTimers();
     const store = new FakeReportRunStore();

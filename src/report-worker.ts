@@ -26,6 +26,7 @@ export interface ReportRunWorkerOptions {
   pollMs: number;
   maxPollMs?: number;
   leaseSeconds: number;
+  itemTimeoutMs?: number;
   maxAttempts: number;
   alertSender?: TelegramAlertSender;
   asnEnabled?: boolean;
@@ -38,6 +39,7 @@ export class ReportRunWorker {
   private readonly pollMs: number;
   private readonly maxPollMs: number;
   private readonly leaseSeconds: number;
+  private readonly itemTimeoutMs: number;
   private readonly maxAttempts: number;
   private readonly executor: ReportJobExecutor;
   private readonly alertSender?: TelegramAlertSender;
@@ -61,6 +63,11 @@ export class ReportRunWorker {
     this.pollMs = Math.max(100, Math.trunc(options.pollMs));
     this.maxPollMs = Math.max(this.pollMs, Math.trunc(options.maxPollMs ?? Math.max(this.pollMs * 6, 30_000)));
     this.leaseSeconds = Math.max(1, Math.trunc(options.leaseSeconds));
+    const maximumTimeoutMs = Math.max(1_000, this.leaseSeconds * 1_000 - 1_000);
+    this.itemTimeoutMs = Math.min(
+      maximumTimeoutMs,
+      Math.max(1_000, Math.trunc(options.itemTimeoutMs ?? Math.min(120_000, maximumTimeoutMs)))
+    );
     this.maxAttempts = Math.max(1, Math.trunc(options.maxAttempts));
     this.executor = executor;
     this.alertSender = options.alertSender;
@@ -181,7 +188,7 @@ export class ReportRunWorker {
       if (lease.pagina === 'ASN' && !this.asnEnabled) {
         throw new Error('ASN_REPORTS_DISABLED');
       }
-      result = await this.executor(lease);
+      result = await this.executeLeaseWithTimeout(lease);
       const completed = await this.store.completeRunItem(lease, result);
       if (completed === false) {
         this.logger.warn({ runId: lease.runId, itemId: lease.itemId }, 'Discarded result from expired report lease');
@@ -251,6 +258,34 @@ export class ReportRunWorker {
       }
     } catch (error) {
       this.logger.error({ error, runId: lease.runId }, 'Could not refresh report run state');
+    }
+  }
+
+  private async executeLeaseWithTimeout(lease: ReportRunLease): Promise<ReportJobResult> {
+    let timeout: NodeJS.Timeout | null = null;
+    const execution = this.executor(lease);
+    const timeoutError = new Error(`REPORT_ITEM_TIMEOUT:${this.itemTimeoutMs}`);
+    try {
+      return await Promise.race([
+        execution,
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(timeoutError), this.itemTimeoutMs);
+          timeout.unref?.();
+        })
+      ]);
+    } catch (error) {
+      if (error === timeoutError) {
+        // Closing the authenticated run session aborts any Playwright action
+        // still pending in the background. The item remains retryable and the
+        // lease token prevents the abandoned attempt from committing later.
+        execution.catch(() => undefined);
+        await this.executor.closeRun?.(lease.runId).catch((closeError) =>
+          this.logger.error({ closeError, runId: lease.runId }, 'Could not close timed out report session')
+        );
+      }
+      throw error;
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 
