@@ -468,7 +468,10 @@ const reportRunParamsSchema = z.object({
 });
 
 const reportRunItemsQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(500).optional(),
+  // A daily principal run can legitimately contain more than 1,000 items.
+  // Keep one bounded response large enough for the operational n8n summary
+  // so deterministic error codes are never hidden on a later page.
+  limit: z.coerce.number().int().min(1).max(5000).optional(),
   offset: z.coerce.number().int().min(0).optional()
 });
 

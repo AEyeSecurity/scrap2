@@ -23,7 +23,7 @@ principalKey           -> luqui10
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
 requestKey             -> daily:RdA:{{ reportDate }}:luqui10
 pollSeconds            -> 20
-itemsLimit             -> 500
+itemsLimit             -> 5000
 ```
 
 `principalKey = luqui10` incluye los owners del arbol `luqui10:*`, por ejemplo `luqui10:luqui10` y `luqui10:vicky`.

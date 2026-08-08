@@ -22,7 +22,7 @@ Usa estos valores en un nodo `Edit Fields`:
 - `reportDate`: `{{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}`
 - `requestKey`: clave diaria idempotente para plataforma, fecha y principal
 - `pollSeconds`: `20`
-- `itemsLimit`: `500`
+- `itemsLimit`: `5000`
 
 Importante:
 
@@ -56,7 +56,7 @@ principalKey           -> asnlucas10
 reportDate             -> {{ $now.setZone('America/Argentina/Buenos_Aires').toFormat('yyyy-MM-dd') }}
 requestKey             -> daily:ASN:{{ reportDate }}:asnlucas10
 pollSeconds            -> 20
-itemsLimit             -> 500
+itemsLimit             -> 5000
 ```
 
 Si tu n8n no toma expresiones dentro de un valor literal, activa el modo expresion solo para `reportDate`.

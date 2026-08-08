@@ -75,7 +75,7 @@
             {
               "id": "d087424a-d2bb-4a55-b272-4b1461f2feb6",
               "name": "itemsLimit",
-              "value": 500,
+              "value": 5000,
               "type": "number"
             }
           ]

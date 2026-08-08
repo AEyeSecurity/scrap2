@@ -694,6 +694,18 @@ describe('report run system', () => {
       'vnaty893'
     ]);
 
+    const operationalSummaryPage = await server.inject({
+      method: 'GET',
+      url: `/reports/run/${body.runId}/items?limit=5000&offset=0`
+    });
+    expect(operationalSummaryPage.statusCode).toBe(200);
+
+    const oversizedPage = await server.inject({
+      method: 'GET',
+      url: `/reports/run/${body.runId}/items?limit=5001&offset=0`
+    });
+    expect(oversizedPage.statusCode).toBe(400);
+
     await server.close();
   });
 
