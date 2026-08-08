@@ -147,20 +147,31 @@
     {
       "parameters": {
         "conditions": {
-          "boolean": [
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
             {
-              "value1": "={{ ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes($json.status) }}",
-              "operation": "equal",
-              "value2": true
+              "id": "db0d11a9-651c-4f0e-9244-471d8a023054",
+              "leftValue": "={{ ['completed', 'completed_with_errors', 'failed', 'cancelled'].includes($json.status) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
             }
-          ]
+          ],
+          "combinator": "and"
         },
         "options": {}
       },
       "id": "92d3d93b-759c-413b-9c11-55d8bc9f4600",
       "name": "IF - Corrida finalizada",
       "type": "n8n-nodes-base.if",
-      "typeVersion": 2,
+      "typeVersion": 2.2,
       "position": [
         1700,
         320
