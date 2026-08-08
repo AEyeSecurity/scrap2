@@ -2208,6 +2208,11 @@ export function createServer(
     return null;
   }
 
+  async function resolveWhatsappQrPhysicalOwner(owner: WhatsappQrOwner): Promise<WhatsappQrOwner> {
+    const [physicalSession] = await getWhatsappQrStore().listSessions([owner.ownerId]);
+    return physicalSession ? whatsappQrSessionOwner(physicalSession) : owner;
+  }
+
   function getLandingSessionStore(): LandingSessionStore | null {
     if (cachedLandingSessionStore) {
       return cachedLandingSessionStore;
@@ -3809,7 +3814,8 @@ export function createServer(
         return reply.code(403).send({ message: 'ASN QR is not enabled for this owner', code: 'ASN_QR_NOT_ENABLED' });
       }
 
-      const qrSession = await getWhatsappQrManager().connect(qrOwner.owner);
+      const physicalOwner = await resolveWhatsappQrPhysicalOwner(qrOwner.owner);
+      const qrSession = await getWhatsappQrManager().connect(physicalOwner);
       return reply.code(200).send({ session: whatsappQrSessionToResponse(qrSession) });
     } catch (error) {
       const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
@@ -3851,14 +3857,15 @@ export function createServer(
           return reply.code(403).send({ message: 'No tenes permiso para desconectar otra sesion QR' });
         }
 
-        const targetSession = await getWhatsappQrStore().getSessionByOwner(parsed.data.ownerId);
-        if (!targetSession) {
+        const requestedOwner = await findWhatsappQrOwnerById(parsed.data.ownerId);
+        if (!requestedOwner) {
           return reply.code(404).send({ message: 'No se encontro la sesion QR solicitada' });
         }
-        targetOwner = whatsappQrSessionOwner(targetSession);
+        targetOwner = requestedOwner;
       }
 
-      const qrSession = await getWhatsappQrManager().disconnect(targetOwner);
+      const physicalOwner = await resolveWhatsappQrPhysicalOwner(targetOwner);
+      const qrSession = await getWhatsappQrManager().disconnect(physicalOwner);
       return reply.code(200).send({ session: whatsappQrSessionToResponse(qrSession) });
     } catch (error) {
       const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);

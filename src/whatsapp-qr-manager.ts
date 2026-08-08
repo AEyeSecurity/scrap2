@@ -1106,7 +1106,10 @@ export class WhatsappQrManager {
     return {
       sessions: sessions.map((session) => ({
         ...session,
-        hasPlatformCredentials: credentialOwnerIds.has(session.ownerId)
+        // A physical WhatsApp session can serve a secondary platform route.
+        // Credential health belongs to the selected logical owner, not to the
+        // owner that originally created the Baileys session.
+        hasPlatformCredentials: credentialOwnerIds.has(owner.ownerId)
       })),
       summary,
       queue,

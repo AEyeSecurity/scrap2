@@ -550,6 +550,45 @@ describe('WhatsappQrManager startup reattach', () => {
   });
 });
 
+describe('WhatsappQrManager routed dashboard health', () => {
+  it('reports credential health for the selected route owner, not the physical session owner', async () => {
+    const physicalSession = buildSession('session-shared', 'connected');
+    const asnOwner: WhatsappQrOwner = {
+      ownerId: 'owner-asn',
+      ownerKey: 'asnlucas10:lucas10',
+      ownerLabel: 'Lucas10',
+      pagina: 'ASN'
+    };
+    const manager = new WhatsappQrManager({
+      store: {
+        listSessions: vi.fn(async () => [physicalSession]),
+        listPlatformCredentialOwnerIds: vi.fn(async () => new Set([asnOwner.ownerId])),
+        listMonthClients: vi.fn(async () => []),
+        listMessagesForMonth: vi.fn(async () => []),
+        listMatchesForMonth: vi.fn(async () => []),
+        listIgnoredPhonesForMonth: vi.fn(async () => new Set<string>()),
+        getLatestPlatformReportHealth: vi.fn(async () => null)
+      } as any,
+      autoAssignService: { processMessage: vi.fn() } as any,
+      playerPhoneStore: { intakePendingCliente: vi.fn() } as any,
+      telegramAlerts: { send: vi.fn(async () => undefined) } as any,
+      logger: createLogger() as any,
+      runtime: { start: vi.fn() },
+      alertPollMs: 60_000
+    });
+
+    const dashboard = await manager.getDashboard(asnOwner, false, '2026-08');
+
+    expect(dashboard.sessions).toEqual([
+      expect.objectContaining({
+        ownerId: physicalSession.ownerId,
+        pagina: physicalSession.pagina,
+        hasPlatformCredentials: true
+      })
+    ]);
+  });
+});
+
 describe('WhatsappQrManager Telegram alerts', () => {
   it('alerts only disconnected sessions and marks them once', async () => {
     const connected = buildSession('session-connected-alert', 'connected');

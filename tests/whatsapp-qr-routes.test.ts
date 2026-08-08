@@ -88,6 +88,18 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         isActive: true,
         createdAt: '2026-06-30T00:00:00.000Z'
       }
+    ],
+    [
+      3,
+      {
+        id: 3,
+        username: 'lucas-asn',
+        nombre: 'Lucas ASN',
+        telefono: null,
+        inversion: 0,
+        isActive: true,
+        createdAt: '2026-06-30T00:00:00.000Z'
+      }
     ]
   ]);
   const linkedOwners = new Map([
@@ -109,6 +121,16 @@ function buildApp(overrides: Record<string, unknown> = {}) {
         ownerLabel: 'Luqui10',
         pagina: 'RdA',
         telefono: '+5493512222222'
+      }
+    ],
+    [
+      3,
+      {
+        ownerId: 'owner-asn',
+        ownerKey: 'asnlucas10:lucas10',
+        ownerLabel: 'Lucas10',
+        pagina: 'ASN',
+        telefono: '+5493513333333'
       }
     ]
   ]);
@@ -532,6 +554,74 @@ describe('WhatsApp QR CRM routes', () => {
 
       expect(response.statusCode).toBe(403);
       expect(whatsappQrManager.disconnect).not.toHaveBeenCalled();
+    });
+  });
+
+  it('reuses the physical session owner when a secondary ASN route connects', async () => {
+    await withEnv({ WHATSAPP_QR_ASN_ENABLED_OWNER_IDS: 'owner-asn' }, async () => {
+      const listSessions = vi.fn(async (ownerIds?: string[] | null) =>
+        ownerIds?.includes('owner-asn')
+          ? [
+              {
+                id: 'session-shared',
+                ownerId: 'owner-admin',
+                ownerKey: 'luqui10:luqui10',
+                ownerLabel: 'Luqui10',
+                pagina: 'RdA',
+                status: 'connected',
+                runtimeSessionId: 'runtime-admin',
+                phoneE164: '+5493513333333'
+              }
+            ]
+          : []
+      );
+      const { app, whatsappQrManager } = buildApp({ whatsappQrStore: { listSessions } });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/connect',
+        headers: authHeader(3, 'lucas-asn'),
+        payload: { user_id: 3 }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(whatsappQrManager.connect).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'owner-admin', pagina: 'RdA' })
+      );
+    });
+  });
+
+  it('disconnects the physical session owner when requested through a secondary ASN route', async () => {
+    await withEnv({ WHATSAPP_QR_ASN_ENABLED_OWNER_IDS: 'owner-asn' }, async () => {
+      const listSessions = vi.fn(async (ownerIds?: string[] | null) =>
+        ownerIds?.includes('owner-asn')
+          ? [
+              {
+                id: 'session-shared',
+                ownerId: 'owner-admin',
+                ownerKey: 'luqui10:luqui10',
+                ownerLabel: 'Luqui10',
+                pagina: 'RdA',
+                status: 'connected',
+                runtimeSessionId: 'runtime-admin',
+                phoneE164: '+5493513333333'
+              }
+            ]
+          : []
+      );
+      const { app, whatsappQrManager } = buildApp({ whatsappQrStore: { listSessions } });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/mastercrm-whatsapp-qr/disconnect',
+        headers: authHeader(3, 'lucas-asn'),
+        payload: { user_id: 3 }
+      });
+      await app.close();
+
+      expect(response.statusCode).toBe(200);
+      expect(whatsappQrManager.disconnect).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'owner-admin', pagina: 'RdA' })
+      );
     });
   });
 
