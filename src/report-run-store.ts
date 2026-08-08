@@ -660,7 +660,7 @@ export class SupabaseReportRunStore implements ReportRunStore {
   }
 
   async listRunItems(runId: string, limit: number, offset: number): Promise<ReportRunItemsPage> {
-    const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
+    const safeLimit = Math.max(1, Math.min(5000, Math.trunc(limit)));
     const safeOffset = Math.max(0, Math.trunc(offset));
     const { data, error, count } = await this.client
       .from('report_run_items')
