@@ -464,7 +464,9 @@ export function buildMetaConversionsRequestBody(
     event_time: Math.floor(new Date(lease.eventTime).getTime() / 1000),
     event_id: lease.eventId,
     action_source: config.actionSource,
-    ...(eventSourceUrl ? { event_source_url: eventSourceUrl } : {}),
+    ...(eventSourceUrl && config.actionSource !== 'business_messaging'
+      ? { event_source_url: eventSourceUrl }
+      : {}),
     ...(config.actionSource === 'business_messaging' ? { messaging_channel: 'whatsapp' } : {}),
     user_data: {
       ...userData,

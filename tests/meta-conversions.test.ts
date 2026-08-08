@@ -617,6 +617,7 @@ describe('meta conversions dispatcher', () => {
         currency: 'ARS'
       }
     });
+    expect(body.data[0]).not.toHaveProperty('event_source_url');
   });
 
   it('routes landing-attributed leases to the landing dispatcher', async () => {
