@@ -148,6 +148,33 @@ grant execute on function public.claim_next_report_run_item(integer, integer) to
 
 -- Multi-owner resolutions are canonical. Remove the single-owner message and
 -- RdA validation aliases after verifying their canonical backfills.
+insert into public.mastercrm_whatsapp_qr_message_resolutions (
+  message_id,
+  owner_id,
+  pagina,
+  resolution,
+  is_primary,
+  resolved_at
+)
+select
+  messages.id,
+  messages.resolved_owner_id,
+  messages.resolved_pagina,
+  coalesce(nullif(btrim(messages.route_resolution), ''), 'legacy_single_route_backfill'),
+  true,
+  coalesce(messages.route_resolved_at, messages.event_at, messages.created_at)
+from public.mastercrm_whatsapp_qr_messages messages
+where messages.route_status = 'resolved'
+  and messages.resolved_owner_id is not null
+  and messages.resolved_pagina in ('ASN', 'RdA')
+  and not exists (
+    select 1
+    from public.mastercrm_whatsapp_qr_message_resolutions resolutions
+    where resolutions.message_id = messages.id
+      and resolutions.owner_id = messages.resolved_owner_id
+  )
+on conflict (message_id, owner_id) do nothing;
+
 do $$
 begin
   if exists (

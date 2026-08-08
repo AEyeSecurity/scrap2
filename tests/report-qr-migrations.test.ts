@@ -93,6 +93,8 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).toContain('drop column if exists rda_validated_at');
     expect(sql).toContain('drop function if exists public.set_whatsapp_qr_message_route_v1');
     expect(sql).toContain('create function public.set_whatsapp_qr_message_routes_v1');
+    expect(sql).toContain("'legacy_single_route_backfill'");
+    expect(sql).toContain('on conflict (message_id, owner_id) do nothing');
     expect(sql).toContain('cannot remove qr legacy columns: unresolved canonical backfill');
   });
 });
