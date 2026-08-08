@@ -662,20 +662,34 @@ export class SupabaseReportRunStore implements ReportRunStore {
   async listRunItems(runId: string, limit: number, offset: number): Promise<ReportRunItemsPage> {
     const safeLimit = Math.max(1, Math.min(5000, Math.trunc(limit)));
     const safeOffset = Math.max(0, Math.trunc(offset));
-    const { data, error, count } = await this.client
-      .from('report_run_items')
-      .select('*', { count: 'exact' })
-      .eq('run_id', runId)
-      .order('created_at', { ascending: true })
-      .range(safeOffset, safeOffset + safeLimit - 1);
+    const databasePageSize = 1000;
+    const rows: ReportRunItemRow[] = [];
+    let total: number | null = null;
+    let cursor = safeOffset;
 
-    if (error) {
-      throw mapPostgrestError(error, 'Could not list report run items');
+    while (rows.length < safeLimit) {
+      const chunkSize = Math.min(databasePageSize, safeLimit - rows.length);
+      const { data, error, count } = await this.client
+        .from('report_run_items')
+        .select('*', { count: 'exact' })
+        .eq('run_id', runId)
+        .order('created_at', { ascending: true })
+        .range(cursor, cursor + chunkSize - 1);
+
+      if (error) {
+        throw mapPostgrestError(error, 'Could not list report run items');
+      }
+
+      const chunk = (data ?? []) as ReportRunItemRow[];
+      total = count ?? total;
+      rows.push(...chunk);
+      if (chunk.length < chunkSize) break;
+      cursor += chunk.length;
     }
 
     return {
-      items: (data as ReportRunItemRow[]).map(asItemRecord),
-      total: count ?? 0
+      items: rows.map(asItemRecord),
+      total: total ?? rows.length
     };
   }
 }
