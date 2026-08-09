@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RunAuthenticatedReportSessionManager } from '../src/report-browser-session';
 
 describe('credential-scoped authenticated report sessions', () => {
-  it('reuses one login per exact credential in a run and closes every distinct session', async () => {
+  it('reuses one login per exact credential and closes it before switching credentials', async () => {
     const manager = new RunAuthenticatedReportSessionManager(
       {} as any,
       { child: vi.fn() } as any,
@@ -37,10 +37,58 @@ describe('credential-scoped authenticated report sessions', () => {
     }, async () => undefined);
 
     expect(createSession).toHaveBeenCalledTimes(2);
-    await manager.closeRun('run-1');
     expect(sessions.get('owner-1:shared-login').context.close).toHaveBeenCalledOnce();
     expect(sessions.get('owner-1:shared-login').browser.close).toHaveBeenCalledOnce();
+    expect(sessions.get('owner-3:other-login').context.close).not.toHaveBeenCalled();
+    expect(sessions.get('owner-3:other-login').browser.close).not.toHaveBeenCalled();
+
+    await manager.closeRun('run-1');
     expect(sessions.get('owner-3:other-login').context.close).toHaveBeenCalledOnce();
     expect(sessions.get('owner-3:other-login').browser.close).toHaveBeenCalledOnce();
+  });
+
+  it('serializes report actions so a credential switch cannot close an active session', async () => {
+    const manager = new RunAuthenticatedReportSessionManager(
+      {} as any,
+      { child: vi.fn() } as any,
+      {} as any
+    );
+    const createSession = vi.spyOn(manager as any, 'createSession').mockImplementation(async (lease: any) => ({
+      runId: lease.runId,
+      ownerId: lease.ownerId,
+      pagina: lease.pagina,
+      browser: { close: vi.fn(async () => undefined) },
+      context: { close: vi.fn(async () => undefined) }
+    }));
+    let releaseFirstAction!: () => void;
+    const firstActionFinished = new Promise<void>((resolve) => {
+      releaseFirstAction = resolve;
+    });
+    let markFirstActionStarted!: () => void;
+    const firstActionStarted = new Promise<void>((resolve) => {
+      markFirstActionStarted = resolve;
+    });
+    const lease = {
+      runId: 'run-1', ownerId: 'owner-1', pagina: 'RdA',
+      loginUsername: 'first-login', loginPassword: 'first-password'
+    } as any;
+
+    const first = manager.withSession(lease, async () => {
+      markFirstActionStarted();
+      await firstActionFinished;
+    });
+    await firstActionStarted;
+    const second = manager.withSession({
+      ...lease,
+      ownerId: 'owner-2',
+      loginUsername: 'second-login',
+      loginPassword: 'second-password'
+    }, async () => undefined);
+
+    await Promise.resolve();
+    expect(createSession).toHaveBeenCalledTimes(1);
+    releaseFirstAction();
+    await Promise.all([first, second]);
+    expect(createSession).toHaveBeenCalledTimes(2);
   });
 });

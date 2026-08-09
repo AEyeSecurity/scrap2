@@ -21,8 +21,15 @@ export interface PlatformReportSessionManager {
   closeRun(runId: string): Promise<void>;
 }
 
+interface CachedReportSession {
+  key: string;
+  runId: string;
+  promise: Promise<ReportBrowserSession>;
+}
+
 export class RunAuthenticatedReportSessionManager implements PlatformReportSessionManager {
-  private readonly sessions = new Map<string, Promise<ReportBrowserSession>>();
+  private currentSession: CachedReportSession | null = null;
+  private operationQueue: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly appConfig: AppConfig,
@@ -31,41 +38,31 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
   ) {}
 
   async withSession<T>(lease: ReportRunLease, action: (session: ReportBrowserSession) => Promise<T>): Promise<T> {
-    const sessionKey = this.sessionKey(lease);
-    let sessionPromise = this.sessions.get(sessionKey);
-    if (!sessionPromise) {
-      sessionPromise = this.createSession(lease);
-      this.sessions.set(sessionKey, sessionPromise);
-      sessionPromise.catch(() => this.sessions.delete(sessionKey));
-    }
+    const previousOperation = this.operationQueue;
+    let releaseOperation!: () => void;
+    this.operationQueue = new Promise<void>((resolve) => {
+      releaseOperation = resolve;
+    });
 
-    const session = await sessionPromise;
-    if (session.pagina !== lease.pagina) {
-      throw new Error(`Report run ${lease.runId} cannot mix ${session.pagina} and ${lease.pagina}`);
+    await previousOperation;
+    try {
+      const session = await this.getOrCreateSession(lease);
+      if (session.pagina !== lease.pagina) {
+        throw new Error(`Report run ${lease.runId} cannot mix ${session.pagina} and ${lease.pagina}`);
+      }
+      return await action(session);
+    } finally {
+      releaseOperation();
     }
-    return action(session);
   }
 
   async closeRun(runId: string): Promise<void> {
-    const runPrefix = `${runId}:`;
-    const sessionPromises: Promise<ReportBrowserSession>[] = [];
-    for (const [key, sessionPromise] of this.sessions) {
-      if (key.startsWith(runPrefix)) {
-        this.sessions.delete(key);
-        sessionPromises.push(sessionPromise);
-      }
+    const cachedSession = this.currentSession;
+    if (!cachedSession || cachedSession.runId !== runId) {
+      return;
     }
-    await Promise.all(
-      sessionPromises.map(async (sessionPromise) => {
-        try {
-          const session = await sessionPromise;
-          await session.context.close().catch(() => undefined);
-          await session.browser.close().catch(() => undefined);
-        } catch {
-          // Session creation already performs its own cleanup.
-        }
-      })
-    );
+    this.currentSession = null;
+    await this.closeSession(cachedSession.promise);
   }
 
   private sessionKey(lease: ReportRunLease): string {
@@ -75,6 +72,39 @@ export class RunAuthenticatedReportSessionManager implements PlatformReportSessi
       .update(lease.loginPassword)
       .digest('hex');
     return `${lease.runId}:${lease.pagina}:${credentialFingerprint}`;
+  }
+
+  private async getOrCreateSession(lease: ReportRunLease): Promise<ReportBrowserSession> {
+    const key = this.sessionKey(lease);
+    if (this.currentSession?.key === key) {
+      return this.currentSession.promise;
+    }
+
+    if (this.currentSession) {
+      const staleSession = this.currentSession;
+      this.currentSession = null;
+      await this.closeSession(staleSession.promise);
+    }
+
+    const promise = this.createSession(lease);
+    const cachedSession: CachedReportSession = { key, runId: lease.runId, promise };
+    this.currentSession = cachedSession;
+    promise.catch(() => {
+      if (this.currentSession === cachedSession) {
+        this.currentSession = null;
+      }
+    });
+    return promise;
+  }
+
+  private async closeSession(sessionPromise: Promise<ReportBrowserSession>): Promise<void> {
+    try {
+      const session = await sessionPromise;
+      await session.context.close().catch(() => undefined);
+      await session.browser.close().catch(() => undefined);
+    } catch {
+      // Session creation already performs its own cleanup.
+    }
   }
 
   private async createSession(lease: ReportRunLease): Promise<ReportBrowserSession> {
