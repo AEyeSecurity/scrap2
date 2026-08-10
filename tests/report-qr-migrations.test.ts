@@ -97,4 +97,14 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).toContain('on conflict (message_id, owner_id) do nothing');
     expect(sql).toContain('cannot remove qr legacy columns: unresolved canonical backfill');
   });
+
+  it('backfills QR intake transport only from an exact canonical message match', () => {
+    const sql = migration('20260810143000_backfill_qr_intake_transport.sql');
+    expect(sql).toContain("messages.direction = 'inbound'");
+    expect(sql).toContain("messages.route_status = 'resolved'");
+    expect(sql).toContain('messages.event_at = events.occurred_at');
+    expect(sql).toContain('resolutions.owner_id = events.owner_id');
+    expect(sql).toContain("jsonb_build_object('intaketransport', 'whatsapp_qr')");
+    expect(sql).not.toContain("coalesce(events.payload -> 'source_context' ->> 'intaketransport', 'whatsapp_qr')");
+  });
 });
