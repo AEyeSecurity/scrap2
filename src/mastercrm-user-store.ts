@@ -1897,7 +1897,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
   private async getLinkedOwnerRows(userId: number): Promise<OwnerRow[]> {
     const { data, error } = await this.client
       .from('mastercrm_user_owner_links')
-      .select('id, owner_id, pagina, created_at, owners!inner(id, owner_key, owner_label, pagina)')
+      .select(
+        'id, owner_id, pagina, created_at, owners!mastercrm_user_owner_links_owner_id_fkey!inner(id, owner_key, owner_label, pagina)'
+      )
       .eq('mastercrm_user_id', userId)
       .order('created_at', { ascending: true });
 
@@ -2074,7 +2076,9 @@ class SupabaseMastercrmUserStore implements MastercrmUserStore {
     const owner = ownerData as OwnerRow;
     const { data: existingLinkData, error: existingLinkError } = await this.client
       .from('mastercrm_user_owner_links')
-      .select('id, owner_id, pagina, owners!inner(id, owner_key, owner_label, pagina)')
+      .select(
+        'id, owner_id, pagina, owners!mastercrm_user_owner_links_owner_id_fkey!inner(id, owner_key, owner_label, pagina)'
+      )
       .eq('mastercrm_user_id', input.userId)
       .eq('pagina', pagina)
       .maybeSingle();

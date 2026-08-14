@@ -200,7 +200,7 @@ async function main() {
 
     const secondLinkRows = await supabase
       .from('mastercrm_user_owner_links')
-      .select('owner_id, owners!inner(owner_key)')
+      .select('owner_id, owners!mastercrm_user_owner_links_owner_id_fkey!inner(owner_key)')
       .eq('mastercrm_user_id', userId);
     assert(!secondLinkRows.error, `Link row query failed: ${secondLinkRows.error?.message}`);
     assert((secondLinkRows.data ?? []).length === 1, 'Expected exactly one owner link row after relink');
