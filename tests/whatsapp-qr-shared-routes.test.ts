@@ -413,7 +413,7 @@ describe('WhatsApp QR shared session routing', () => {
     expect(assignUsernameByPhone).not.toHaveBeenCalled();
   });
 
-  it('does not choose the healthy route when another route validation fails', async () => {
+  it('assigns the healthy platform while the other route remains in technical review', async () => {
     const { service, assignUsernameByPhone } = buildService({ rdaFound: true, asnFound: false, asnError: true });
     const result = await service.processMessage({
       owner: rdaOwner,
@@ -424,9 +424,10 @@ describe('WhatsApp QR shared session routing', () => {
       text: 'Usuario: player_123 Contraseña: secret'
     });
 
-    expect(result.routeStatus).toBe('error');
-    expect(result.resolvedOwners).toEqual([]);
-    expect(assignUsernameByPhone).not.toHaveBeenCalled();
+    expect(result.routeStatus).toBe('resolved');
+    expect(result.resolvedOwners.map((owner) => owner.ownerId)).toEqual([rdaOwner.ownerId]);
+    expect(result.matches.some((match) => match.status === 'error')).toBe(true);
+    expect(assignUsernameByPhone).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a message without routing evidence unrouted in a shared session', async () => {

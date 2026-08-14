@@ -3453,6 +3453,122 @@ describe('server routes', () => {
     await server.close();
   });
 
+  it('POST /whatsapp/intake creates a neutral central route and preserves its exact destination', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const createCentralIntake = vi.fn(async () => ({
+      userId: 77,
+      contactId: 'contact-central-1',
+      eventType: 'intake' as const,
+      routingKey: 'valerio',
+      routeContext: { actorAlias: 'Franco', actorPhone: '+5493517362710' },
+      linkedOwners: [],
+      expiresAt: '2026-08-14T12:00:00.000Z'
+    }));
+    Object.assign(store, {
+      createCentralIntake,
+      resolveCentralRoute: vi.fn(async () => null)
+    });
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        routingKey: 'valerio',
+        body: {
+          To: 'whatsapp:+14155238886',
+          From: 'whatsapp:+5493515550001',
+          MessageSid: 'SM_CENTRAL_1'
+        },
+        routeContext: { actorAlias: 'Franco', actorPhone: '+5493517362710' }
+      }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      status: 'ok',
+      mode: 'central',
+      routingKey: 'valerio',
+      routeContext: { actorAlias: 'Franco', actorPhone: '+5493517362710' },
+      linkedPlatforms: [],
+      configurationWarning: expect.any(String)
+    });
+    expect(createCentralIntake).toHaveBeenCalledWith(expect.objectContaining({
+      routingKey: 'valerio',
+      phoneE164: '+5493515550001',
+      channelKey: '+14155238886',
+      messageSid: 'SM_CENTRAL_1'
+    }));
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake resolves a central reply from To plus client phone without routingKey', async () => {
+    const queue = new FakeQueue();
+    const store = new FakeMastercrmUserStore();
+    const resolveCentralRoute = vi.fn(async () => ({
+      routingKey: 'valerio',
+      routeContext: { actorAlias: 'Mari', actorPhone: '+5493517363879' },
+      linkedOwners: [{ ownerId: 'owner-rda', ownerKey: 'rda-valerio', ownerLabel: 'Valerio', pagina: 'RdA' as const, telefono: null }],
+      expiresAt: '2026-08-14T12:00:00.000Z'
+    }));
+    Object.assign(store, { createCentralIntake: vi.fn(), resolveCentralRoute });
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      queue,
+      { mastercrmUserStore: store }
+    );
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: { body: { To: 'whatsapp:+14155238886', WaId: '5493515550001' } }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      mode: 'central',
+      routingKey: 'valerio',
+      routeContext: { actorAlias: 'Mari', actorPhone: '+5493517363879' },
+      linkedPlatforms: ['RdA']
+    });
+    expect(resolveCentralRoute).toHaveBeenCalledWith({
+      channelKey: '+14155238886',
+      phoneE164: '+5493515550001'
+    });
+    await server.close();
+  });
+
+  it('POST /whatsapp/intake rejects mixed legacy and central routing contracts', async () => {
+    const server = createServer(
+      buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+      { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+      createLogger('silent', false),
+      new FakeQueue(),
+      { mastercrmUserStore: new FakeMastercrmUserStore() }
+    );
+    const response = await server.inject({
+      method: 'POST',
+      url: '/whatsapp/intake',
+      payload: {
+        pagina: 'RdA',
+        routingKey: 'valerio',
+        routeContext: { actorAlias: 'Franco', actorPhone: '+5493517362710' },
+        body: { To: 'whatsapp:+14155238886', WaId: '5493515550001' }
+      }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'INVALID_PAYLOAD' });
+    await server.close();
+  });
+
   it('POST /whatsapp/intake persists Twilio intake from WaId and enqueues Meta lead when attributable', async () => {
     const queue = new FakeQueue();
     const playerPhoneStore = new FakePlayerPhoneStore();

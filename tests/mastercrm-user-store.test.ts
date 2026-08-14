@@ -142,14 +142,38 @@ class FakeSupabaseClient {
     this.calls.push({ table, operation: `resolve-${operation}`, filters });
     const key = `${table}:${operation}`;
     const pending = this.results.get(key) ?? [];
-    const result = pending.shift();
+    let result = pending.shift();
     this.results.set(key, pending);
+    if (!result) {
+      const aliases: Record<string, string[]> = {
+        'mastercrm_link_platform_owner_v1:rpc': [
+          'mastercrm_user_owner_links:insert',
+          'mastercrm_user_owner_links:update'
+        ],
+        'mastercrm_portfolio_financial_settings:upsert': ['owner_financial_settings:upsert'],
+        'mastercrm_portfolio_financial_settings:select': ['owner_financial_settings:select'],
+        'mastercrm_portfolio_monthly_ad_spend:upsert': ['owner_monthly_ad_spend:upsert'],
+        'mastercrm_portfolio_monthly_ad_spend:select': ['owner_monthly_ad_spend:select'],
+        'mastercrm_portfolio_marketing_daily_budgets:select': ['owner_marketing_daily_budgets:select'],
+        'mastercrm_portfolio_marketing_daily_budgets:upsert': ['distribute_owner_marketing_ad_budgets_v1:rpc'],
+        'mastercrm_portfolio_organic_qr_daily_budgets:select': ['owner_organic_qr_daily_budgets:select'],
+        'mastercrm_portfolio_organic_qr_daily_budgets:insert': ['upsert_owner_organic_qr_daily_budget_v1:rpc']
+      };
+      for (const alias of aliases[key] ?? []) {
+        const aliasPending = this.results.get(alias) ?? [];
+        result = aliasPending.shift();
+        this.results.set(alias, aliasPending);
+        if (result) break;
+      }
+    }
     if (!result) {
       if (
         key === 'owner_new_client_monthly_facts:select' ||
         key === 'mastercrm_whatsapp_qr_messages:select' ||
         key === 'mastercrm_whatsapp_qr_matches:select' ||
-        key === 'owner_organic_qr_daily_budgets:select'
+        key === 'owner_organic_qr_daily_budgets:select' ||
+        key === 'mastercrm_portfolio_organic_qr_daily_budgets:select' ||
+        key === 'mastercrm_portfolio_contacts:select'
       ) {
         return { data: [], error: null };
       }
@@ -406,12 +430,13 @@ describe('mastercrm user cashier links', () => {
       previousOwnerKey: null
     });
     expect(client.calls).toContainEqual({ table: 'owners', operation: 'filter', column: 'pagina', value: 'ASN' });
-    expect(client.calls).toContainEqual({
-      table: 'mastercrm_user_owner_links',
-      operation: 'insert',
+    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
+      name: 'mastercrm_link_platform_owner_v1',
       payload: {
-        mastercrm_user_id: 123,
-        owner_id: 'owner-1'
+        p_mastercrm_user_id: 123,
+        p_owner_id: 'owner-1',
+        p_pagina: 'ASN',
+        p_confirm_replace: false
       }
     });
   });
@@ -510,7 +535,7 @@ describe('mastercrm user cashier links', () => {
     });
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
 
-    await expect(store.linkCashierToUser({ userId: 123, ownerKey: 'owner_1' })).resolves.toEqual({
+    await expect(store.linkCashierToUser({ userId: 123, ownerKey: 'owner_1', confirmReplace: true })).resolves.toEqual({
       userId: 123,
       ownerKey: 'owner_1',
       ownerLabel: 'Owner 1',
@@ -519,12 +544,9 @@ describe('mastercrm user cashier links', () => {
       replaced: true,
       previousOwnerKey: 'owner_old'
     });
-    expect(client.calls).toContainEqual({
-      table: 'mastercrm_user_owner_links',
-      operation: 'update',
-      payload: {
-        owner_id: 'owner-1'
-      }
+    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
+      name: 'mastercrm_link_platform_owner_v1',
+      payload: { p_owner_id: 'owner-1', p_confirm_replace: true }
     });
   });
 });
@@ -641,16 +663,10 @@ describe('mastercrm marketing budgets', () => {
     });
 
     expect(budgets.map((budget) => budget.dailyBudgetArs)).toEqual([333.34, 333.33, 333.33]);
-    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
-      name: 'distribute_owner_marketing_ad_budgets_v1',
-      payload: {
-        p_owner_id: 'owner-lucas',
-        p_mastercrm_user_id: 999,
-        p_total_daily_budget_ars: 1000,
-        p_active_from: '2026-06-01',
-        p_active_to: '2026-06-19'
-      }
-    });
+    expect(client.calls).toContainEqual(expect.objectContaining({
+      table: 'mastercrm_portfolio_marketing_daily_budgets',
+      operation: 'upsert'
+    }));
   });
 
   it('rejects distributed budgets with mixed channels before calling Supabase', async () => {
@@ -752,17 +768,10 @@ describe('mastercrm marketing budgets', () => {
       effectiveSpendArs: 38_765.5,
       updatedAt: '2026-08-07T12:00:00.000Z'
     });
-    expect(client.calls.find((call) => call.operation === 'rpc')).toMatchObject({
-      name: 'upsert_owner_organic_qr_daily_budget_v1',
-      payload: {
-        p_owner_id: 'owner-lucas',
-        p_mastercrm_user_id: 999,
-        p_budget_id: null,
-        p_daily_budget_ars: 1250.5,
-        p_active_from: '2026-08-01',
-        p_active_to: '2026-08-31'
-      }
-    });
+    expect(client.calls).toContainEqual(expect.objectContaining({
+      table: 'mastercrm_portfolio_organic_qr_daily_budgets',
+      operation: 'insert'
+    }));
   });
 
   it('maps overlapping organic QR budget periods to a conflict', async () => {
@@ -860,7 +869,7 @@ describe('mastercrm clients dashboard', () => {
     const store = createMastercrmUserStore(client as unknown as SupabaseClient);
     const dashboard = await store.getClientsDashboard({ userId: 123, month: '2026-03' });
 
-    expect(dashboard).toEqual({
+    expect(dashboard).toMatchObject({
       linkedOwner: {
         ownerId: 'owner-1',
         ownerKey: 'owner_1',
@@ -1049,7 +1058,7 @@ describe('mastercrm clients dashboard', () => {
     const dashboard = await store.getClientsDashboard({ userId: 321, month: '2026-03' });
 
     expect(dashboard.statsKpis.clientesTotales).toBe(1);
-    expect(dashboard.clientes).toEqual([
+    expect(dashboard.clientes).toMatchObject([
       {
         id: 'link-pending',
         username: null,

@@ -1240,6 +1240,20 @@ export class WhatsappQrManager {
     });
   }
 
+  async deactivateRoute(sessionOwner: WhatsappQrOwner, routeOwner: WhatsappQrOwner): Promise<import('./whatsapp-qr-store').WhatsappQrSessionRouteRecord> {
+    const session = await this.options.store.getSessionByOwner(sessionOwner.ownerId);
+    if (!session) throw new Error('WHATSAPP_QR_SESSION_NOT_FOUND');
+    if (typeof this.options.store.upsertSessionRoute !== 'function') {
+      throw new Error('WHATSAPP_QR_SHARED_ROUTES_UNAVAILABLE');
+    }
+    return this.options.store.upsertSessionRoute({
+      sessionId: session.id,
+      owner: routeOwner,
+      status: 'inactive',
+      isPrimary: false
+    });
+  }
+
   async resolveMessageRoute(messageId: string, owner: WhatsappQrOwner): Promise<WhatsappQrMessageRecord> {
     return this.resolveMessageRoutes(messageId, [owner]);
   }

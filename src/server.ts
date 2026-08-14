@@ -394,13 +394,33 @@ const intakePendingBodySchema = z.object({
 
 const whatsappPayloadBodySchema = z.record(z.string(), z.unknown());
 
+const whatsappCentralRouteContextSchema = z.object({
+  actorAlias: z.string().trim().min(1),
+  actorPhone: z.string().trim().min(1)
+});
+
 const whatsappIntakeBodySchema = z.object({
-  pagina: paginaCodeSchema,
+  pagina: paginaCodeSchema.optional(),
+  routingKey: z.string().trim().min(1).optional(),
+  routeContext: whatsappCentralRouteContextSchema.optional(),
   telefono: z.string().trim().min(1).nullable().optional(),
   body: whatsappPayloadBodySchema.optional(),
   ownerContext: ownerContextSchema.optional(),
   sourceContext: sourceContextSchema.optional(),
   customerData: metaCustomerDataSchema.optional()
+}).superRefine((value, ctx) => {
+  if (value.pagina && value.routingKey) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['routingKey'], message: 'pagina and routingKey are mutually exclusive' });
+  }
+  if (value.routingKey && !value.routeContext) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['routeContext'], message: 'routeContext is required with routingKey' });
+  }
+  if (value.routingKey && value.ownerContext) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ownerContext'], message: 'ownerContext is only valid in legacy pagina mode' });
+  }
+  if (value.routeContext && !value.routingKey) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['routingKey'], message: 'routingKey is required with routeContext' });
+  }
 });
 
 const landingContactBodySchema = z
@@ -505,7 +525,8 @@ const mastercrmClientsBodySchema = z
     user_id: z.union([z.string(), z.number().int()]).optional(),
     usuario_id: z.union([z.string(), z.number().int()]).optional(),
     month: z.string().optional(),
-    mes: z.string().optional()
+    mes: z.string().optional(),
+    platform: z.enum(['all', 'ASN', 'RdA']).optional()
   })
   .passthrough();
 
@@ -514,7 +535,8 @@ const mastercrmLinkCashierBodySchema = z
     user_id: z.union([z.string(), z.number().int()]).optional(),
     owner_key: z.string().optional(),
     pagina: paginaCodeSchema.optional(),
-    staff_password: z.string().optional()
+    staff_password: z.string().optional(),
+    confirm_replace: z.boolean().optional()
   })
   .passthrough();
 
@@ -544,7 +566,8 @@ const mastercrmWhatsappQrAssignBodySchema = z
     phone_e164: z.string().optional(),
     telefono: z.string().optional(),
     username: z.string().optional(),
-    usuario: z.string().optional()
+    usuario: z.string().optional(),
+    pagina: paginaCodeSchema.optional()
   })
   .passthrough();
 
@@ -586,7 +609,8 @@ const mastercrmAnalyticsBodySchema = z
     campaign_key: z.string().optional(),
     campana_key: z.string().optional(),
     ad_key: z.string().optional(),
-    anuncio_key: z.string().optional()
+    anuncio_key: z.string().optional(),
+    platform: z.enum(['all', 'ASN', 'RdA']).optional()
   })
   .passthrough();
 
@@ -661,6 +685,14 @@ const mastercrmWhatsappQrRouteAddBodySchema = z
     session_owner_id: z.string().optional(),
     pagina: paginaCodeSchema.optional(),
     owner_key: z.string().optional()
+  })
+  .passthrough();
+
+const mastercrmUnlinkCashierBodySchema = z
+  .object({
+    user_id: z.union([z.string(), z.number().int()]).optional(),
+    pagina: paginaCodeSchema.optional(),
+    staff_password: z.string().optional()
   })
   .passthrough();
 
@@ -903,7 +935,8 @@ function mastercrmUserToResponse(user: MastercrmUserRecord): Record<string, unkn
     nombre: user.nombre,
     telefono: user.telefono,
     created_at: user.createdAt,
-    inversion: user.inversion
+    inversion: user.inversion,
+    routingKey: user.routingKey
   };
 }
 
@@ -1380,7 +1413,7 @@ function normalizeMonthToken(value: string, label: string): string {
   return normalized;
 }
 
-function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number; month?: string }; issues: ValidationIssue[] } {
+function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number; month?: string; platform?: 'all' | 'ASN' | 'RdA' }; issues: ValidationIssue[] } {
   const parsed = mastercrmClientsBodySchema.safeParse(body);
   if (!parsed.success) {
     return {
@@ -1395,11 +1428,11 @@ function parseMastercrmClientsPayload(body: unknown): { data?: { userId: number;
     return { issues };
   }
 
-  return { data: { userId, ...(month ? { month } : {}) }, issues };
+  return { data: { userId, ...(month ? { month } : {}), ...(parsed.data.platform ? { platform: parsed.data.platform } : {}) }, issues };
 }
 
 function parseMastercrmLinkCashierPayload(body: unknown): {
-  data?: { userId: number; ownerKey: string; pagina: 'ASN' | 'RdA'; staffPassword: string };
+  data?: { userId: number; ownerKey: string; pagina: 'ASN' | 'RdA'; staffPassword: string; confirmReplace: boolean };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmLinkCashierBodySchema.safeParse(body);
@@ -1423,7 +1456,25 @@ function parseMastercrmLinkCashierPayload(body: unknown): {
     return { issues };
   }
 
-  return { data: { userId, ownerKey, pagina: parsed.data.pagina ?? 'ASN', staffPassword }, issues };
+  return { data: { userId, ownerKey, pagina: parsed.data.pagina ?? 'ASN', staffPassword, confirmReplace: parsed.data.confirm_replace ?? false }, issues };
+}
+
+function parseMastercrmUnlinkCashierPayload(body: unknown): {
+  data?: { userId: number; pagina: 'ASN' | 'RdA'; staffPassword: string };
+  issues: ValidationIssue[];
+} {
+  const parsed = mastercrmUnlinkCashierBodySchema.safeParse(body);
+  if (!parsed.success) {
+    return { issues: parsed.error.issues.map((issue) => ({ path: issue.path.join('.'), message: issue.message })) };
+  }
+  const issues: ValidationIssue[] = [];
+  const userId = resolveAliasPositiveIntegerField(parsed.data, ['user_id'], 'user_id', issues);
+  const staffPassword = resolveAliasStringField(parsed.data, ['staff_password'], 'staff_password', issues, {
+    normalize: (value) => value,
+    trim: false
+  });
+  if (issues.length > 0 || !userId || !staffPassword || !parsed.data.pagina) return { issues };
+  return { data: { userId, pagina: parsed.data.pagina, staffPassword }, issues };
 }
 
 function parseMastercrmWhatsappQrPayload(body: unknown): {
@@ -1483,7 +1534,7 @@ function parseMastercrmWhatsappQrStatusPayload(body: unknown): {
 }
 
 function parseMastercrmWhatsappQrAssignPayload(body: unknown): {
-  data?: { userId: number; month: string; phoneE164: string; username: string };
+  data?: { userId: number; month: string; phoneE164: string; username: string; pagina?: 'ASN' | 'RdA' };
   issues: ValidationIssue[];
 } {
   const parsed = mastercrmWhatsappQrAssignBodySchema.safeParse(body);
@@ -1529,7 +1580,10 @@ function parseMastercrmWhatsappQrAssignPayload(body: unknown): {
     return { issues };
   }
 
-  return { data: { userId, month, phoneE164, username }, issues };
+  return {
+    data: { userId, month, phoneE164, username, ...(parsed.data.pagina ? { pagina: parsed.data.pagina } : {}) },
+    issues
+  };
 }
 
 function parseMastercrmWhatsappQrIgnorePayload(body: unknown): {
@@ -1618,6 +1672,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
     transport?: 'all' | 'whatsapp_qr' | 'n8n_webhook' | 'landing' | 'unknown';
     campaignKey?: string;
     adKey?: string;
+    platform?: 'all' | 'ASN' | 'RdA';
   };
   issues: ValidationIssue[];
 } {
@@ -1652,6 +1707,7 @@ function parseMastercrmAnalyticsPayload(body: unknown): {
       dateTo,
       ...(channel ? { channel } : {}),
       ...(transport ? { transport } : {}),
+      ...(parsed.data.platform ? { platform: parsed.data.platform } : {}),
       ...(campaignKey ? { campaignKey } : {}),
       ...(adKey ? { adKey } : {})
     },
@@ -2184,20 +2240,23 @@ export function createServer(
     claims: MastercrmSessionClaims,
     requestedUserId: number,
     reply: FastifyReply
-  ): Promise<{ linkedOwner: MastercrmLinkedOwnerRecord; owner: WhatsappQrOwner; isAdmin: boolean } | null> {
+  ): Promise<{ linkedOwner: MastercrmLinkedOwnerRecord; linkedOwners: MastercrmLinkedOwnerRecord[]; owner: WhatsappQrOwner; isAdmin: boolean } | null> {
     if (!requireMatchingMastercrmUser(claims, requestedUserId, reply)) {
       return null;
     }
 
-    const linkedOwner = await getMastercrmUserStore().getLinkedOwnerForUser(requestedUserId);
+    const configuredOwners = await getMastercrmUserStore().getLinkedOwnersForUser?.(requestedUserId) ?? [];
+    const linkedOwner = configuredOwners[0] ?? await getMastercrmUserStore().getLinkedOwnerForUser(requestedUserId);
     if (!linkedOwner) {
       reply.code(404).send({ message: 'El usuario no tiene cajero vinculado', code: 'MASTERCRM_OWNER_NOT_LINKED' });
       return null;
     }
 
     const owner = mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner);
+    const linkedOwners = configuredOwners.length > 0 ? configuredOwners : [linkedOwner];
     return {
       linkedOwner,
+      linkedOwners,
       owner,
       isAdmin: mastercrmQrAdminOwnerKeys.has(normalizeMastercrmOwnerKey(owner.ownerKey))
     };
@@ -2995,9 +3054,23 @@ export function createServer(
 
       const dashboard = await getMastercrmUserStore().getClientsDashboard({
         userId: parsed.data.userId,
-        month: parsed.data.month
+        month: parsed.data.month,
+        platform: parsed.data.platform
       });
       return reply.code(200).send({
+        ...(dashboard.routingKey ? { routingKey: dashboard.routingKey } : {}),
+        ...(dashboard.platform ? { platform: dashboard.platform } : {}),
+        ...(dashboard.linkedOwners
+          ? {
+              linkedOwners: dashboard.linkedOwners.map((owner) => ({
+                ownerId: owner.ownerId,
+                ownerKey: owner.ownerKey,
+                ownerLabel: owner.ownerLabel,
+                pagina: owner.pagina,
+                telefono: owner.telefono
+              }))
+            }
+          : {}),
         linkedOwner: dashboard.linkedOwner
           ? {
               ownerKey: dashboard.linkedOwner.ownerKey,
@@ -3089,7 +3162,17 @@ export function createServer(
           isNewIntakeMes: client.isNewIntakeMes,
           isReingresoMes: client.isReingresoMes,
           assignedEnMes: client.assignedEnMes,
-          assignedDesdeBacklogMes: client.assignedDesdeBacklogMes
+          assignedDesdeBacklogMes: client.assignedDesdeBacklogMes,
+          ...(client.identities
+            ? {
+                identities: client.identities,
+                usernameASN: client.identities.ASN?.username ?? null,
+                usernameRdA: client.identities.RdA?.username ?? null
+              }
+            : {}),
+          ...(client.cargadoHoyByPlatform ? { cargadoHoyByPlatform: client.cargadoHoyByPlatform } : {}),
+          ...(client.cargadoMesByPlatform ? { cargadoMesByPlatform: client.cargadoMesByPlatform } : {}),
+          ...(client.isNeutral !== undefined ? { isNeutral: client.isNeutral } : {})
         }))
       });
     } catch (error) {
@@ -3327,11 +3410,35 @@ export function createServer(
         });
       }
 
+      const selectedPagina = parsed.data.pagina;
+      const previousOwners = await getMastercrmUserStore().getLinkedOwnersForUser?.(parsed.data.userId) ?? [];
       const link = await getMastercrmUserStore().linkCashierToUser({
         userId: parsed.data.userId,
         ownerKey: normalizeMastercrmOwnerKey(parsed.data.ownerKey),
-        pagina: parsed.data.pagina
+        pagina: parsed.data.pagina,
+        ...(parsed.data.confirmReplace ? { confirmReplace: true } : {})
       });
+
+      const getLinkedOwners = getMastercrmUserStore().getLinkedOwnersForUser;
+      const linkedOwners = getLinkedOwners ? await getLinkedOwners.call(getMastercrmUserStore(), parsed.data.userId) : [];
+      const previousPlatformOwner = previousOwners.find((owner) => owner.pagina === selectedPagina);
+      if (link.replaced && previousPlatformOwner && previousOwners[0]?.ownerId === previousPlatformOwner.ownerId) {
+        await getWhatsappQrManager()
+          .disconnect(mastercrmLinkedOwnerToWhatsappQrOwner(previousPlatformOwner))
+          .catch((error) => logger.warn({ error }, 'Could not disconnect replaced QR anchor owner'));
+      }
+      if (linkedOwners.length === 2) {
+        await getWhatsappQrManager()
+          .addRoute(
+            mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwners[0]),
+            mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwners[1])
+          )
+          .catch((error) => {
+            if (!(error instanceof Error) || error.message !== 'WHATSAPP_QR_SESSION_NOT_FOUND') {
+              logger.warn({ error }, 'Could not add second owner route to shared QR session');
+            }
+          });
+      }
 
       return reply.code(201).send({
         success: true,
@@ -3344,7 +3451,8 @@ export function createServer(
           linked: link.linked,
           replaced: link.replaced,
           previous_owner_key: link.previousOwnerKey
-        }
+        },
+        ...(getLinkedOwners ? { linkedOwners } : {})
       });
     } catch (error) {
       if (error instanceof Error && error.message === 'MASTERCRM_STAFF_LINK_PASSWORD is not configured') {
@@ -3360,11 +3468,57 @@ export function createServer(
           return reply.code(404).send({ success: false, message: 'Usuario o cajero no encontrado' });
         }
         if (mappedError.statusCode === 409) {
-          return reply.code(409).send({ success: false, message: 'El usuario ya esta vinculado a ese cajero' });
+          return reply.code(409).send({ success: false, message: mappedError.message });
         }
       }
 
       logger.error({ error }, 'Unexpected /mastercrm-link-cashier error');
+      return reply.code(500).send({ success: false, message: 'Error interno del servidor' });
+    }
+  });
+
+  fastify.post('/mastercrm-unlink-cashier', async (request, reply) => {
+    const parsed = parseMastercrmUnlinkCashierPayload(request.body);
+    if (!parsed.data) {
+      return reply.code(400).send({ success: false, message: 'Faltan datos requeridos', issues: parsed.issues });
+    }
+    try {
+      const session = await requireMastercrmSession(request, reply);
+      if (!session || !requireMatchingMastercrmUser(session, parsed.data.userId, reply)) return;
+      const configuredStaffPassword = resolveMastercrmStaffLinkPassword();
+      if (!secretsEqual(parsed.data.staffPassword, configuredStaffPassword)) {
+        return reply.code(403).send({ success: false, message: 'Clave tecnica invalida' });
+      }
+      const store = getMastercrmUserStore();
+      if (!store.unlinkCashierFromUser || !store.getLinkedOwnersForUser) {
+        return reply.code(501).send({ success: false, message: 'Desvinculacion no disponible' });
+      }
+      const selectedPagina = parsed.data.pagina;
+      const linkedOwners = await store.getLinkedOwnersForUser(parsed.data.userId);
+      const target = linkedOwners.find((owner) => owner.pagina === selectedPagina);
+      if (!target) return reply.code(404).send({ success: false, message: 'Panel no vinculado' });
+      if (linkedOwners[0]?.ownerId === target.ownerId) {
+        await getWhatsappQrManager()
+          .disconnect(mastercrmLinkedOwnerToWhatsappQrOwner(target))
+          .catch((error) => logger.warn({ error }, 'Could not disconnect removed QR anchor owner'));
+      } else if (linkedOwners[0]) {
+        await getWhatsappQrManager()
+          .deactivateRoute(
+            mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwners[0]),
+            mastercrmLinkedOwnerToWhatsappQrOwner(target)
+          )
+          .catch((error) => {
+            if (!(error instanceof Error) || error.message !== 'WHATSAPP_QR_SESSION_NOT_FOUND') {
+              logger.warn({ error }, 'Could not deactivate removed QR secondary route');
+            }
+          });
+      }
+      const result = await store.unlinkCashierFromUser({ userId: parsed.data.userId, pagina: parsed.data.pagina });
+      return reply.code(200).send({ success: true, ...result, linkedOwners: await store.getLinkedOwnersForUser(parsed.data.userId) });
+    } catch (error) {
+      const mappedError = toMastercrmHttpError(error);
+      if (mappedError) return reply.code(mappedError.statusCode).send({ success: false, message: mappedError.message });
+      logger.error({ error }, 'Unexpected /mastercrm-unlink-cashier error');
       return reply.code(500).send({ success: false, message: 'Error interno del servidor' });
     }
   });
@@ -3391,7 +3545,10 @@ export function createServer(
 
       const sessions = await getWhatsappQrStore().listSessions(qrOwner.isAdmin ? null : [qrOwner.owner.ownerId]);
       const availableOwnersMap = new Map<string, WhatsappQrOwner>();
-      availableOwnersMap.set(qrOwner.owner.ownerId, qrOwner.owner);
+      for (const linkedOwner of qrOwner.linkedOwners) {
+        const owner = mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner);
+        availableOwnersMap.set(owner.ownerId, owner);
+      }
       for (const sessionRow of sessions) {
         availableOwnersMap.set(sessionRow.ownerId, whatsappQrSessionOwner(sessionRow));
       }
@@ -3621,14 +3778,22 @@ export function createServer(
       if (!qrOwner) {
         return;
       }
-      assignmentPagina = qrOwner.owner.pagina;
-      if (assignmentPagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(qrOwner.owner.ownerId)) {
+      assignmentPagina = parsed.data.pagina ?? qrOwner.owner.pagina;
+      const assignmentLinkedOwner = qrOwner.linkedOwners.find((owner) => owner.pagina === assignmentPagina);
+      if (!assignmentLinkedOwner) {
+        return reply.code(409).send({
+          message: `Primero debe vincularse un owner ${assignmentPagina}`,
+          code: 'MASTERCRM_PLATFORM_OWNER_NOT_LINKED'
+        });
+      }
+      const assignmentOwner = mastercrmLinkedOwnerToWhatsappQrOwner(assignmentLinkedOwner);
+      if (assignmentPagina === 'ASN' && !whatsappQrAsnAllowedOwnerIds.has(assignmentOwner.ownerId)) {
         return reply.code(403).send({ message: 'ASN QR is not enabled for this owner', code: 'ASN_QR_NOT_ENABLED' });
       }
 
       const qrStore = getWhatsappQrStore();
       const credentials = qrStore.getPlatformCredential
-        ? await qrStore.getPlatformCredential(qrOwner.owner.ownerId, assignmentPagina)
+        ? await qrStore.getPlatformCredential(assignmentOwner.ownerId, assignmentPagina)
         : null;
       if (!credentials) {
         return reply.code(409).send({
@@ -3653,7 +3818,7 @@ export function createServer(
         pagina: assignmentPagina,
         jugadorUsername: parsed.data.username,
         telefono: parsed.data.phoneE164,
-        ownerContext: ownerContextFromWhatsappQrOwner(qrOwner.owner, qrOwner.linkedOwner.telefono ?? null)
+        ownerContext: ownerContextFromWhatsappQrOwner(assignmentOwner, assignmentLinkedOwner.telefono ?? null)
       });
 
       const dashboard = await getWhatsappQrManager().getDashboard(qrOwner.owner, qrOwner.isAdmin, parsed.data.month);
@@ -3827,7 +3992,15 @@ export function createServer(
 
       const physicalOwner = await resolveWhatsappQrPhysicalOwner(qrOwner.owner);
       const qrSession = await getWhatsappQrManager().connect(physicalOwner);
-      return reply.code(200).send({ session: whatsappQrSessionToResponse(qrSession) });
+      for (const linkedOwner of qrOwner.linkedOwners.slice(1)) {
+        await getWhatsappQrManager()
+          .addRoute(physicalOwner, mastercrmLinkedOwnerToWhatsappQrOwner(linkedOwner))
+          .catch((error) => logger.warn({ error }, 'Could not attach linked platform to QR session'));
+      }
+      return reply.code(200).send({
+        session: whatsappQrSessionToResponse(qrSession),
+        linkedOwners: qrOwner.linkedOwners
+      });
     } catch (error) {
       const mappedError = toWhatsappQrHttpError(error) ?? toMastercrmHttpError(error);
       if (mappedError) {
@@ -4001,6 +4174,108 @@ export function createServer(
           details: {
             issues: [{ path: 'telefono', message: 'telefono, body.WaId or body.From is required' }]
           }
+        });
+      }
+
+      if (!payload.pagina) {
+        const centralStore = getMastercrmUserStore();
+        if (!centralStore.createCentralIntake || !centralStore.resolveCentralRoute) {
+          return reply.code(503).send({
+            message: 'Central MasterCRM intake is unavailable',
+            code: 'CENTRAL_INTAKE_UNAVAILABLE'
+          });
+        }
+
+        const rawTo = readOptionalStringField(payload.body, 'To');
+        if (!rawTo) {
+          return reply.code(400).send({
+            message: 'Invalid payload',
+            code: 'CENTRAL_CHANNEL_REQUIRED',
+            details: { issues: [{ path: 'body.To', message: 'body.To is required for central intake routing' }] }
+          });
+        }
+        const channelKey = normalizeWhatsappPhone(rawTo);
+        if (!channelKey) {
+          return reply.code(400).send({
+            message: 'Invalid payload',
+            code: 'CENTRAL_CHANNEL_INVALID',
+            details: { issues: [{ path: 'body.To', message: 'body.To must contain a valid E.164 phone' }] }
+          });
+        }
+        if (!payload.routingKey) {
+          const route = await centralStore.resolveCentralRoute({ channelKey, phoneE164: telefono });
+          if (!route) {
+            return reply.code(404).send({
+              message: 'No active central intake route was found',
+              code: 'CENTRAL_ROUTE_NOT_FOUND'
+            });
+          }
+          return reply.code(200).send({
+            status: 'ok',
+            mode: 'central',
+            routingKey: route.routingKey,
+            routeContext: route.routeContext,
+            linkedPlatforms: route.linkedOwners.map((owner) => owner.pagina),
+            expiresAt: route.expiresAt
+          });
+        }
+
+        const routeContext = payload.routeContext!;
+        const sourceContext = buildWhatsappSourceContext(payload.body, payload.sourceContext);
+        const central = await centralStore.createCentralIntake({
+          routingKey: payload.routingKey,
+          phoneE164: telefono,
+          channelKey,
+          actorAlias: routeContext.actorAlias,
+          actorPhone: normalizePhone(routeContext.actorPhone),
+          messageSid: readOptionalStringField(payload.body, 'MessageSid'),
+          payload: {
+            body: payload.body ?? {},
+            sourceContext: sourceContext ?? null
+          },
+          occurredAt: sourceContext?.receivedAt ?? new Date().toISOString()
+        });
+
+        let platformIntake: Awaited<ReturnType<typeof persistPendingIntake>> | null = null;
+        if (central.linkedOwners.length === 1) {
+          const linkedOwner = central.linkedOwners[0];
+          platformIntake = await persistPendingIntake({
+            pagina: linkedOwner.pagina,
+            telefono,
+            ownerContext: {
+              ownerKey: linkedOwner.ownerKey,
+              ownerLabel: linkedOwner.ownerLabel,
+              actorAlias: central.routeContext.actorAlias,
+              actorPhone: central.routeContext.actorPhone
+            },
+            ...(sourceContext ? { sourceContext } : {}),
+            ...(payload.customerData ? { customerData: payload.customerData } : {})
+          });
+        }
+
+        return reply.code(200).send({
+          status: 'ok',
+          mode: 'central',
+          routingKey: central.routingKey,
+          routeContext: central.routeContext,
+          linkedPlatforms: central.linkedOwners.map((owner) => owner.pagina),
+          contactId: central.contactId,
+          eventType: central.eventType,
+          expiresAt: central.expiresAt,
+          ...(central.linkedOwners.length === 0
+            ? { configurationWarning: 'La cartera no tiene panel ASN/RdA vinculado; el contacto quedó neutral.' }
+            : {}),
+          ...(platformIntake
+            ? {
+                platformIntake: {
+                  pagina: central.linkedOwners[0].pagina,
+                  cajeroId: platformIntake.cajeroId,
+                  jugadorId: platformIntake.jugadorId,
+                  linkId: platformIntake.linkId,
+                  estado: platformIntake.estado
+                }
+              }
+            : {})
         });
       }
 

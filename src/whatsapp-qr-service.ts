@@ -302,23 +302,27 @@ export class WhatsappQrAutoAssignService {
       message = await this.setRoutes(message, 'conflict', [], 'phone_linked_to_multiple_active_routes');
       return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'conflict' };
     }
-    const candidateRoutes = phoneRoute.owners.length > 0 ? phoneRoute.owners : routes;
-
     if (!candidateUsername || !matchSource) {
-      if (candidateRoutes.length === 1 || phoneRoute.owners.length === 2) {
+      const resolvedRoutes = phoneRoute.owners.length > 0 ? phoneRoute.owners : routes;
+      if (resolvedRoutes.length === 1 || phoneRoute.owners.length === 2) {
         const resolution = phoneRoute.owners.length > 0 ? 'existing_phone_link' : 'single_active_route';
-        message = await this.setRoutes(message, 'resolved', candidateRoutes, resolution);
+        message = await this.setRoutes(message, 'resolved', resolvedRoutes, resolution);
         return {
           message,
           match: null,
           matches: [],
-          resolvedOwners: candidateRoutes,
+          resolvedOwners: resolvedRoutes,
           routeStatus: 'resolved'
         };
       }
       message = await this.setRoutes(message, 'unrouted', [], 'candidate_required_for_shared_session');
       return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'unrouted' };
     }
+
+    // A phone may already have an identity on one platform and still need the
+    // other one. Candidate validation therefore always covers every active
+    // route instead of stopping at the first platform previously resolved.
+    const candidateRoutes = routes;
 
     await Promise.all(
       candidateRoutes.map((owner) =>
@@ -331,7 +335,7 @@ export class WhatsappQrAutoAssignService {
     const validated = attempts.filter((attempt) => attempt.outcome === 'validated');
     const errors = attempts.filter((attempt) => attempt.outcome === 'error');
 
-    if (errors.length > 0) {
+    if (errors.length > 0 && validated.length === 0) {
       const matches = attempts.map((attempt) => attempt.match);
       message = await this.setRoutes(message, 'error', [], 'route_validation_incomplete');
       return { message, match: matches.find((item) => item.status === 'error') ?? null, matches, resolvedOwners: [], routeStatus: 'error' };
