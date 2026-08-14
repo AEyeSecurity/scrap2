@@ -30,9 +30,9 @@ const specs = [
     webhook: 'AFSU',
     consumption: 'PubliValerioAltaFortuna',
     agents: [
-      { phone: '5493516828851', weight: 0.33, nick: 'Julio', routingKey: 'valerio' },
-      { phone: '5493517363879', weight: 0.33, nick: 'Mari', routingKey: 'valerio' },
-      { phone: '5493517363646', weight: 0.33, nick: 'Mari', routingKey: 'valerio' },
+      { phone: '5493516828851', weight: 0.33, nick: 'Julio', routingKey: 'valerioaf' },
+      { phone: '5493517363879', weight: 0.33, nick: 'Mari', routingKey: 'valerioaf' },
+      { phone: '5493517363646', weight: 0.33, nick: 'Mari', routingKey: 'valerioaf' },
     ],
   },
 ]
@@ -156,7 +156,7 @@ if (!route) {
 const phone = String(route.actorPhone).replace(/\\D/g, '');
 return [{ json: {
   ...original,
-  routingKey: input.routingKey || 'valerio',
+  routingKey: input.routingKey || ${JSON.stringify(spec.agents[0]?.routingKey ?? '')},
   agentPhone: phone,
   agentNick: route.actorAlias || phone,
   routeContext: { actorAlias: route.actorAlias || phone, actorPhone: \`+\${phone}\` },
