@@ -920,6 +920,16 @@ Authorization: Bearer {SUPABASE_PAT}
 Content-Type: application/json
 ```
 
+### Cola de contacto de la landing
+
+La tabla interna `public.landing_contact_outbox` tiene RLS habilitado desde
+`2026-08-25` mediante
+`db/migrations/20260825180000_enable_landing_contact_outbox_rls.sql`.
+
+- no debe tener políticas para `anon` ni `authenticated`;
+- API y worker acceden exclusivamente con `SUPABASE_SERVICE_ROLE_KEY`, que
+  conserva acceso para persistir y entregar la cola a Meta CAPI.
+
 Migracion aplicada el 2026-07-06:
 
 - `db/migrations/20260706_mastercrm_whatsapp_qr_contacts_recheck.sql`
