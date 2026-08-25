@@ -61,6 +61,7 @@ Necesarias para el flujo CRM:
 Necesarias para Meta CAPI CTWA V3:
 
 - `META_ENABLED`
+- `META_PIXEL_ID`
 - `META_DATASET_ID`
 - `META_ACCESS_TOKEN`
 - `META_API_VERSION`
@@ -104,15 +105,18 @@ Prechecks cerrados del script antes de recrear `scrap2-api`:
 - `META_ACCESS_TOKEN`
 - valores exactos para el rollout:
   - `META_ENABLED = true`
-  - `META_DATASET_ID = 2123208205169806`
+  - `META_PIXEL_ID = 1510669717126299`
+  - `META_DATASET_ID = 1510669717126299`
   - `META_API_VERSION = v25.0`
-  - `META_ACTION_SOURCE = system_generated`
+  - `META_ACTION_SOURCE = business_messaging`
+  - `META_LANDING_ACTION_SOURCE = website`
+  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID = 917819057641325` (Leandro / MERLO LAB)
   - `META_LEAD_ENABLED = true`
   - `META_LEAD_VALUE = 1`
   - `META_PURCHASE_ENABLED = true`
-  - `META_VALUE_SIGNAL_THRESHOLD = 10000`
+  - `META_VALUE_SIGNAL_THRESHOLD = 1`
   - `META_VALUE_SIGNAL_CURRENCY = ARS`
-  - `META_VALUE_SIGNAL_WINDOW_MODE = intake_local_day`
+  - `META_VALUE_SIGNAL_WINDOW_MODE = intake_local_7d`
   - `META_BATCH_SIZE = 1`
   - `META_WORKER_CONCURRENCY = 2`
   - `META_WORKER_POLL_MS = 5000`
@@ -122,7 +126,6 @@ Prechecks cerrados del script antes de recrear `scrap2-api`:
 - bloqueo si aparecen:
   - `META_TEST_EVENT_CODE`
   - `META_PAGE_ID`
-  - `META_WHATSAPP_BUSINESS_ACCOUNT_ID`
 - precheck real de Supabase:
   - lectura de `meta_conversion_outbox`
   - RPC `enqueue_meta_value_signals(...)`
@@ -135,16 +138,19 @@ $env:SUPABASE_URL="..."
 $env:SUPABASE_SERVICE_ROLE_KEY="..."
 $env:MASTERCRM_STAFF_LINK_PASSWORD="..."
 $env:META_ENABLED="true"
-$env:META_DATASET_ID="2123208205169806"
+$env:META_PIXEL_ID="1510669717126299"
+$env:META_DATASET_ID="1510669717126299"
 $env:META_ACCESS_TOKEN="..."
 $env:META_API_VERSION="v25.0"
-$env:META_ACTION_SOURCE="system_generated"
+$env:META_ACTION_SOURCE="business_messaging"
+$env:META_LANDING_ACTION_SOURCE="website"
+$env:META_WHATSAPP_BUSINESS_ACCOUNT_ID="917819057641325"
 $env:META_LEAD_ENABLED="true"
 $env:META_LEAD_VALUE="1"
 $env:META_PURCHASE_ENABLED="true"
-$env:META_VALUE_SIGNAL_THRESHOLD="10000"
+$env:META_VALUE_SIGNAL_THRESHOLD="1"
 $env:META_VALUE_SIGNAL_CURRENCY="ARS"
-$env:META_VALUE_SIGNAL_WINDOW_MODE="intake_local_day"
+$env:META_VALUE_SIGNAL_WINDOW_MODE="intake_local_7d"
 npm start -- server
 ```
 
