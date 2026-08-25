@@ -374,6 +374,7 @@ class FakeLandingSessionStore implements LandingSessionStore {
       id: `landing-session-${this.sessions.length + 1}`,
       landingSessionId: input.landingSessionId,
       contactEventId: input.contactEventId,
+      landingToken: input.landingToken,
       messageText: input.messageText,
       messageKey: input.messageKey,
       status: 'pending',
@@ -409,10 +410,13 @@ class FakeLandingSessionStore implements LandingSessionStore {
     return row;
   }
 
+  async findByLandingSessionId(landingSessionId: string): Promise<LandingSessionRecord | null> {
+    return this.sessions.find((item) => item.landingSessionId === landingSessionId) ?? null;
+  }
+
   async claimPendingSession(input: Parameters<LandingSessionStore['claimPendingSession']>[0]): Promise<LandingSessionRecord | null> {
     this.claimInputs.push(input);
-    const messageKey = normalizeLandingMessageKey(input.messageText);
-    const session = this.sessions.find((item) => item.status === 'pending' && item.messageKey === messageKey);
+    const session = this.sessions.find((item) => item.status === 'pending' && item.landingToken === input.landingToken);
     if (!session) {
       return null;
     }
@@ -2737,20 +2741,12 @@ describe('server routes', () => {
 
         expect(response.statusCode).toBe(200);
         expect(response.headers['content-type']).toContain('text/html');
-        expect(response.body).toContain('Rey Dorado');
-        expect(response.body).toContain('Quiero mi bono');
-        expect(response.body).toContain('18<sup>+</sup>');
-        expect(response.body).toContain('Juego responsable');
-        expect(response.body).toContain('/landing/privacidad');
-        expect(response.body).toContain('/landing/terminos');
+        expect(response.body).toContain('Estamos preparando tu conexión');
+        expect(response.body).toContain('id="retry"');
+        expect(response.body).toContain('/landing/redirect.css');
         expect(response.body).toContain('"pixelId":"1234567890"');
-        expect(response.body).toContain('"whatsappPhone":"5493515747477"');
-        expect(response.body).toContain('"whatsappPhones":["5493515747477"]');
-        expect(response.body).not.toContain('"cashierPhone"');
-        expect(response.body).not.toContain('5493516549344');
-        expect(response.body).toContain(
-          'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
-        );
+        expect(response.body).toContain('"landingVariant":"rda-central-auto-v1"');
+        expect(response.body).not.toContain('wa.me/');
 
         await server.close();
       }
@@ -2796,12 +2792,8 @@ describe('server routes', () => {
       expect(css.statusCode).toBe(200);
       expect(css.headers['cache-control']).toContain('max-age=300');
       expect(rdav2.statusCode).toBe(200);
-      expect(rdav2.body).toContain('rda-luqui10-rdav2');
-      expect(rdav2.body).toContain('"whatsappPhone":"5493516346253"');
-      expect(rdav2.body).toContain('"whatsappPhones":["5493516346253"]');
-      expect(rdav2.body).toContain('Hola quiero un usuario, el codigo de mi bono es: XXXXX');
-      expect(rdav2.body).toContain('/landing/rdav2/privacidad');
-      expect(rdav2.body).toContain('/landing/rdav2/terminos');
+      expect(rdav2.body).toContain('rda-central-auto-v1');
+      expect(rdav2.body).not.toContain('wa.me/');
       expect(rdav2.headers['content-security-policy']).toContain("frame-ancestors 'none'");
       expect(rdav2.headers['x-content-type-options']).toBe('nosniff');
       expect(rdav2.headers['x-frame-options']).toBe('DENY');
@@ -2879,30 +2871,19 @@ describe('server routes', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({
-          status: 'ok',
-          tracked: true,
-          trackingStatus: 'sent',
-          eventId: 'contact:test',
-          whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20ABCD2',
-          whatsappMessage: 'Hola quiero un usuario, el codigo de mi bono es: ABCD2',
-          bonusCode: 'ABCD2',
-          attributionStatus: 'persisted',
-          ownerContext: {
-            ownerKey: 'luqui10:luqui10',
-            ownerLabel: 'Lucas10'
-          }
-        });
+        expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'not_configured', eventId: 'contact:test', attributionStatus: 'persisted' });
+        expect(response.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+        expect(response.json().whatsappMessage).toBe(`Hola, quiero mi usuario con mi bono: ${response.json().landingToken}`);
+        expect(response.json().whatsappUrl).toContain('https://wa.me/5493562590932?text=');
         expect(landingSessionStore.createInputs).toHaveLength(1);
         expect(landingSessionStore.createInputs[0]).toMatchObject({
           landingSessionId: 'session_123',
-          landingVariant: 'rda-luqui10-rdav2',
+          landingVariant: 'rda-central-auto-v1',
           contactEventId: 'contact:test',
-          messageText: 'Hola quiero un usuario, el codigo de mi bono es: ABCD2',
-          messageKey: 'hola quiero un usuario el codigo de mi bono es abcd2',
+          messageText: expect.stringMatching(/^Hola, quiero mi usuario con mi bono: [A-HJ-NP-Z2-9]{8}$/),
           pagina: 'RdA',
-          botPhoneE164: '+5493516346253',
-          cashierPhoneE164: '+5493516549344',
+          botPhoneE164: '+5493562590932',
+          cashierPhoneE164: '+5493562590932',
           utmId: '6991129588056',
           utmCampaign: 'Mayo RDA',
           utmTerm: 'Prospeccion',
@@ -2912,40 +2893,7 @@ describe('server routes', () => {
           placement: 'facebook_feed'
         });
         expect(playerPhoneStore.intakeInputs).toEqual([]);
-        expect(dispatcher.leases).toHaveLength(1);
-        expect(dispatcher.leases[0]).toMatchObject({
-          ownerId: 'luqui10:luqui10',
-          clientId: 'session_123',
-          eventStage: 'landing_contact',
-          metaEventName: 'Contact',
-          eventId: 'contact:test',
-          phoneE164: null,
-          username: null,
-          sourcePayload: {
-            owner_key: 'luqui10:luqui10',
-            owner_label: 'Lucas10',
-            Fbp: 'fb.1.1710000000000.111',
-            Fbc: 'fb.1.1710000000000.fbclid-123',
-            Fbclid: 'fbclid-123',
-            EventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
-            Referrer: 'https://facebook.com/',
-            LandingSessionId: 'session_123',
-            LandingVariant: 'rda-luqui10-rdav2',
-            CtaType: 'whatsapp_click',
-            UtmSource: 'meta',
-            UtmMedium: 'paid_social',
-            UtmId: '6991129588056',
-            UtmCampaign: 'Mayo RDA',
-            UtmTerm: 'Prospeccion',
-            UtmContent: 'Video 1',
-            AdsetId: '69911377388568',
-            AdId: '699113773885680',
-            Placement: 'facebook_feed',
-            WhatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20ABCD2',
-            ClientIpAddress: '181.45.10.22',
-            ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
-          }
-        });
+        expect(dispatcher.leases).toHaveLength(0);
 
         await server.close();
       }
@@ -2982,15 +2930,9 @@ describe('server routes', () => {
         }
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({
-        status: 'ok',
-        tracked: false,
-        trackingStatus: 'disabled',
-        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
-        whatsappMessage: 'Hola quiero mi usuario suertudo del Rey Dorado',
-        attributionStatus: 'incomplete'
-      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toMatchObject({ code: 'LANDING_PERSISTENCE_FAILED', attributionStatus: 'incomplete' });
+      expect(response.json().whatsappUrl).toBeUndefined();
 
       await server.close();
     });
@@ -3026,12 +2968,8 @@ describe('server routes', () => {
         }
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toMatchObject({
-        whatsappUrl: 'https://wa.me/5493516346253?text=Hola%20quiero%20un%20usuario%2C%20el%20codigo%20de%20mi%20bono%20es%3A%20QWERT',
-        whatsappMessage: 'Hola quiero un usuario, el codigo de mi bono es: QWERT',
-        bonusCode: 'QWERT'
-      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().whatsappUrl).toBeUndefined();
 
       await server.close();
     });
@@ -3066,10 +3004,8 @@ describe('server routes', () => {
         }
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
-        code: 'INVALID_PAYLOAD'
-      });
+      expect(response.statusCode).toBe(503);
+      expect(response.json().whatsappUrl).toBeUndefined();
 
       await server.close();
     });
@@ -3115,20 +3051,9 @@ describe('server routes', () => {
 
       expect(primary.statusCode).toBe(200);
       expect(repeated.statusCode).toBe(200);
-      expect(primary.json().whatsappUrl).toBe(
-        'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
-      );
-      expect(repeated.json().whatsappUrl).toBe(
-        'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
-      );
-      expect(landingSessionStore.createInputs.map((input) => input.botPhoneE164)).toEqual([
-        '+5493515747477',
-        '+5493515747477'
-      ]);
-      expect(landingSessionStore.createInputs.map((input) => input.landingSessionId)).toEqual([
-        'session_stable',
-        'session_stable'
-      ]);
+      expect(primary.json().whatsappUrl).toBe(repeated.json().whatsappUrl);
+      expect(primary.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
+      expect(landingSessionStore.createInputs).toHaveLength(1);
 
       await server.close();
     });
@@ -3160,18 +3085,8 @@ describe('server routes', () => {
         }
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toMatchObject({
-        message: 'Invalid payload',
-        code: 'INVALID_PAYLOAD',
-        attributionStatus: 'incomplete',
-        attributionError: 'invalid_payload'
-      });
-      expect(response.json().details.issues).toContainEqual(
-        expect.objectContaining({
-          path: 'routingSeed'
-        })
-      );
+      expect(response.statusCode).toBe(503);
+      expect(response.json().whatsappUrl).toBeUndefined();
 
       await server.close();
     });
@@ -3758,15 +3673,15 @@ describe('server routes', () => {
       telefono: '+5493511112222',
       landingSessionId: 'session_landing_lead',
       ownerContext: {
-        ownerKey: 'luqui10:luqui10',
-        ownerLabel: 'Lucas10',
-        actorAlias: 'Lucas10',
-        actorPhone: '+5493516549344'
+        ownerKey: 'central:rls',
+        ownerLabel: 'Leandro central',
+        actorAlias: 'Leandro central',
+        actorPhone: '+5493562590932'
       }
     });
     expect(landingSessionStore.claimInputs).toEqual([
       {
-        messageText: 'Hola quiero mi usuario suertudo del Rey Dorado',
+        landingToken: contactBody.landingToken,
         phoneE164: '+5493511112222',
         messageSid: 'SM-LANDING',
         claimedAt: '2026-06-03T18:00:00.000Z'
@@ -3777,10 +3692,10 @@ describe('server routes', () => {
       pagina: 'RdA',
       telefono: '+5493511112222',
       ownerContext: {
-        ownerKey: 'luqui10:luqui10',
-        ownerLabel: 'Lucas10',
-        actorAlias: 'Lucas10',
-        actorPhone: '+5493516549344'
+        ownerKey: 'central:rls',
+        ownerLabel: 'Leandro central',
+        actorAlias: 'Leandro central',
+        actorPhone: '+5493562590932'
       },
       sourceContext: {
         fbp: 'fb.1.1710000000000.111',
@@ -3788,12 +3703,12 @@ describe('server routes', () => {
         fbclid: 'fbclid-123',
         eventSourceUrl: 'https://reydeases.imperial-support.com/landing?fbclid=fbclid-123&utm_source=meta',
         landingSessionId: 'session_landing_lead',
-        landingVariant: 'rda-luqui10-v1',
+        landingVariant: 'rda-central-auto-v1',
         ctaType: 'whatsapp_click',
         utmSource: 'meta',
         utmMedium: 'paid_social',
         utmCampaign: 'rda_landing',
-        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado',
+        whatsappUrl: contactBody.whatsappUrl,
         waId: '5493511112222',
         messageSid: 'SM-LANDING',
         accountSid: 'AC-LANDING',
@@ -3810,10 +3725,10 @@ describe('server routes', () => {
       clientId: 'client-1',
       phoneE164: '+5493511112222',
       ownerContext: {
-        ownerKey: 'luqui10:luqui10',
-        ownerLabel: 'Lucas10',
-        actorAlias: 'Lucas10',
-        actorPhone: '+5493516549344'
+        ownerKey: 'central:rls',
+        ownerLabel: 'Leandro central',
+        actorAlias: 'Leandro central',
+        actorPhone: '+5493562590932'
       },
       sourceContext: {
         landingSessionId: 'session_landing_lead',
@@ -3905,7 +3820,7 @@ describe('server routes', () => {
       sourceContext: {
         landingSessionId: 'session_landing_n8n_owner',
         ctaType: 'whatsapp_click',
-        whatsappUrl: 'https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado'
+        whatsappUrl: contactBody.whatsappUrl
       }
     });
     expect(metaStore.landingLeadInputs[0]).toMatchObject({

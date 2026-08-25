@@ -1,264 +1,47 @@
 (function () {
-  const config = window.__RDA_LANDING_CONFIG__ || {};
-  const TRACKING_TIMEOUT_MS = 900;
-  const FBP_POLL_INTERVAL_MS = 100;
-  const FBP_POLL_TIMEOUT_MS = 5000;
-  const RDAV2_VARIANT = "rda-luqui10-rdav2";
-  const RDAV2_MESSAGE_PREFIX = "Hola quiero un usuario, el codigo de mi bono es:";
-  const BONUS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const BONUS_CODE_LENGTH = 5;
-  let cachedFbp = null;
+  'use strict';
+  var config = window.__RDA_LANDING_CONFIG__ || {};
+  var startedAt = new Date().getTime();
+  var status = document.getElementById('status');
+  var retry = document.getElementById('retry');
+  var manual = document.getElementById('manual-whatsapp');
+  var attempts = 0;
+  var landingSessionId = makeId('landing');
+  var eventId = makeId('contact');
 
-  function safeRandomId(prefix) {
-    if (window.crypto && typeof window.crypto.randomUUID === "function") {
-      return `${prefix}_${window.crypto.randomUUID()}`;
-    }
-    return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  }
-
-  const routingSeed = safeRandomId("routing");
-
+  function makeId(prefix) { return prefix + '-' + new Date().getTime().toString(36) + '-' + Math.floor(Math.random() * 2147483647).toString(36); }
   function readCookie(name) {
-    const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}=([^;]*)`));
-    return match ? decodeURIComponent(match[1]) : null;
+    var prefix = name + '='; var parts = document.cookie ? document.cookie.split(';') : []; var i;
+    for (i = 0; i < parts.length; i += 1) { var item = parts[i].replace(/^\s+/, ''); if (item.indexOf(prefix) === 0) { return decodeURIComponent(item.substring(prefix.length)); } }
+    return null;
   }
-
-  function writeCookie(name, value) {
-    const maxAge = 60 * 60 * 24 * 90;
-    document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}; SameSite=Lax`;
+  function writeCookie(name, value) { try { document.cookie = name + '=' + encodeURIComponent(value) + '; path=/; max-age=7776000; SameSite=Lax'; } catch (ignore) {} }
+  function queryValue(name) {
+    var source = window.location.search.substring(1).split('&'); var i;
+    for (i = 0; i < source.length; i += 1) { var pair = source[i].split('='); if (decodeURIComponent(pair[0] || '').toLowerCase() === name.toLowerCase()) { return decodeURIComponent((pair.slice(1).join('=') || '').replace(/\+/g, ' ')); } }
+    return null;
   }
-
-  function getLandingSessionId() {
-    const variant = config.landingVariant || "rda-luqui10-v1";
-    const key = `rda_landing_session_id_${variant}`;
-    try {
-      const existing = window.localStorage.getItem(key);
-      if (existing) {
-        return existing;
-      }
-      const created = safeRandomId("session");
-      window.localStorage.setItem(key, created);
-      return created;
-    } catch (_error) {
-      return safeRandomId("session");
-    }
-  }
-
-  function getSearchParam(name) {
-    return new URLSearchParams(window.location.search).get(name);
-  }
-
-  function getFbc(fbclid) {
-    const current = readCookie("_fbc");
-    if (current) {
-      return current;
-    }
-    if (!fbclid) {
-      return null;
-    }
-    const generated = `fb.1.${Date.now()}.${fbclid}`;
-    writeCookie("_fbc", generated);
-    return generated;
-  }
-
-  function readValidFbp() {
-    const value = readCookie("_fbp");
-    return typeof value === "string" && value.startsWith("fb.") ? value : null;
-  }
-
-  function captureFbp() {
-    const current = readValidFbp();
-    if (current && !cachedFbp) {
-      cachedFbp = current;
-    }
-    return current || cachedFbp;
-  }
-
-  function startFbpCapture() {
-    captureFbp();
-    const startedAt = Date.now();
-    const timer = window.setInterval(function () {
-      if (captureFbp() || Date.now() - startedAt >= FBP_POLL_TIMEOUT_MS) {
-        window.clearInterval(timer);
-      }
-    }, FBP_POLL_INTERVAL_MS);
-  }
-
-  function getWhatsappPhones() {
-    return Array.isArray(config.whatsappPhones) && config.whatsappPhones.length > 0
-      ? config.whatsappPhones
-      : [config.whatsappPhone || "5493515747477"];
-  }
-
-  function pickWhatsappPhone(seed) {
-    const phones = getWhatsappPhones();
-    let hash = 0;
-    for (let index = 0; index < seed.length; index += 1) {
-      hash = (hash * 31 + seed.charCodeAt(index)) >>> 0;
-    }
-    return phones[hash % phones.length];
-  }
-
-  function buildWhatsappUrl(phone, message) {
-    return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
-  }
-
-  function buildBonusCode(seed) {
-    let hash = 1;
-    const input = `${seed}:0`;
-    for (let index = 0; index < input.length; index += 1) {
-      hash = Math.imul(hash ^ input.charCodeAt(index), 16777619) >>> 0;
-    }
-
-    let code = "";
-    for (let index = 0; index < BONUS_CODE_LENGTH; index += 1) {
-      hash = Math.imul(hash ^ (hash >>> 16), 2246822507) >>> 0;
-      code += BONUS_CODE_ALPHABET[hash % BONUS_CODE_ALPHABET.length];
-    }
-    return code;
-  }
-
-  function getWhatsappMessage(landingSessionId) {
-    if (config.landingVariant === RDAV2_VARIANT) {
-      return `${RDAV2_MESSAGE_PREFIX} ${buildBonusCode(landingSessionId)}`;
-    }
-    return config.whatsappMessage || "Hola quiero mi usuario suertudo del Rey Dorado";
-  }
-
   function initPixel() {
-    if (!config.pixelId || window.fbq) {
-      return;
-    }
-
-    window.fbq = function () {
-      window.fbq.callMethod ? window.fbq.callMethod.apply(window.fbq, arguments) : window.fbq.queue.push(arguments);
-    };
-    if (!window._fbq) {
-      window._fbq = window.fbq;
-    }
-    window.fbq.push = window.fbq;
-    window.fbq.loaded = true;
-    window.fbq.version = "2.0";
-    window.fbq.queue = [];
-
-    const script = document.createElement("script");
-    script.async = true;
-    script.src = "https://connect.facebook.net/en_US/fbevents.js";
-    document.head.appendChild(script);
-
-    window.fbq("init", config.pixelId);
-    window.fbq("track", "PageView");
+    if (!config.pixelId || window.__rdaPixelInitialized) { return; }
+    window.__rdaPixelInitialized = true;
+    !function(f,b,e,v,n,t,s){if(f.fbq){return;}n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments);};if(!f._fbq){f._fbq=n;}n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s);}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+    window.fbq('init', config.pixelId); window.fbq('track', 'PageView');
   }
-
-  function buildContactPayload(eventId) {
-    const fbclid = getSearchParam("fbclid");
-    const landingSessionId = getLandingSessionId();
-    const whatsappMessage = getWhatsappMessage(landingSessionId);
-    const bonusCode =
-      config.landingVariant === RDAV2_VARIANT ? whatsappMessage.slice(-BONUS_CODE_LENGTH) : null;
-    const fallbackWhatsappUrl = buildWhatsappUrl(
-      pickWhatsappPhone(routingSeed),
-      whatsappMessage
-    );
-    return {
-      eventId,
-      landingSessionId,
-      landingVariant: config.landingVariant || "rda-luqui10-v1",
-      routingSeed,
-      fbp: captureFbp(),
-      fbc: getFbc(fbclid),
-      fbclid,
-      eventSourceUrl: window.location.href,
-      referrer: document.referrer || null,
-      utmSource: getSearchParam("utm_source"),
-      utmMedium: getSearchParam("utm_medium"),
-      utmId: getSearchParam("utm_id"),
-      utmCampaign: getSearchParam("utm_campaign"),
-      utmContent: getSearchParam("utm_content"),
-      utmTerm: getSearchParam("utm_term"),
-      adsetId: getSearchParam("adset_id"),
-      adId: getSearchParam("ad_id"),
-      placement: getSearchParam("placement"),
-      consentMarketing: null,
-      consentTimestamp: null,
-      whatsappUrl: fallbackWhatsappUrl,
-      ...(bonusCode ? { bonusCode } : {})
-    };
+  function trackContact() { if (window.fbq) { window.fbq('track', 'Contact', {}, { eventID: eventId }); } }
+  function send(payload, done) {
+    var xhr = new XMLHttpRequest(); xhr.open('POST', config.contactEndpoint || '/landing/contact', true); xhr.timeout = 7000; xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.onreadystatechange = function () { var data; if (xhr.readyState !== 4) { return; } if (xhr.status < 200 || xhr.status >= 300) { done(null); return; } try { data = JSON.parse(xhr.responseText); } catch (ignore) { data = null; } done(data && data.status === 'ok' && data.attributionStatus === 'persisted' && data.whatsappUrl ? data : null); };
+    xhr.ontimeout = function () { done(null); }; xhr.onerror = function () { done(null); }; xhr.send(JSON.stringify(payload));
   }
-
-  function trackPixelContact(eventId) {
-    if (!window.fbq) {
-      return;
-    }
-
-    window.fbq(
-      "track",
-      "Contact",
-      {
-        content_name: "Rey Dorado WhatsApp CTA",
-        destination: "whatsapp",
-        landing_variant: config.landingVariant || "rda-luqui10-v1"
-      },
-      { eventID: eventId }
-    );
+  function payload() {
+    var fbclid = queryValue('fbclid'); var fbc = readCookie('_fbc');
+    if (!fbc && fbclid) { fbc = 'fb.1.' + Math.floor(new Date().getTime() / 1000) + '.' + fbclid; writeCookie('_fbc', fbc); }
+    return { eventId: eventId, landingSessionId: landingSessionId, landingVariant: config.landingVariant || 'rda-central-auto-v1', fbp: readCookie('_fbp'), fbc: fbc, fbclid: fbclid, eventSourceUrl: window.location.href, referrer: document.referrer || null, utmSource: queryValue('utm_source'), utmMedium: queryValue('utm_medium'), utmId: queryValue('utm_id'), utmCampaign: queryValue('utm_campaign'), utmContent: queryValue('utm_content'), utmTerm: queryValue('utm_term'), adsetId: queryValue('adset_id'), adId: queryValue('ad_id'), placement: queryValue('placement') };
   }
-
-  function timeout(ms) {
-    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  function showRetry() { status.innerHTML = 'No pudimos preparar la conexión. Reintentá.'; retry.hidden = false; }
+  function start() {
+    attempts += 1; retry.hidden = true; status.innerHTML = 'Te llevamos a WhatsApp…';
+    send(payload(), function (data) { var wait; if (!data) { if (attempts < 3) { window.setTimeout(start, attempts * 350); } else { showRetry(); } return; } trackContact(); manual.href = data.whatsappUrl; manual.hidden = false; wait = 900 - (new Date().getTime() - startedAt); window.setTimeout(function () { window.location.href = data.whatsappUrl; }, wait > 0 ? wait : 0); });
   }
-
-  async function postContact(payload) {
-    if (!config.contactEndpoint) {
-      return null;
-    }
-
-    const request = fetch(config.contactEndpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload),
-      credentials: "same-origin",
-      keepalive: true
-    })
-      .then((response) => (response && response.ok ? response.json().catch(() => null) : null))
-      .catch(() => null);
-
-    return Promise.race([request, timeout(TRACKING_TIMEOUT_MS).then(() => null)]);
-  }
-
-  function redirectToWhatsapp(whatsappUrl) {
-    const landingSessionId = getLandingSessionId();
-    window.location.href =
-      whatsappUrl ||
-      config.whatsappUrl ||
-      buildWhatsappUrl(pickWhatsappPhone(routingSeed), getWhatsappMessage(landingSessionId));
-  }
-
-  function bindCta() {
-    const cta = document.querySelector("[data-track-contact='true']");
-    if (!cta) {
-      return;
-    }
-
-    let redirecting = false;
-    cta.addEventListener("click", async function (event) {
-      event.preventDefault();
-      if (redirecting) {
-        return;
-      }
-      redirecting = true;
-
-      const eventId = safeRandomId("contact");
-      trackPixelContact(eventId);
-      const payload = buildContactPayload(eventId);
-
-      const result = await postContact(payload);
-      redirectToWhatsapp(result && typeof result.whatsappUrl === "string" ? result.whatsappUrl : payload.whatsappUrl);
-    });
-  }
-
-  initPixel();
-  startFbpCapture();
-  bindCta();
-})();
+  retry.onclick = function () { attempts = 0; start(); }; initPixel(); start();
+}());

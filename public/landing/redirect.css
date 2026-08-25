@@ -1,0 +1,7 @@
+html { background: #111827; color: #ffffff; font-family: Arial, Helvetica, sans-serif; }
+body { margin: 0; min-height: 100vh; min-height: 100dvh; display: table; width: 100%; }
+.card { display: table-cell; vertical-align: middle; padding: 24px; text-align: center; }
+h1 { margin: 0 0 14px; font-size: 24px; line-height: 1.25; }
+p { margin: 0 auto; max-width: 340px; color: #d1d5db; font-size: 17px; line-height: 1.5; }
+button, a { box-sizing: border-box; display: inline-block; margin-top: 24px; min-height: 48px; padding: 13px 20px; border: 0; border-radius: 6px; background: #22c55e; color: #08120b; font: bold 16px Arial, Helvetica, sans-serif; text-decoration: none; cursor: pointer; }
+button:focus, a:focus { outline: 3px solid #ffffff; outline-offset: 3px; }

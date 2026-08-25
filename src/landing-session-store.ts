@@ -12,6 +12,7 @@ interface DatabaseErrorLike {
 export interface CreateLandingSessionInput {
   landingSessionId: string;
   contactEventId: string;
+  landingToken: string;
   messageText: string;
   messageKey: string;
   pagina: PaginaCode;
@@ -39,7 +40,7 @@ export interface CreateLandingSessionInput {
 }
 
 export interface ClaimLandingSessionInput {
-  messageText?: string | null;
+  landingToken: string;
   phoneE164: string;
   messageSid?: string | null;
   claimedAt?: string;
@@ -49,6 +50,7 @@ export interface LandingSessionRecord {
   id: string;
   landingSessionId: string;
   contactEventId: string;
+  landingToken: string;
   messageText: string;
   messageKey: string;
   status: LandingSessionStatus;
@@ -83,6 +85,7 @@ export interface LandingSessionRecord {
 
 export interface LandingSessionStore {
   createSession(input: CreateLandingSessionInput): Promise<LandingSessionRecord>;
+  findByLandingSessionId(landingSessionId: string): Promise<LandingSessionRecord | null>;
   claimPendingSession(input: ClaimLandingSessionInput): Promise<LandingSessionRecord | null>;
 }
 
@@ -101,6 +104,7 @@ interface LandingSessionRow {
   id: string;
   landing_session_id: string;
   contact_event_id: string;
+  landing_token: string;
   message_text: string;
   message_key: string;
   status: LandingSessionStatus;
@@ -154,6 +158,7 @@ function mapRow(row: LandingSessionRow): LandingSessionRecord {
     id: row.id,
     landingSessionId: row.landing_session_id,
     contactEventId: row.contact_event_id,
+    landingToken: row.landing_token,
     messageText: row.message_text,
     messageKey: row.message_key,
     status: row.status,
@@ -211,7 +216,7 @@ function toMetaSourceContext(row: LandingSessionRecord): MetaSourceContext {
     eventSourceUrl: row.eventSourceUrl,
     referrer: row.referrer,
     landingSessionId: row.landingSessionId,
-    landingVariant: row.landingVariant ?? 'rda-luqui10-v1',
+    landingVariant: row.landingVariant ?? 'rda-central-auto-v1',
     ctaType: 'whatsapp_click',
     utmSource: row.utmSource,
     utmMedium: row.utmMedium,
@@ -241,6 +246,7 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
       .insert({
         landing_session_id: input.landingSessionId,
         contact_event_id: input.contactEventId,
+        landing_token: input.landingToken,
         message_text: input.messageText,
         message_key: input.messageKey,
         status: 'pending',
@@ -278,10 +284,24 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
     return mapRow(data as LandingSessionRow);
   }
 
+  async findByLandingSessionId(landingSessionId: string): Promise<LandingSessionRecord | null> {
+    const { data, error } = await this.client
+      .from('landing_sessions')
+      .select('*')
+      .eq('landing_session_id', landingSessionId)
+      .not('landing_token', 'is', null)
+      .maybeSingle();
+
+    if (error) {
+      throw mapPostgrestError(error, 'Could not read landing session');
+    }
+
+    return data ? mapRow(data as LandingSessionRow) : null;
+  }
+
   async claimPendingSession(input: ClaimLandingSessionInput): Promise<LandingSessionRecord | null> {
-    const messageKey = normalizeLandingMessageKey(input.messageText);
-    if (!messageKey) {
-      return null;
+    if (!/^[A-HJ-NP-Z2-9]{8}$/.test(input.landingToken)) {
+      throw new LandingSessionStoreError('VALIDATION', 'Landing token is invalid');
     }
 
     const nowIso = input.claimedAt ?? new Date().toISOString();
@@ -294,7 +314,7 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
         updated_at: nowIso
       })
       .eq('status', 'pending')
-      .eq('message_key', messageKey)
+      .eq('landing_token', input.landingToken)
       .lt('created_at', cutoffIso);
 
     if (expireError) {
@@ -311,7 +331,7 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
         updated_at: nowIso
       })
       .eq('status', 'pending')
-      .eq('message_key', messageKey)
+      .eq('landing_token', input.landingToken)
       .gte('created_at', cutoffIso)
       .select('*')
       .maybeSingle();
