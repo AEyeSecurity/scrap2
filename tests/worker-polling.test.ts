@@ -272,6 +272,52 @@ describe('adaptive worker polling', () => {
     expect(store.snapshotted).toEqual([]);
   });
 
+  it('retries a transient platform authentication failure without failing the owner queue', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.leases.push(buildReportLease({ pagina: 'RdA', attempts: 1, maxAttempts: 3 }));
+    const executor = vi.fn().mockRejectedValue(new Error('PLATFORM_AUTH_FAILED:RdA:Authentication did not complete before timeout')) as any;
+    executor.closeRun = vi.fn(async () => undefined);
+    const worker = new ReportRunWorker(
+      store,
+      createLogger('silent', false),
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: true },
+      executor
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(25);
+    await worker.stop();
+
+    expect(store.failed).toEqual(['item-1']);
+    expect(store.terminalFailures).toEqual([false]);
+    expect(store.failedRemaining).toEqual([]);
+    expect(executor.closeRun).toHaveBeenCalledWith('run-1');
+  });
+
+  it('stops only the affected owner when the platform explicitly rejects credentials', async () => {
+    vi.useFakeTimers();
+    const store = new FakeReportRunStore();
+    store.leases.push(buildReportLease({ pagina: 'RdA', attempts: 1, maxAttempts: 3 }));
+    const executor = vi.fn().mockRejectedValue(new Error('PLATFORM_AUTH_FAILED:RdA:Invalid credentials')) as any;
+    executor.closeRun = vi.fn(async () => undefined);
+    const worker = new ReportRunWorker(
+      store,
+      createLogger('silent', false),
+      { concurrency: 1, pollMs: 100, maxPollMs: 400, leaseSeconds: 60, maxAttempts: 3, asnEnabled: true },
+      executor
+    );
+
+    worker.start();
+    await vi.advanceTimersByTimeAsync(25);
+    await worker.stop();
+
+    expect(store.failed).toEqual(['item-1']);
+    expect(store.terminalFailures).toEqual([true]);
+    expect(store.failedRemaining).toEqual(['run-1']);
+    expect(executor.closeRun).toHaveBeenCalledWith('run-1');
+  });
+
   it('fails a missing platform username immediately without scheduling retries', async () => {
     vi.useFakeTimers();
     const store = new FakeReportRunStore();

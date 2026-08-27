@@ -153,7 +153,7 @@ describe('report worker executor', () => {
     ).rejects.toThrow('supported report result for pagina=ASN');
   });
 
-  it('caches a platform authentication failure so the run only attempts one login', async () => {
+  it('does not cache a transient platform authentication failure across report items', async () => {
     runAsnReportJob.mockRejectedValueOnce(new Error('Authentication did not complete: login form is still visible'));
     const sessionManager = {
       withSession: vi.fn(async (_lease, action) => action({ runId: 'run-auth', pagina: 'ASN' } as any)),
@@ -177,14 +177,8 @@ describe('report worker executor', () => {
     } as any;
 
     await expect(executor(lease)).rejects.toThrow('PLATFORM_AUTH_FAILED:ASN:');
-    await expect(executor({ ...lease, itemId: 'item-2', username: 'player-2' })).rejects.toThrow(
-      'PLATFORM_AUTH_FAILED:ASN:'
-    );
-    expect(runAsnReportJob).toHaveBeenCalledOnce();
-    expect(sessionManager.withSession).toHaveBeenCalledOnce();
-
     await expect(
-      executor({ ...lease, ownerId: 'owner-2', itemId: 'item-3', username: 'player-3' })
+      executor({ ...lease, itemId: 'item-2', username: 'player-2' })
     ).resolves.toBeTruthy();
     expect(runAsnReportJob).toHaveBeenCalledTimes(2);
     expect(sessionManager.withSession).toHaveBeenCalledTimes(2);

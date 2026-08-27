@@ -19,6 +19,7 @@ import {
   type UpsertMastercrmOrganicQrBudgetInput
 } from '../src/mastercrm-user-store';
 import { issueMastercrmSessionToken, verifyMastercrmSessionToken } from '../src/mastercrm-session';
+import type { EnqueueLandingContactInput, LandingContactOutboxStore } from '../src/landing-contact-outbox-store';
 import { normalizeLandingMessageKey, type LandingSessionRecord, type LandingSessionStore } from '../src/landing-session-store';
 import type { MetaConversionsDispatcher, MetaDispatchResult } from '../src/meta-conversions';
 import type { MetaConversionLease, MetaConversionsStore } from '../src/meta-conversions-store';
@@ -895,6 +896,19 @@ class FakeMastercrmUserStore implements MastercrmUserStore {
   async deleteOrganicQrBudget(input: DeleteMastercrmOrganicQrBudgetInput): Promise<{ deleted: true; id: string }> {
     this.deleteOrganicQrBudgetInputs.push(input);
     return this.deleteOrganicQrBudgetBehavior(input);
+  }
+}
+
+class FakeLandingContactOutboxStore {
+  public readonly inputs: EnqueueLandingContactInput[] = [];
+  private readonly eventIds = new Set<string>();
+
+  async enqueueLandingContact(input: EnqueueLandingContactInput): Promise<void> {
+    if (this.eventIds.has(input.eventId)) {
+      return;
+    }
+    this.eventIds.add(input.eventId);
+    this.inputs.push(input);
   }
 }
 
@@ -2811,7 +2825,7 @@ describe('server routes', () => {
     });
   });
 
-  it('POST /landing/contact dispatches website Contact CAPI without creating a CRM intake', async () => {
+  it('POST /landing/contact persists attribution and queues website Contact CAPI without creating a CRM intake', async () => {
     await withEnv(
       {
         LANDING_ENABLED: 'true',
@@ -2822,6 +2836,7 @@ describe('server routes', () => {
         const dispatcher = new FakeLandingMetaConversionsDispatcher();
         const playerPhoneStore = new FakePlayerPhoneStore();
         const landingSessionStore = new FakeLandingSessionStore();
+        const landingContactOutboxStore = new FakeLandingContactOutboxStore();
         const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
         const logger = createLogger('silent', false);
         const server = createServer(
@@ -2832,6 +2847,7 @@ describe('server routes', () => {
           {
             playerPhoneStore,
             landingSessionStore,
+            landingContactOutboxStore: landingContactOutboxStore as unknown as LandingContactOutboxStore,
             metaEnabled: true,
             reportWorkerEnabled: false,
             metaWorkerEnabled: false,
@@ -2871,7 +2887,7 @@ describe('server routes', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'not_configured', eventId: 'contact:test', attributionStatus: 'persisted' });
+        expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'queued', eventId: 'contact:test', attributionStatus: 'persisted', created: true });
         expect(response.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
         expect(response.json().whatsappMessage).toBe(`Hola, quiero mi usuario con mi bono: ${response.json().landingToken}`);
         expect(response.json().whatsappUrl).toContain('https://wa.me/5493562590932?text=');
@@ -2884,13 +2900,48 @@ describe('server routes', () => {
           pagina: 'RdA',
           botPhoneE164: '+5493562590932',
           cashierPhoneE164: '+5493562590932',
+          fbp: 'fb.1.1710000000000.111',
+          fbc: 'fb.1.1710000000000.fbclid-123',
+          fbclid: 'fbclid-123',
+          eventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
+          referrer: 'https://facebook.com/',
+          utmSource: 'meta',
+          utmMedium: 'paid_social',
           utmId: '6991129588056',
           utmCampaign: 'Mayo RDA',
           utmTerm: 'Prospeccion',
           utmContent: 'Video 1',
           adsetId: '69911377388568',
           adId: '699113773885680',
-          placement: 'facebook_feed'
+          placement: 'facebook_feed',
+          clientIpAddress: '181.45.10.22',
+          clientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
+        });
+        expect(landingContactOutboxStore.inputs).toHaveLength(1);
+        expect(landingContactOutboxStore.inputs[0]).toMatchObject({
+          landingSessionId: 'session_123',
+          eventId: 'contact:test',
+          sourcePayload: {
+            Fbp: 'fb.1.1710000000000.111',
+            Fbc: 'fb.1.1710000000000.fbclid-123',
+            Fbclid: 'fbclid-123',
+            EventSourceUrl: 'https://landing.reydeases.com/landing?fbclid=fbclid-123&utm_source=meta',
+            Referrer: 'https://facebook.com/',
+            LandingSessionId: 'session_123',
+            LandingVariant: 'rda-central-auto-v1',
+            CtaType: 'whatsapp_click',
+            UtmSource: 'meta',
+            UtmMedium: 'paid_social',
+            UtmId: '6991129588056',
+            UtmCampaign: 'Mayo RDA',
+            UtmContent: 'Video 1',
+            UtmTerm: 'Prospeccion',
+            AdsetId: '69911377388568',
+            AdId: '699113773885680',
+            Placement: 'facebook_feed',
+            ClientIpAddress: '181.45.10.22',
+            ClientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
+          }
         });
         expect(playerPhoneStore.intakeInputs).toEqual([]);
         expect(dispatcher.leases).toHaveLength(0);
@@ -3015,6 +3066,7 @@ describe('server routes', () => {
     await withEnv({ LANDING_ENABLED: 'true' }, async () => {
       const queue = new FakeQueue();
       const landingSessionStore = new FakeLandingSessionStore();
+      const landingContactOutboxStore = new FakeLandingContactOutboxStore();
       const appConfig = buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' });
       const logger = createLogger('silent', false);
       const server = createServer(
@@ -3024,7 +3076,8 @@ describe('server routes', () => {
         queue,
         {
           landingSessionStore,
-          metaEnabled: false,
+          landingContactOutboxStore: landingContactOutboxStore as unknown as LandingContactOutboxStore,
+          metaEnabled: true,
           reportWorkerEnabled: false,
           metaWorkerEnabled: false
         }
@@ -3051,9 +3104,13 @@ describe('server routes', () => {
 
       expect(primary.statusCode).toBe(200);
       expect(repeated.statusCode).toBe(200);
+      expect(primary.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'queued', created: true });
+      expect(repeated.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'queued', created: false });
       expect(primary.json().whatsappUrl).toBe(repeated.json().whatsappUrl);
       expect(primary.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
       expect(landingSessionStore.createInputs).toHaveLength(1);
+      expect(landingContactOutboxStore.inputs).toHaveLength(1);
+      expect(landingContactOutboxStore.inputs[0].eventId).toBe('contact:split-primary');
 
       await server.close();
     });

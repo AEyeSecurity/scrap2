@@ -12,6 +12,7 @@ import {
 } from './report-browser-session';
 import {
   createPlatformReportAdapters,
+  isInvalidPlatformCredentialFailure,
   isPlatformAuthenticationFailure,
   PlatformAuthenticationError
 } from './platform-report-adapter';
@@ -197,23 +198,38 @@ export class ReportRunWorker {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const platformAuthFailure = message.startsWith('PLATFORM_AUTH_FAILED');
+      const invalidCredentials = platformAuthFailure && isInvalidPlatformCredentialFailure(message);
       this.logger.warn({ error: message, runId: lease.runId, username: lease.username }, 'Report item failed');
       const failed = await this.store.failRunItem(lease, message, {
-        terminal: isDeterministicReportItemError(message)
+        terminal: isDeterministicReportItemError(message) || invalidCredentials
       });
-      if (
-        failed !== false &&
-        (message.startsWith('PLATFORM_AUTH_FAILED') || message === 'ASN_REPORTS_DISABLED') &&
-        this.store.failRemainingRunItems
-      ) {
-        await this.store.failRemainingRunItems(
-          lease.runId,
-          message,
-          message.startsWith('PLATFORM_AUTH_FAILED') ? lease.ownerId : undefined
+      if (failed !== false && platformAuthFailure) {
+        // A failed authentication may leave a stale browser session behind.
+        // Drop it before the normal per-item retry creates a fresh session.
+        await this.executor.closeRun?.(lease.runId).catch((closeError) =>
+          this.logger.error({ closeError, runId: lease.runId }, 'Could not reset failed report authentication session')
         );
-        if (message.startsWith('PLATFORM_AUTH_FAILED')) {
-          await this.sendOperationalAlert(lease, 'Autenticación de plataforma fallida', 'platform_auth_failed', message);
+
+        if (invalidCredentials && this.store.failRemainingRunItems) {
+          // This is an explicit credential rejection, unlike timeouts or a
+          // login form that stayed visible. It is safe to stop this owner.
+          await this.store.failRemainingRunItems(lease.runId, message, lease.ownerId);
+          await this.sendOperationalAlert(lease, 'Credenciales de plataforma rechazadas', 'platform_credentials_invalid', message);
+        } else if (lease.attempts >= lease.maxAttempts) {
+          // Transient-looking auth failures get all their retries. Alert only
+          // once those retries are exhausted, avoiding alert storms.
+          await this.sendOperationalAlert(
+            lease,
+            'Autenticación de plataforma agotó reintentos',
+            'platform_auth_retries_exhausted',
+            message
+          );
         }
+      }
+
+      if (failed !== false && message === 'ASN_REPORTS_DISABLED' && this.store.failRemainingRunItems) {
+        await this.store.failRemainingRunItems(lease.runId, message);
       }
     }
 
@@ -336,13 +352,7 @@ export function createReportJobExecutor(
   const sessionManager =
     providedSessionManager ?? new RunAuthenticatedReportSessionManager(appConfig, logger, options);
   const adapters = createPlatformReportAdapters(appConfig, logger, options, sessionManager);
-  const authenticationFailures = new Map<string, PlatformAuthenticationError>();
   const executor: ReportJobExecutor = async (lease) => {
-    const authenticationKey = `${lease.runId}:${lease.ownerId}`;
-    const previousAuthFailure = authenticationFailures.get(authenticationKey);
-    if (previousAuthFailure) {
-      throw previousAuthFailure;
-    }
     try {
       return await adapters[lease.pagina].execute(lease);
     } catch (error) {
@@ -352,17 +362,12 @@ export function createReportJobExecutor(
           error instanceof Error ? error.message : String(error),
           { cause: error }
         );
-        authenticationFailures.set(authenticationKey, authError);
         throw authError;
       }
       throw error;
     }
   };
   executor.closeRun = async (runId) => {
-    const runPrefix = `${runId}:`;
-    for (const key of authenticationFailures.keys()) {
-      if (key.startsWith(runPrefix)) authenticationFailures.delete(key);
-    }
     await sessionManager.closeRun(runId);
   };
   return executor;

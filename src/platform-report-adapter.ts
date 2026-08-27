@@ -31,6 +31,16 @@ export function isPlatformAuthenticationFailure(error: unknown): boolean {
   );
 }
 
+/**
+ * Only an explicit credential rejection is safe to treat as definitive. A
+ * visible login form or a timeout can also be produced by a slow panel,
+ * expired browser state, or a transient network failure.
+ */
+export function isInvalidPlatformCredentialFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /invalid credentials|credenciales.*inv[aá]lidas/i.test(message);
+}
+
 function resultFromExecution(pagina: PaginaCode, result: ReportJobResult | undefined): ReportJobResult {
   const expectedKind = pagina === 'ASN' ? 'asn-reporte-cargado-mes' : 'rda-reporte-deposito-total';
   if (!result || result.kind !== expectedKind || result.pagina !== pagina) {
