@@ -2890,7 +2890,7 @@ describe('server routes', () => {
         expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'queued', eventId: 'contact:test', attributionStatus: 'persisted', created: true });
         expect(response.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
         expect(response.json().whatsappMessage).toBe(`Hola, quiero mi usuario con mi bono: ${response.json().landingToken}`);
-        expect(response.json().whatsappUrl).toContain('https://wa.me/5493562590932?text=');
+        expect(response.json().whatsappUrl).toContain('https://wa.me/5491125671037?text=');
         expect(landingSessionStore.createInputs).toHaveLength(1);
         expect(landingSessionStore.createInputs[0]).toMatchObject({
           landingSessionId: 'session_123',
@@ -2898,8 +2898,8 @@ describe('server routes', () => {
           contactEventId: 'contact:test',
           messageText: expect.stringMatching(/^Hola, quiero mi usuario con mi bono: [A-HJ-NP-Z2-9]{8}$/),
           pagina: 'RdA',
-          botPhoneE164: '+5493562590932',
-          cashierPhoneE164: '+5493562590932',
+          botPhoneE164: '+5491125671037',
+          cashierPhoneE164: '+5491125671037',
           fbp: 'fb.1.1710000000000.111',
           fbc: 'fb.1.1710000000000.fbclid-123',
           fbclid: 'fbclid-123',
@@ -3733,7 +3733,7 @@ describe('server routes', () => {
         ownerKey: 'central:rls',
         ownerLabel: 'Leandro central',
         actorAlias: 'Leandro central',
-        actorPhone: '+5493562590932'
+        actorPhone: '+5491125671037'
       }
     });
     expect(landingSessionStore.claimInputs).toEqual([
@@ -3752,7 +3752,7 @@ describe('server routes', () => {
         ownerKey: 'central:rls',
         ownerLabel: 'Leandro central',
         actorAlias: 'Leandro central',
-        actorPhone: '+5493562590932'
+        actorPhone: '+5491125671037'
       },
       sourceContext: {
         fbp: 'fb.1.1710000000000.111',
@@ -3785,7 +3785,7 @@ describe('server routes', () => {
         ownerKey: 'central:rls',
         ownerLabel: 'Leandro central',
         actorAlias: 'Leandro central',
-        actorPhone: '+5493562590932'
+        actorPhone: '+5491125671037'
       },
       sourceContext: {
         landingSessionId: 'session_landing_lead',

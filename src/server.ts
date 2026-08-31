@@ -180,7 +180,7 @@ interface ValidationIssue {
 }
 
 const LANDING_PUBLIC_DIR = join(process.cwd(), 'public', 'landing');
-const LANDING_CENTRAL_WHATSAPP_PHONE = '5493562590932';
+const LANDING_CENTRAL_WHATSAPP_PHONE = '5491125671037';
 const LANDING_VARIANT = 'rda-central-auto-v1';
 const LANDING_TOKEN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const LANDING_TOKEN_LENGTH = 8;
