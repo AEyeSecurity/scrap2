@@ -24,6 +24,10 @@ if (!originalSelector || !register || !resolver || !resolved || !missing || !pre
 }
 
 const selectorBefore = originalSelector.parameters.jsCode
+originalSelector.parameters.jsCode = selectorBefore.replace(
+  "  selectionMode: input.selectionMode === 'fallback' ? 'fallback' : 'initial',\n",
+  ''
+)
 for (const node of [register, resolver]) {
   node.retryOnFail = true
   node.maxTries = 3
@@ -63,8 +67,8 @@ for (const name of removedNames) {
   delete workflow.connections[name]
 }
 
-if (originalSelector.parameters.jsCode !== selectorBefore) {
-  throw new Error('Destination selector changed unexpectedly')
+if (originalSelector.parameters.jsCode.includes('fallback')) {
+  throw new Error('Destination selector still contains fallback behavior')
 }
 for (const expected of [
   "{ phone: '5491154816740', weight: 0.33, nick: 'Leandro', routingKey: 'lear' }",
