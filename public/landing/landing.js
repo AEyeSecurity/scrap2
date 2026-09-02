@@ -3,20 +3,17 @@
   var config = window.__RDA_LANDING_CONFIG__ || {};
   var status = document.getElementById('status');
   var retry = document.getElementById('retry');
-  var manual = document.getElementById('manual-whatsapp');
-  var attempts = 0;
-  var recoveryTimer = null;
+  var whatsappLink = document.getElementById('manual-whatsapp');
   var landingSessionId = makeId('landing');
   var eventId = makeId('contact');
   var contactTracked = false;
   var fbpWaitMs = 500;
   var fbpPollMs = 50;
-  var contactRedirectDelayMs = 800;
 
   function makeId(prefix) { return prefix + '-' + new Date().getTime().toString(36) + '-' + Math.floor(Math.random() * 2147483647).toString(36); }
   function readCookie(name) {
     var prefix = name + '='; var parts = document.cookie ? document.cookie.split(';') : []; var i;
-    for (i = 0; i < parts.length; i += 1) { var item = parts[i].replace(/^\s+/, ''); if (item.indexOf(prefix) === 0) { return decodeURIComponent(item.substring(prefix.length)); } }
+    for (i = 0; i < parts.length; i += 1) { var value = parts[i].trim(); if (value.indexOf(prefix) === 0) { return decodeURIComponent(value.substring(prefix.length)); } }
     return null;
   }
   function writeCookie(name, value) { try { document.cookie = name + '=' + encodeURIComponent(value) + '; path=/; max-age=7776000; SameSite=Lax'; } catch (ignore) {} }
@@ -34,12 +31,19 @@
     } catch (ignore) {}
   }
   function trackContact() {
-    if (contactTracked || !window.fbq) { return false; }
+    if (contactTracked) { return false; }
+    contactTracked = true;
+    try { if (typeof window.fbq === 'function') { window.fbq('track', 'Contact', {}, { eventID: eventId }); } } catch (ignore) {}
+    return true;
+  }
+  function confirmContact() {
+    var endpoint = config.contactConfirmEndpoint || '/landing/contact/confirm';
+    var body = JSON.stringify({ landingSessionId: landingSessionId, eventId: eventId });
     try {
-      window.fbq('track', 'Contact', {}, { eventID: eventId });
-      contactTracked = true;
-      return true;
-    } catch (ignore) { return false; }
+      if (window.navigator && typeof window.navigator.sendBeacon === 'function') {
+        window.navigator.sendBeacon(endpoint, new Blob([body], { type: 'application/json' }));
+      }
+    } catch (ignore) {}
   }
   function send(payload, done) {
     var xhr = new XMLHttpRequest(); var finished = false;
@@ -57,18 +61,26 @@
     var elapsedMs = 0;
     function poll() {
       if (readCookie('_fbp') || elapsedMs >= fbpWaitMs) { done(); return; }
-      elapsedMs += fbpPollMs;
-      window.setTimeout(poll, fbpPollMs);
+      elapsedMs += fbpPollMs; window.setTimeout(poll, fbpPollMs);
     }
     if (!config.pixelId) { done(); return; }
     poll();
   }
-  function clearRecoveryTimer() { if (recoveryTimer) { window.clearTimeout(recoveryTimer); recoveryTimer = null; } }
-  function showRetry() { clearRecoveryTimer(); manual.hidden = true; status.innerHTML = 'No pudimos preparar la conexión. Reintentá.'; retry.hidden = false; }
-  function showManual() { retry.hidden = true; manual.hidden = false; status.innerHTML = 'Si WhatsApp no se abrió, tocá el botón.'; }
-  function start() {
-    attempts += 1; clearRecoveryTimer(); retry.hidden = true; manual.hidden = true; status.innerHTML = 'Te llevamos a WhatsApp…';
-    send(payload(), function (data) { var tracked; if (!data) { if (attempts < 3) { window.setTimeout(start, attempts * 350); } else { showRetry(); } return; } tracked = trackContact(); manual.href = data.whatsappUrl; window.setTimeout(function () { window.location.href = data.whatsappUrl; recoveryTimer = window.setTimeout(showManual, 2200); }, tracked ? contactRedirectDelayMs : 0); });
+  function showRetry() {
+    whatsappLink.hidden = true; whatsappLink.removeAttribute('href');
+    status.innerHTML = 'No pudimos preparar la conexión. Reintentá.'; retry.hidden = false;
   }
-  retry.onclick = function () { attempts = 0; start(); }; initPixel(); waitForFbp(start);
+  function prepare() {
+    retry.hidden = true; whatsappLink.hidden = true; whatsappLink.removeAttribute('href');
+    status.innerHTML = 'Estamos preparando tu conexión…';
+    send(payload(), function (data) {
+      if (!data) { showRetry(); return; }
+      eventId = data.eventId || eventId;
+      whatsappLink.href = data.whatsappUrl; whatsappLink.hidden = false;
+      status.innerHTML = 'Tu conexión está lista.';
+    });
+  }
+  whatsappLink.onclick = function () { if (trackContact()) { confirmContact(); } };
+  retry.onclick = function () { prepare(); };
+  initPixel(); waitForFbp(prepare);
 }());

@@ -62,11 +62,19 @@ class FakeXmlHttpRequest {
 function createLandingHarness(options: LandingHarnessOptions = {}) {
   const cookies = new Map(Object.entries(options.cookies ?? {}));
   const requests: FakeXmlHttpRequest[] = [];
+  const beacons: Array<{ url: string; body: Blob }> = [];
   const insertedScripts: Array<Record<string, unknown>> = [];
+  const element = () => ({
+    hidden: false,
+    innerHTML: '',
+    href: '',
+    onclick: null as (() => void) | null,
+    removeAttribute(name: string) { if (name === 'href') { this.href = ''; } }
+  });
   const elements = {
-    status: { hidden: false, innerHTML: '', href: '', onclick: null as (() => void) | null },
-    retry: { hidden: false, innerHTML: '', href: '', onclick: null as (() => void) | null },
-    'manual-whatsapp': { hidden: false, innerHTML: '', href: '', onclick: null as (() => void) | null }
+    status: element(),
+    retry: element(),
+    'manual-whatsapp': element()
   };
   const initialHref = `https://landing.reydeases.com/landing${options.search ?? ''}`;
   let currentHref = initialHref;
@@ -108,10 +116,17 @@ function createLandingHarness(options: LandingHarnessOptions = {}) {
     __RDA_LANDING_CONFIG__: {
       pixelId: options.pixelId === undefined ? '1510669717126299' : options.pixelId,
       contactEndpoint: '/landing/contact',
+      contactConfirmEndpoint: '/landing/contact/confirm',
       landingVariant: 'rda-central-auto-v1'
     },
     document,
     location,
+    navigator: {
+      sendBeacon: (url: string, body: Blob) => {
+        beacons.push({ url, body });
+        return true;
+      }
+    },
     setTimeout,
     clearTimeout
   } as Record<string, unknown>;
@@ -135,7 +150,8 @@ function createLandingHarness(options: LandingHarnessOptions = {}) {
     Math,
     Date,
     encodeURIComponent,
-    decodeURIComponent
+    decodeURIComponent,
+    Blob
   });
 
   const run = () => vm.runInContext(landingScript, context);
@@ -143,6 +159,7 @@ function createLandingHarness(options: LandingHarnessOptions = {}) {
 
   return {
     cookies,
+    beacons,
     elements,
     initialHref,
     insertedScripts,
@@ -233,24 +250,30 @@ describe('landing Meta tracking', () => {
     expect(JSON.parse(harness.requests[0].request.body).fbp).toBeNull();
   });
 
-  it('emits Contact only after persistence and redirects 800 ms later with the same event ID', async () => {
+  it('exposes a direct WhatsApp link and emits Contact only when the user clicks it', async () => {
     const harness = createLandingHarness({ cookies: { _fbp: 'fb.1.1710000000000.111' } });
     const payload = JSON.parse(harness.requests[0].request.body);
-    const whatsappUrl = 'https://wa.me/5493562590932?text=hola';
+    const whatsappUrl = 'https://wa.me/5491125671037?text=hola';
 
     expect(harness.pixelCalls().some((call) => call[1] === 'Contact')).toBe(false);
     harness.requests[0].respond(200, successfulContactResponse(whatsappUrl));
 
-    const contactCalls = harness.pixelCalls().filter((call) => call[0] === 'track' && call[1] === 'Contact');
-    expect(contactCalls).toHaveLength(1);
-    expect(contactCalls[0][3]).toEqual({ eventID: payload.eventId });
+    expect(harness.pixelCalls().some((call) => call[1] === 'Contact')).toBe(false);
+    expect(harness.elements['manual-whatsapp'].hidden).toBe(false);
     expect(harness.elements['manual-whatsapp'].href).toBe(whatsappUrl);
     expect(harness.location.href).toBe(harness.initialHref);
 
-    await vi.advanceTimersByTimeAsync(799);
+    harness.elements['manual-whatsapp'].onclick?.();
+    const contactCalls = harness.pixelCalls().filter((call) => call[0] === 'track' && call[1] === 'Contact');
+    expect(contactCalls).toHaveLength(1);
+    expect(contactCalls[0][3]).toEqual({ eventID: payload.eventId });
+    expect(harness.beacons).toHaveLength(1);
+    expect(harness.beacons[0].url).toBe('/landing/contact/confirm');
+    expect(JSON.parse(await harness.beacons[0].body.text())).toEqual({
+      landingSessionId: payload.landingSessionId,
+      eventId: payload.eventId
+    });
     expect(harness.location.href).toBe(harness.initialHref);
-    await vi.advanceTimersByTimeAsync(1);
-    expect(harness.location.href).toBe(whatsappUrl);
   });
 
   it('does not emit Contact for HTTP errors, timeouts, or invalid responses', () => {
@@ -266,51 +289,62 @@ describe('landing Meta tracking', () => {
     for (const harness of [httpFailure, timeout, invalid]) {
       expect(harness.pixelCalls().some((call) => call[1] === 'Contact')).toBe(false);
       expect(harness.location.href).toBe(harness.initialHref);
+      expect(harness.elements['manual-whatsapp'].hidden).toBe(true);
+      expect(harness.elements['manual-whatsapp'].href).toBe('');
+      expect(harness.elements.retry.hidden).toBe(false);
     }
   });
 
-  it('reuses attribution identity across retries and emits one Contact after the final success', async () => {
+  it('reuses attribution identity across an explicit retry and emits one Contact after the click', async () => {
     const harness = createLandingHarness({ cookies: { _fbp: 'fb.1.1710000000000.111' } });
     const firstPayload = JSON.parse(harness.requests[0].request.body);
     harness.requests[0].respond(503, { message: 'retry' });
 
-    await vi.advanceTimersByTimeAsync(350);
+    expect(harness.requests).toHaveLength(1);
+    harness.elements.retry.onclick?.();
     expect(harness.requests).toHaveLength(2);
     const secondPayload = JSON.parse(harness.requests[1].request.body);
     expect(secondPayload.eventId).toBe(firstPayload.eventId);
     expect(secondPayload.landingSessionId).toBe(firstPayload.landingSessionId);
 
     harness.requests[1].respond(200, successfulContactResponse());
+    expect(harness.pixelCalls().filter((call) => call[1] === 'Contact')).toHaveLength(0);
+    harness.elements['manual-whatsapp'].onclick?.();
+    harness.elements['manual-whatsapp'].onclick?.();
     expect(harness.pixelCalls().filter((call) => call[1] === 'Contact')).toHaveLength(1);
+    expect(harness.beacons).toHaveLength(1);
   });
 
-  it('continues to WhatsApp when Pixel is unavailable', async () => {
+  it('enables the direct WhatsApp link when Pixel is unavailable', async () => {
     const harness = createLandingHarness({ pixelId: null });
-    const whatsappUrl = 'https://wa.me/5493562590932?text=sin-pixel';
+    const whatsappUrl = 'https://wa.me/5491125671037?text=sin-pixel';
 
     expect(harness.requests).toHaveLength(1);
     harness.requests[0].respond(200, successfulContactResponse(whatsappUrl));
     await vi.advanceTimersByTimeAsync(0);
 
     expect(harness.pixelCalls()).toEqual([]);
-    expect(harness.location.href).toBe(whatsappUrl);
+    expect(harness.elements['manual-whatsapp'].href).toBe(whatsappUrl);
+    expect(harness.location.href).toBe(harness.initialHref);
   });
 
-  it('continues to create the session and open WhatsApp when Pixel calls are blocked', async () => {
+  it('enables the direct WhatsApp link when Pixel calls are blocked', async () => {
     const harness = createLandingHarness({ pixelThrows: true });
-    const whatsappUrl = 'https://wa.me/5493562590932?text=pixel-bloqueado';
+    const whatsappUrl = 'https://wa.me/5491125671037?text=pixel-bloqueado';
 
     await vi.advanceTimersByTimeAsync(500);
     expect(harness.requests).toHaveLength(1);
     harness.requests[0].respond(200, successfulContactResponse(whatsappUrl));
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(harness.location.href).toBe(whatsappUrl);
+    expect(harness.elements['manual-whatsapp'].href).toBe(whatsappUrl);
+    expect(harness.location.href).toBe(harness.initialHref);
   });
 
   it('never emits checkout, lead, or purchase events from the browser', () => {
     const harness = createLandingHarness({ cookies: { _fbp: 'fb.1.1710000000000.111' } });
     harness.requests[0].respond(200, successfulContactResponse());
+    harness.elements['manual-whatsapp'].onclick?.();
     const eventNames = harness.pixelCalls().filter((call) => call[0] === 'track').map((call) => call[1]);
 
     expect(eventNames).toEqual(['PageView', 'Contact']);

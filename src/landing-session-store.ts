@@ -340,7 +340,29 @@ export class SupabaseLandingSessionStore implements LandingSessionStore {
       throw mapPostgrestError(error, 'Could not claim landing session');
     }
 
-    return data ? mapRow(data as LandingSessionRow) : null;
+    if (data) {
+      return mapRow(data as LandingSessionRow);
+    }
+
+    if (!input.messageSid) {
+      return null;
+    }
+
+    const { data: claimedData, error: claimedError } = await this.client
+      .from('landing_sessions')
+      .select('*')
+      .eq('status', 'claimed')
+      .eq('landing_token', input.landingToken)
+      .eq('claimed_phone_e164', input.phoneE164)
+      .eq('claimed_message_sid', input.messageSid)
+      .gte('created_at', cutoffIso)
+      .maybeSingle();
+
+    if (claimedError) {
+      throw mapPostgrestError(claimedError, 'Could not read claimed landing session');
+    }
+
+    return claimedData ? mapRow(claimedData as LandingSessionRow) : null;
   }
 }
 

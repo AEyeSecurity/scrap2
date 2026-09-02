@@ -1,24 +1,23 @@
-# n8n: landing automática → Leandro central
+# n8n: landing con clic directo → Leandro central
 
-La landing abre siempre `+5493562590932` (workflow Leandro) y usa el texto `Hola, quiero mi usuario con mi bono: XXXXXXXX`. El código es un token de ocho caracteres generado y persistido por el backend; no se deriva a un cajero desde el navegador.
+La landing prepara una sesión para el número `+5491125671037` y muestra un enlace directo a WhatsApp. No redirige automáticamente. El texto incluye un token opaco de ocho caracteres generado por el backend:
 
-En la primera rama del mensaje entrante de `L10 Royal L Support` (webhook `rls`), `API WhatsApp Intake Captura` debe hacer `POST http://127.0.0.1:3000/whatsapp/intake`. Debe enviar el body Twilio completo, `routingKey` y `routeContext`; no enviar `pagina` ni `ownerContext`.
+```text
+Hola, quiero mi usuario con mi bono: XXXXXXXX
+```
+
+El workflow activo `Leandro` recibe el mensaje por Twilio. `CRM Central Route Register` debe enviar el body Twilio completo, el `routingKey` y el `routeContext`; nunca debe enviar `pagina` ni `ownerContext`.
 
 ```js
-const body = $('Edit Fields').item.json.body || {};
-const digits = (value) => String(value || '').replace(/\D/g, '');
+const body = $('Edit Fields').first().json.body || {};
+const digits = (value) => String(value ?? '').replace(/\D/g, '');
 const clientPhone = digits(body.WaId || body.From);
-const actorPhone = digits($json.agentPhone);
-const routingKey = String($json.agentKey || '').trim().toLowerCase();
 
 return {
   telefono: clientPhone ? `+${clientPhone}` : null,
   body,
-  routingKey, // luqui10 (Lucas10, 60%) o vicky (40%)
-  routeContext: {
-    actorAlias: String($json.agentNick || routingKey).trim(),
-    actorPhone: `+${actorPhone}`
-  },
+  routingKey: $json.routingKey,
+  routeContext: $json.routeContext,
   sourceContext: {
     ctwaClid: body.ReferralCtwaClid || null,
     referralSourceId: body.ReferralSourceId || null,
@@ -35,4 +34,8 @@ return {
 };
 ```
 
-El backend reclama el token de forma atómica, con vigencia de 24 h. Para landing, sólo crea el intake CRM/CAPI Lead y permite handoff cuando la ruta tiene exactamente un owner RdA activo; si no, responde `CENTRAL_RDA_OWNER_INVALID` y n8n no debe redirigir al cajero. `landing_contact_outbox` guarda el Contact CAPI para entrega durable. Los mensajes posteriores/QR no reclaman ni duplican la sesión.
+`CRM Central Route Register` reintenta el mismo request como máximo tres veces. No usa `continueRegularOutput`: Twilio continúa únicamente si el CRM responde correctamente. No se vuelve a sortear ni se elige otro destino.
+
+El backend reclama el token de forma atómica durante 24 horas. Un reintento solo recupera la sesión si coinciden token, teléfono y `MessageSid`. Para una landing exige exactamente un owner RdA activo dentro de la cartera; la existencia simultánea de un owner ASN es válida. El pendiente se crea exclusivamente en RdA. Si falta el owner RdA, responde `CENTRAL_RDA_OWNER_INVALID` y n8n detiene la rama.
+
+`Contact` no se genera al cargar la página. El clic del usuario dispara Pixel y `POST /landing/contact/confirm` con el mismo `eventId`; el backend lo encola idempotentemente en `landing_contact_outbox`.

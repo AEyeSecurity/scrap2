@@ -195,6 +195,7 @@ const LANDING_ASSET_VERSION = process.env.LANDING_ASSET_VERSION?.trim() || Date.
 interface LandingPublicConfig {
   pixelId: string | null;
   contactEndpoint: string;
+  contactConfirmEndpoint: string;
   landingVariant: string;
 }
 
@@ -654,6 +655,11 @@ const mastercrmWhatsappQrRouteAddBodySchema = z
   })
   .passthrough();
 
+const landingContactConfirmBodySchema = z.object({
+  eventId: z.string().trim().min(1),
+  landingSessionId: z.string().trim().min(1)
+});
+
 const mastercrmUnlinkCashierBodySchema = z
   .object({
     user_id: z.union([z.string(), z.number().int()]).optional(),
@@ -1073,6 +1079,7 @@ function buildLandingPublicConfig(
   return {
     pixelId: getLandingPixelId(env),
     contactEndpoint: '/landing/contact',
+    contactConfirmEndpoint: '/landing/contact/confirm',
     landingVariant: options.landingVariant ?? LANDING_VARIANT
   };
 }
@@ -2766,12 +2773,9 @@ export function createServer(
     }
 
     const payload = parsed.data;
-    const receivedAt = new Date().toISOString();
     const clientIpAddress = getRequestIp({ headers: request.headers, ip: request.ip });
     const userAgentHeader = request.headers['user-agent'];
     const clientUserAgent = Array.isArray(userAgentHeader) ? userAgentHeader[0] : userAgentHeader ?? null;
-    const referrerHeader = request.headers.referer;
-    const referrer = payload.referrer ?? (Array.isArray(referrerHeader) ? referrerHeader[0] : referrerHeader) ?? null;
     let result: { session: LandingSessionRecord; created: boolean } | null = null;
     try {
       result = await createLandingContactSession({
@@ -2802,38 +2806,6 @@ export function createServer(
       });
     }
 
-    let trackingStatus: 'queued' | 'disabled' | 'not_configured' | 'failed' = 'disabled';
-    if (landingMetaEnabled) {
-      const outbox = getLandingContactOutboxStore();
-      if (!outbox) {
-        trackingStatus = 'not_configured';
-      } else {
-        try {
-          const sourceContext: MetaSourceContext = {
-            fbp: payload.fbp ?? null, fbc: payload.fbc ?? null, fbclid: payload.fbclid ?? null,
-            eventSourceUrl: payload.eventSourceUrl ?? null, referrer,
-            landingSessionId: result.session.landingSessionId, landingVariant: LANDING_VARIANT,
-            ctaType: 'whatsapp_click', utmSource: payload.utmSource ?? null, utmMedium: payload.utmMedium ?? null,
-            utmId: payload.utmId ?? null, utmCampaign: payload.utmCampaign ?? null, utmContent: payload.utmContent ?? null,
-            utmTerm: payload.utmTerm ?? null, adsetId: payload.adsetId ?? null, adId: payload.adId ?? null,
-            placement: payload.placement ?? null, consentMarketing: payload.consentMarketing ?? null,
-            consentTimestamp: payload.consentTimestamp ?? null, whatsappUrl: result.session.whatsappUrl,
-            clientIpAddress, clientUserAgent, receivedAt
-          };
-          await outbox.enqueueLandingContact({
-            landingSessionId: result.session.landingSessionId,
-            eventId: result.session.contactEventId,
-            eventTime: receivedAt,
-            sourcePayload: buildStoredMetaSourcePayload({ ownerContext: LANDING_CENTRAL_CONTEXT, sourceContext })
-          });
-          trackingStatus = 'queued';
-        } catch (error) {
-          trackingStatus = 'failed';
-          logger.warn({ error, landingSessionId: result.session.landingSessionId }, 'Landing Contact CAPI could not be enqueued');
-        }
-      }
-    }
-
     return reply.send({
       status: 'ok',
       eventId: result.session.contactEventId,
@@ -2841,9 +2813,74 @@ export function createServer(
       whatsappMessage: result.session.messageText,
       landingToken: result.session.landingToken,
       attributionStatus: 'persisted',
-      trackingStatus,
+      trackingStatus: landingMetaEnabled ? 'awaiting_click' : 'disabled',
       created: result.created
     });
+  });
+
+  fastify.post('/landing/contact/confirm', async (request, reply) => {
+    if (!landingEnabled) {
+      return reply.code(404).send({ message: 'Landing disabled' });
+    }
+
+    const origin = Array.isArray(request.headers.origin) ? request.headers.origin[0] : request.headers.origin;
+    if (!isOriginAllowed(origin, landingAllowedOrigins)) {
+      return reply.code(403).send({ message: 'Origin not allowed' });
+    }
+
+    const parsed = landingContactConfirmBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        message: 'Invalid payload',
+        code: 'INVALID_PAYLOAD',
+        details: { issues: toValidationIssues(parsed.error) }
+      });
+    }
+
+    const landingSessionStore = getLandingSessionStore();
+    if (!landingSessionStore) {
+      return reply.code(503).send({ message: 'Landing persistence unavailable', code: 'LANDING_PERSISTENCE_FAILED' });
+    }
+
+    let session: LandingSessionRecord | null;
+    try {
+      session = await landingSessionStore.findByLandingSessionId(parsed.data.landingSessionId);
+    } catch (error) {
+      logger.warn({ error, landingSessionId: parsed.data.landingSessionId }, 'Landing Contact confirmation could not read session');
+      return reply.code(503).send({ message: 'No se pudo registrar el contacto.', code: 'LANDING_CONFIRMATION_FAILED' });
+    }
+
+    if (!session || session.contactEventId !== parsed.data.eventId) {
+      return reply.code(404).send({ message: 'Landing session not found', code: 'LANDING_SESSION_NOT_FOUND' });
+    }
+
+    if (!landingMetaEnabled) {
+      return reply.send({ status: 'ok', trackingStatus: 'disabled' });
+    }
+
+    const outbox = getLandingContactOutboxStore();
+    if (!outbox) {
+      return reply.code(503).send({ message: 'Meta tracking is not configured', code: 'LANDING_TRACKING_NOT_CONFIGURED' });
+    }
+
+    const receivedAt = new Date().toISOString();
+    try {
+      const sourceContext: MetaSourceContext = {
+        ...landingSessionToSourceContext(session),
+        receivedAt
+      };
+      await outbox.enqueueLandingContact({
+        landingSessionId: session.landingSessionId,
+        eventId: session.contactEventId,
+        eventTime: receivedAt,
+        sourcePayload: buildStoredMetaSourcePayload({ ownerContext: LANDING_CENTRAL_CONTEXT, sourceContext })
+      });
+    } catch (error) {
+      logger.warn({ error, landingSessionId: session.landingSessionId }, 'Landing Contact confirmation could not be enqueued');
+      return reply.code(503).send({ message: 'No se pudo registrar el contacto.', code: 'LANDING_CONFIRMATION_FAILED' });
+    }
+
+    return reply.send({ status: 'ok', trackingStatus: 'queued' });
   });
 
   fastify.post('/login', async (request, reply) => {
@@ -4158,8 +4195,9 @@ export function createServer(
         });
 
         let platformIntake: Awaited<ReturnType<typeof persistPendingIntake>> | null = null;
-        const hasExactlyOneRdaOwner =
-          central.linkedOwners.length === 1 && central.linkedOwners[0].pagina === 'RdA';
+        const linkedRdaOwners = central.linkedOwners.filter((owner) => owner.pagina === 'RdA');
+        const landingRdaOwner = landingSession && linkedRdaOwners.length === 1 ? linkedRdaOwners[0] : null;
+        const hasExactlyOneRdaOwner = linkedRdaOwners.length === 1;
         if (landingSession && !hasExactlyOneRdaOwner) {
           logger.error(
             {
@@ -4177,8 +4215,8 @@ export function createServer(
             ...(landingSession ? { landingSessionId: landingSession.landingSessionId } : {})
           });
         }
-        if (central.linkedOwners.length === 1) {
-          const linkedOwner = central.linkedOwners[0];
+        const linkedOwner = landingRdaOwner ?? (central.linkedOwners.length === 1 ? central.linkedOwners[0] : null);
+        if (linkedOwner) {
           platformIntake = await persistPendingIntake({
             pagina: linkedOwner.pagina,
             telefono,
@@ -4209,7 +4247,7 @@ export function createServer(
           ...(platformIntake
             ? {
                 platformIntake: {
-                  pagina: central.linkedOwners[0].pagina,
+                  pagina: linkedOwner!.pagina,
                   cajeroId: platformIntake.cajeroId,
                   jugadorId: platformIntake.jugadorId,
                   linkId: platformIntake.linkId,

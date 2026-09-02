@@ -419,7 +419,13 @@ class FakeLandingSessionStore implements LandingSessionStore {
     this.claimInputs.push(input);
     const session = this.sessions.find((item) => item.status === 'pending' && item.landingToken === input.landingToken);
     if (!session) {
-      return null;
+      return this.sessions.find((item) =>
+        item.status === 'claimed' &&
+        item.landingToken === input.landingToken &&
+        item.claimedPhoneE164 === input.phoneE164 &&
+        Boolean(input.messageSid) &&
+        item.claimedMessageSid === input.messageSid
+      ) ?? null;
     }
 
     session.status = 'claimed';
@@ -2825,7 +2831,7 @@ describe('server routes', () => {
     });
   });
 
-  it('POST /landing/contact persists attribution and queues website Contact CAPI without creating a CRM intake', async () => {
+  it('prepares a landing session and queues website Contact CAPI only after click confirmation', async () => {
     await withEnv(
       {
         LANDING_ENABLED: 'true',
@@ -2887,7 +2893,7 @@ describe('server routes', () => {
         });
 
         expect(response.statusCode).toBe(200);
-        expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'queued', eventId: 'contact:test', attributionStatus: 'persisted', created: true });
+        expect(response.json()).toMatchObject({ status: 'ok', trackingStatus: 'awaiting_click', eventId: 'contact:test', attributionStatus: 'persisted', created: true });
         expect(response.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
         expect(response.json().whatsappMessage).toBe(`Hola, quiero mi usuario con mi bono: ${response.json().landingToken}`);
         expect(response.json().whatsappUrl).toContain('https://wa.me/5491125671037?text=');
@@ -2917,6 +2923,32 @@ describe('server routes', () => {
           clientIpAddress: '181.45.10.22',
           clientUserAgent: 'Mozilla/5.0 MetaInAppBrowser'
         });
+        expect(landingContactOutboxStore.inputs).toHaveLength(0);
+
+        const mismatchedConfirmation = await server.inject({
+          method: 'POST',
+          url: '/landing/contact/confirm',
+          headers: { origin: 'https://landing.reydeases.com' },
+          payload: { landingSessionId: 'session_123', eventId: 'contact:other' }
+        });
+        const confirmation = await server.inject({
+          method: 'POST',
+          url: '/landing/contact/confirm',
+          headers: { origin: 'https://landing.reydeases.com' },
+          payload: { landingSessionId: 'session_123', eventId: 'contact:test' }
+        });
+        const repeatedConfirmation = await server.inject({
+          method: 'POST',
+          url: '/landing/contact/confirm',
+          headers: { origin: 'https://landing.reydeases.com' },
+          payload: { landingSessionId: 'session_123', eventId: 'contact:test' }
+        });
+
+        expect(mismatchedConfirmation.statusCode).toBe(404);
+        expect(landingContactOutboxStore.inputs).toHaveLength(1);
+        expect(confirmation.statusCode).toBe(200);
+        expect(confirmation.json()).toEqual({ status: 'ok', trackingStatus: 'queued' });
+        expect(repeatedConfirmation.statusCode).toBe(200);
         expect(landingContactOutboxStore.inputs).toHaveLength(1);
         expect(landingContactOutboxStore.inputs[0]).toMatchObject({
           landingSessionId: 'session_123',
@@ -3104,11 +3136,19 @@ describe('server routes', () => {
 
       expect(primary.statusCode).toBe(200);
       expect(repeated.statusCode).toBe(200);
-      expect(primary.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'queued', created: true });
-      expect(repeated.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'queued', created: false });
+      expect(primary.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'awaiting_click', created: true });
+      expect(repeated.json()).toMatchObject({ eventId: 'contact:split-primary', trackingStatus: 'awaiting_click', created: false });
       expect(primary.json().whatsappUrl).toBe(repeated.json().whatsappUrl);
       expect(primary.json().landingToken).toMatch(/^[A-HJ-NP-Z2-9]{8}$/);
       expect(landingSessionStore.createInputs).toHaveLength(1);
+      expect(landingContactOutboxStore.inputs).toHaveLength(0);
+
+      const confirmation = await server.inject({
+        method: 'POST',
+        url: '/landing/contact/confirm',
+        payload: { landingSessionId: 'session_stable', eventId: 'contact:split-primary' }
+      });
+      expect(confirmation.statusCode).toBe(200);
       expect(landingContactOutboxStore.inputs).toHaveLength(1);
       expect(landingContactOutboxStore.inputs[0].eventId).toBe('contact:split-primary');
 
@@ -3479,6 +3519,119 @@ describe('server routes', () => {
       messageSid: 'SM_CENTRAL_1'
     }));
     await server.close();
+  });
+
+  it('routes a central landing intake to the single RdA owner of a dual ASN/RdA portfolio', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const mastercrmStore = new FakeMastercrmUserStore();
+      const playerPhoneStore = new FakePlayerPhoneStore();
+      const landingSessionStore = new FakeLandingSessionStore();
+      const createCentralIntake = vi.fn(async () => ({
+        userId: 77,
+        contactId: 'contact-dual-1',
+        eventType: 'intake' as const,
+        routingKey: 'lear',
+        routeContext: { actorAlias: 'Leandro', actorPhone: '+5491154816740' },
+        linkedOwners: [
+          { ownerId: 'owner-asn', ownerKey: 'asn-lear', ownerLabel: 'Leandro ASN', pagina: 'ASN' as const, telefono: null },
+          { ownerId: 'owner-rda', ownerKey: 'rda-lear', ownerLabel: 'Leandro RdA', pagina: 'RdA' as const, telefono: null }
+        ],
+        expiresAt: '2026-09-03T12:00:00.000Z'
+      }));
+      Object.assign(mastercrmStore, { createCentralIntake, resolveCentralRoute: vi.fn(async () => null) });
+      const server = createServer(
+        buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        createLogger('silent', false),
+        new FakeQueue(),
+        { mastercrmUserStore: mastercrmStore, playerPhoneStore, landingSessionStore, metaEnabled: false }
+      );
+
+      const prepared = await server.inject({
+        method: 'POST',
+        url: '/landing/contact',
+        payload: { eventId: 'contact:dual', landingSessionId: 'session_dual' }
+      });
+      const preparedBody = prepared.json();
+      const intakePayload = {
+        routingKey: 'lear',
+        routeContext: { actorAlias: 'Leandro', actorPhone: '+5491154816740' },
+        body: {
+          To: 'whatsapp:+5491125671037',
+          From: 'whatsapp:+5493515550101',
+          WaId: '5493515550101',
+          Body: preparedBody.whatsappMessage,
+          MessageSid: 'SM-LANDING-DUAL'
+        }
+      };
+
+      const first = await server.inject({ method: 'POST', url: '/whatsapp/intake', payload: intakePayload });
+      const repeated = await server.inject({ method: 'POST', url: '/whatsapp/intake', payload: intakePayload });
+
+      expect(first.statusCode).toBe(200);
+      expect(repeated.statusCode).toBe(200);
+      expect(first.json()).toMatchObject({
+        status: 'ok',
+        routingKey: 'lear',
+        linkedPlatforms: ['ASN', 'RdA'],
+        landingSessionId: 'session_dual',
+        platformIntake: { pagina: 'RdA' }
+      });
+      expect(repeated.json()).toMatchObject({ landingSessionId: 'session_dual', platformIntake: { pagina: 'RdA' } });
+      expect(playerPhoneStore.intakeInputs).toHaveLength(2);
+      expect(playerPhoneStore.intakeInputs.every((input) => input.pagina === 'RdA')).toBe(true);
+      expect(playerPhoneStore.intakeInputs[0].ownerContext).toMatchObject({ ownerKey: 'rda-lear' });
+
+      await server.close();
+    });
+  });
+
+  it('keeps returning CENTRAL_RDA_OWNER_INVALID for the same claimed landing message when no RdA owner exists', async () => {
+    await withEnv({ LANDING_ENABLED: 'true' }, async () => {
+      const mastercrmStore = new FakeMastercrmUserStore();
+      const landingSessionStore = new FakeLandingSessionStore();
+      Object.assign(mastercrmStore, {
+        createCentralIntake: vi.fn(async () => ({
+          userId: 78,
+          contactId: 'contact-asn-only',
+          eventType: 'intake' as const,
+          routingKey: 'asn-only',
+          routeContext: { actorAlias: 'ASN', actorPhone: '+5491154816740' },
+          linkedOwners: [
+            { ownerId: 'owner-asn', ownerKey: 'asn-only', ownerLabel: 'ASN only', pagina: 'ASN' as const, telefono: null }
+          ],
+          expiresAt: '2026-09-03T12:00:00.000Z'
+        })),
+        resolveCentralRoute: vi.fn(async () => null)
+      });
+      const server = createServer(
+        buildAppConfig({}, { AGENT_BASE_URL: 'https://agents.reydeases.com' }),
+        { host: '127.0.0.1', port: 3000, loginConcurrency: 3, jobTtlMinutes: 60 },
+        createLogger('silent', false),
+        new FakeQueue(),
+        { mastercrmUserStore: mastercrmStore, playerPhoneStore: new FakePlayerPhoneStore(), landingSessionStore, metaEnabled: false }
+      );
+      const prepared = await server.inject({
+        method: 'POST', url: '/landing/contact', payload: { eventId: 'contact:asn-only', landingSessionId: 'session_asn_only' }
+      });
+      const payload = {
+        routingKey: 'asn-only',
+        routeContext: { actorAlias: 'ASN', actorPhone: '+5491154816740' },
+        body: {
+          To: 'whatsapp:+5491125671037', WaId: '5493515550102',
+          Body: prepared.json().whatsappMessage, MessageSid: 'SM-LANDING-ASN-ONLY'
+        }
+      };
+
+      const first = await server.inject({ method: 'POST', url: '/whatsapp/intake', payload });
+      const repeated = await server.inject({ method: 'POST', url: '/whatsapp/intake', payload });
+
+      expect(first.statusCode).toBe(409);
+      expect(repeated.statusCode).toBe(409);
+      expect(first.json()).toMatchObject({ code: 'CENTRAL_RDA_OWNER_INVALID', landingSessionId: 'session_asn_only' });
+      expect(repeated.json()).toMatchObject({ code: 'CENTRAL_RDA_OWNER_INVALID', landingSessionId: 'session_asn_only' });
+      await server.close();
+    });
   });
 
   it('POST /whatsapp/intake resolves a central reply from To plus client phone without routingKey', async () => {

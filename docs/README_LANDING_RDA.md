@@ -1,319 +1,83 @@
-# Landing Rey de Ases RdA
+# Landing WhatsApp central
 
-Landing mobile-first servida desde el backend Fastify en `GET /landing`.
+## Contrato vigente
 
-## Objetivo
+- URL pública principal: `https://landing.imperial-support.com/landing`.
+- Número WhatsApp: `+5491125671037`.
+- Preparación: `POST /landing/contact`.
+- Confirmación de clic: `POST /landing/contact/confirm`.
+- Variante: `rda-central-auto-v1`.
+- Evento Meta del clic: `Contact`.
 
-- Mostrar una landing de Rey de Ases para RdA.
-- Enviar al usuario al bot WhatsApp RdA/n8n al `+5493515747477`.
-- Medir el click con Meta Pixel y Meta CAPI como evento `Contact`.
-- No crear clientes, leads ni links CRM desde el click de landing; el `Lead` se crea cuando entra el primer WhatsApp real y queda asociado a `luqui10:luqui10`.
+La landing no navega automáticamente. Primero persiste una sesión y un token, y después habilita un `<a>` real con una URL `https://wa.me/5491125671037?...`. La apertura ocurre únicamente por el toque del usuario.
 
-## URLs
+## Preparación
 
-- Landing: `GET /landing`
-- Privacidad: `GET /landing/privacidad`
-- Terminos: `GET /landing/terminos`
-- Tracking backend: `POST /landing/contact`
+Payload mínimo:
 
-CTA final:
-
-```text
-https://wa.me/5493515747477?text=Hola%20quiero%20mi%20usuario%20suertudo%20del%20Rey%20Dorado
+```json
+{
+  "eventId": "contact-...",
+  "landingSessionId": "landing-..."
+}
 ```
 
-## Archivos front
+También acepta `fbp`, `fbc`, `fbclid`, referrer, URL de origen y UTMs. La identidad se conserva en los reintentos manuales.
 
-```text
-public/landing/index.html
-public/landing/styles.css
-public/landing/landing.js
-public/landing/privacidad.html
-public/landing/terminos.html
-public/landing/assets/hero-monkey-king.webp
-public/landing/assets/logo-rey-de-ases.webp
-public/landing/assets/logo-rey-de-ases.svg
-public/landing/assets/whatsapp.svg
+Respuesta:
+
+```json
+{
+  "status": "ok",
+  "eventId": "contact-...",
+  "whatsappUrl": "https://wa.me/5491125671037?text=...",
+  "whatsappMessage": "Hola, quiero mi usuario con mi bono: XXXXXXXX",
+  "landingToken": "XXXXXXXX",
+  "attributionStatus": "persisted",
+  "trackingStatus": "awaiting_click",
+  "created": true
+}
 ```
 
-El hero `hero-monkey-king.webp` esta optimizado para mobile y pesa cerca de `92 KB`.
-El logo `logo-rey-de-ases.webp` (wordmark dorado con fondo recortado a transparencia) pesa `~68 KB`.
-El `logo-rey-de-ases.svg` queda como fallback historico pero ya no se referencia desde el HTML.
-El peso critico aproximado de HTML + CSS + JS + SVGs + hero + logo es `~180 KB`, sin contar scripts externos de Meta.
+Si no puede persistir la sesión, la API responde `503` y no entrega una URL de WhatsApp. La UI muestra `Reintentar` y reutiliza el mismo `eventId` y `landingSessionId`.
 
-## Rediseno visual (2026-05-29)
+## Clic y Meta
 
-Cambios de UI/UX manteniendo el tracking y la estructura de `server.ts` intactos.
+Al pulsar `Abrir WhatsApp`:
 
-Layout y copy:
+1. Pixel emite `Contact` con `{ eventID: eventId }`.
+2. `sendBeacon` envía sin bloquear la navegación:
 
-- El CTA WhatsApp pasa a ir primero en el flujo (conversion inmediata); el texto de soporte queda debajo y mas chico.
-- Se elimino el `<h1>` "Tu usuario de Rey de Ases, asistido por un operador." y se reemplazo el `aria-labelledby` por `aria-label` en la `section`.
-- Acentos corregidos: "anos" -> "años", "Atencion" -> "Atención", "Juga" -> "Jugá", "participacion" -> "participación".
-
-Logo:
-
-- Nuevo wordmark dorado `logo-rey-de-ases.webp`, extraido del arte original quitando el fondo a transparencia para integrarlo al hero sin recuadro.
-- El HTML referencia el `.webp` (con preload) en vez del `.svg`.
-
-Badges de confianza:
-
-- "24 HS" y "18+" rehechos como circulos dorados premium con SVG inline (sin requests extra, nitidos en cualquier densidad).
-- El de servicio usa un icono de reloj; el de edad usa "18+" en serif.
-
-Boton CTA:
-
-- Ico WhatsApp premium: `whatsapp.svg` con degrade verde, anillo y gloss radial.
-- Latido continuo via `transform: scale` (compositado por GPU; se evito animar `box-shadow` por costo de repaint).
-- Reactivo al cursor (hover: escala + brillo + glow), al click (`:active` se hunde) y foco accesible (`:focus-visible`).
-- Variable CSS `--s` para que hover/click no choquen con la animacion de latido.
-- Respeta `prefers-reduced-motion` (desactiva el latido).
-
-Eficiencia (todas las gamas Android/iOS/tablet):
-
-- Iconos en SVG inline / CSS, cero imagenes raster extra.
-- Animaciones limitadas a `transform`/`opacity`/`filter` (GPU-friendly).
-- Logo servido en WebP, con fallback SVG disponible.
-- `background-image` del hero referenciado relativo (`assets/...`) para robustez de cache.
-
-## Configuracion
-
-Variables nuevas:
-
-```env
-LANDING_ENABLED=true
-LANDING_ALLOWED_ORIGINS=
-META_PIXEL_ID=
-META_LANDING_ACTION_SOURCE=website
+```json
+{
+  "landingSessionId": "landing-...",
+  "eventId": "contact-..."
+}
 ```
 
-Variables Meta existentes requeridas para CAPI real:
+3. El enlace navega directamente a `wa.me` conservando la activación del usuario.
 
-```env
-META_ENABLED=true
-META_DATASET_ID=2123208205169806
-META_ACCESS_TOKEN=...
-META_API_VERSION=v25.0
-META_ACTION_SOURCE=system_generated
-```
+El backend valida que sesión y evento coincidan, toma la atribución persistida y encola CAPI en `landing_contact_outbox`. La restricción única de `event_id` deduplica clics o confirmaciones repetidas.
 
-`META_ACTION_SOURCE` se mantiene en `system_generated` para CTWA/CRM.
-La landing usa `META_LANDING_ACTION_SOURCE=website` solo para `Contact`.
+`PageView` se mide al cargar. `Contact` representa únicamente el clic en WhatsApp, no una visita ni una precarga del navegador.
 
-## Tracking
+## Ingreso al CRM
 
-En carga de pagina:
+El primer mensaje de WhatsApp contiene el token. `/whatsapp/intake` lo reclama por token, teléfono y `MessageSid` y conserva la atribución durante el ingreso central.
 
-- Si `META_PIXEL_ID` existe, carga Pixel async.
-- Dispara `PageView`.
-- Busca `_fbp` cada `100 ms` durante hasta `5 s` y conserva el primer valor valido generado por Meta.
+- Cartera con un owner RdA: crea el pendiente RdA.
+- Cartera con un owner RdA y uno ASN: crea el pendiente exclusivamente en RdA.
+- Cartera sin owner RdA: responde `CENTRAL_RDA_OWNER_INVALID`.
+- Un reintento del mismo mensaje mantiene el mismo resultado y no puede convertirse en intake neutral.
 
-En click del CTA:
+## Validación
 
-- Genera `event_id`.
-- Lee `_fbp`, `_fbc`, `fbclid`, UTMs, URL actual y referrer.
-- Dispara Pixel `Contact` con `{ eventID: event_id }`.
-- Envia `POST /landing/contact`.
-- Redirige a WhatsApp incluso si Pixel o CAPI fallan.
+- La página no cambia de URL antes del clic.
+- El enlace apunta a `wa.me/5491125671037`.
+- No existe `window.location.href` ni temporizador de redirección.
+- `Contact` no aparece antes del clic.
+- Browser y CAPI usan el mismo `eventId`.
+- Un doble clic genera un solo evento durable.
+- Una cartera ASN/RdA crea únicamente el pendiente RdA.
 
-Backend CAPI:
-
-- Evento: `Contact`.
-- `action_source`: `website`.
-- Deduplicacion: usa el mismo `event_id` del browser.
-- `event_source_url`: URL de landing.
-- `user_data`: `fbp`, `fbc`, `client_ip_address`, `client_user_agent`.
-- `custom_data`: owner, variante, CTA, fbclid, referrer, UTMs y WhatsApp URL.
-- `Contact.external_id`: `sha256("landing:" + landingSessionId)`.
-- `landing_lead.external_id`: identificador de landing + identificador estable del cliente CRM.
-- `Purchase.external_id`: identificador estable del cliente CRM.
-
-No se manda telefono del jugador en el click porque todavia no existe antes de WhatsApp.
-El `Lead` real entra por `/whatsapp/intake` cuando n8n recibe el primer mensaje y matchea la frase natural de landing.
-
-Parametros recomendados en cada anuncio:
-
-```text
-utm_source={{site_source_name}}&utm_medium=paid_social&utm_id={{campaign.id}}&utm_campaign={{campaign.name}}&utm_term={{adset.name}}&utm_content={{ad.name}}&adset_id={{adset.id}}&ad_id={{ad.id}}&placement={{placement}}
-```
-
-Para registros historicos, el CRM interpreta valores numericos existentes sin inventar nombres:
-
-- `utm_campaign` numerico: ID de campana.
-- `utm_term` numerico: ID de conjunto.
-- `utm_content` numerico: ID de anuncio.
-
-## Owner destino
-
-```text
-owner_key: luqui10:luqui10
-owner_label: Lucas10
-pagina: RdA
-bot_entrada: +5493515747477
-cajero_final: +5493516549344
-```
-
-## Desarrollo local
-
-```powershell
-$env:API_PORT='3010'
-$env:LANDING_ENABLED='true'
-$env:META_ENABLED='false'
-$env:REPORT_WORKER_ENABLED='false'
-npm start -- server
-```
-
-Abrir:
-
-```text
-http://127.0.0.1:3010/landing
-```
-
-## Publicacion temporal con Cloudflare Tunnel
-
-```powershell
-cloudflared tunnel --url http://127.0.0.1:3010 --no-autoupdate
-```
-
-Esto genera una URL `https://*.trycloudflare.com/landing`.
-Es solo para QA: no tiene garantia de uptime y depende de que la PC y el proceso sigan activos.
-
-## Deploy definitivo recomendado
-
-Para que un push a GitHub actualice el front automaticamente, usar una de estas opciones:
-
-- VPS con `git pull`, `npm run build` y restart por CI/CD.
-- Render/Railway/Fly con deploy conectado al repo.
-- Cloudflare Tunnel nombrado apuntando a un servicio persistente.
-- Separar la landing en hosting estatico solo si se reemplaza `/landing/contact` por una API publica estable.
-
-Repo actual:
-
-```text
-https://github.com/AEyeSecurity/scrap2.git
-```
-
-## Autodeploy desde GitHub
-
-Estado validado el `2026-05-29`:
-
-- Tarea programada Windows: `Megascrap Git AutoDeploy`.
-- Frecuencia: cada 1 minuto.
-- Script: `C:\ServerCIT\scripts\update_megascrap_from_main_if_new.ps1`.
-- Deploy usado: `C:\ServerCIT\scripts\deploy_megascrap_from_main.ps1`.
-- Fuente observada: `origin/main` del repo `https://github.com/AEyeSecurity/scrap2.git`.
-- Estado ultimo deploy: `C:\ServerCIT\state\megascrap-last-deployed-sha.txt`.
-- Logs: `C:\ServerCIT\logs\megascrap\autodeploy-YYYYMMDD.log`.
-
-Funcionamiento:
-
-- Si alguien pushea a `main` desde otra PC, la tarea hace `git fetch origin --prune`.
-- Si `origin/main` cambio respecto del ultimo SHA desplegado, ejecuta el deploy productivo.
-- El deploy crea una imagen Docker `scrap2:main-auto-<sha>` y reemplaza `scrap2-api`.
-- El script usa un lock global para evitar ejecuciones solapadas.
-- No es webhook instantaneo: el cambio deberia verse en el siguiente ciclo de 1 minuto, mas el tiempo de build/redeploy.
-- Si el push se hizo desde el mismo ServerCIT y `local HEAD` ya coincide con `origin/main`, el script fuerza rebuild/redeploy cuando ese SHA todavia no esta marcado como desplegado.
-
-Cache de frontend:
-
-- El HTML de `/landing` se sirve con `cache-control: no-store`.
-- CSS, JS e imagenes se referencian con `?v=<version-de-arranque>`.
-- Cada deploy reinicia el proceso y cambia esa version, evitando que navegadores o Cloudflare mantengan assets viejos con el mismo nombre.
-
-## Deploy productivo actual en ServerCIT
-
-Estado validado el `2026-05-29`:
-
-- URL productiva principal: `https://reydeases.imperial-support.com/landing`.
-- URL productiva alternativa: `https://reydeasesluck.aeye.com.ar/landing`.
-- URL tecnica alternativa: `https://apiscrap.mastercrmrl.com/landing`.
-- Contenedor: `scrap2-api`.
-- Imagen: `scrap2:main-auto-f3bb163`.
-- Commit: `f3bb163 Document Rey de Ases production landing deploy`.
-- Cloudflare Tunnel persistente: `Polo52` (`f1d4679b-5d4a-4528-b897-bc5f4868dd1b`).
-- Origen local: `http://127.0.0.1:3000`.
-
-Variables productivas locales agregadas en `.env.production`:
-
-```env
-LANDING_ENABLED=true
-LANDING_ALLOWED_ORIGINS=https://apiscrap.mastercrmrl.com,https://reydeasesluck.aeye.com.ar,https://reydeases.imperial-support.com,https://reydeasesluck.com.ar,https://www.reydeasesluck.com.ar,https://reydeasesluck.mastercrmrl.com,https://landing.mastercrmrl.com,https://reydeasesluck.com,https://www.reydeasesluck.com
-META_PIXEL_ID=2123208205169806
-META_LANDING_ACTION_SOURCE=website
-```
-
-DNS/Cloudflare aplicado:
-
-```text
-Zone: aeye.com.ar
-Record: reydeasesluck.aeye.com.ar
-Type: CNAME
-Target: f1d4679b-5d4a-4528-b897-bc5f4868dd1b.cfargotunnel.com
-Proxy: ON
-Tunnel origin: http://localhost:3000
-```
-
-DNS/Cloudflare principal aplicado:
-
-```text
-Zone: imperial-support.com
-Record: reydeases.imperial-support.com
-Type: CNAME
-Target: f1d4679b-5d4a-4528-b897-bc5f4868dd1b.cfargotunnel.com
-Proxy: ON
-Tunnel origin: http://localhost:3000
-```
-
-Hostnames adicionales preparados a nivel backend pero pendientes de DNS/Cloudflare:
-
-- `https://reydeasesluck.com.ar/landing`
-- `https://www.reydeasesluck.com.ar/landing`
-- `https://reydeasesluck.mastercrmrl.com/landing`
-- `https://landing.mastercrmrl.com/landing`
-- `https://reydeasesluck.com/landing`
-- `https://www.reydeasesluck.com/landing`
-
-Nota `reydeasesluck.com.ar`: validado el `2026-05-29` contra RDAP de NIC Argentina y DNS publico; el dominio no esta registrado/delegado y devuelve NXDOMAIN. Para usarlo hay que registrarlo en NIC Argentina, agregarlo como zona en Cloudflare, delegar los nameservers indicados por Cloudflare y crear el CNAME del tunnel.
-
-Para activar cualquiera de esos hostnames hay que entrar al dashboard de Cloudflare con permisos sobre la zona y agregar un Public Hostname al tunnel `cloudflared-apiscrap`, apuntando a:
-
-```text
-http://localhost:3000
-```
-
-Si se usa un dominio nuevo como `reydeasesluck.com`, primero hay que registrar el dominio y sumarlo a Cloudflare. Luego crear `reydeasesluck.com` y `www.reydeasesluck.com` como hostnames del tunnel.
-
-## QA ejecutado
-
-```powershell
-npm run build
-npx vitest run tests/meta-conversions.test.ts tests/server.test.ts
-```
-
-Resultado:
-
-- Build TypeScript: OK.
-- Tests focales landing/CAPI/server: OK.
-- QA visual mobile `390x844`: OK.
-- QA visual mobile chico `360x640`: OK.
-- CTA final verificado contra `wa.me/5493515747477`.
-- Deploy Docker productivo: OK.
-- `GET https://reydeases.imperial-support.com/landing`: OK.
-- Assets/legales productivos en `reydeases.imperial-support.com`: OK.
-- `POST https://reydeases.imperial-support.com/landing/contact`: OK, `tracked=true`.
-- `GET https://reydeasesluck.aeye.com.ar/landing`: OK.
-- Assets/legales productivos en `reydeasesluck.aeye.com.ar`: OK.
-- `POST https://reydeasesluck.aeye.com.ar/landing/contact`: OK, `tracked=true`.
-- `GET https://apiscrap.mastercrmrl.com/landing`: OK.
-- Assets/legales productivos: OK.
-- `POST https://apiscrap.mastercrmrl.com/landing/contact`: OK, `tracked=true`.
-
-`npm test` completo: `237` tests aprobados.
-
-## Consideraciones Meta
-
-- La landing incluye `18+`, juego responsable, privacidad y terminos.
-- No promete ganancias ni resultados.
-- El boton no muestra porcentaje de bono.
-- Meta Pixel Helper debe mostrar `PageView` y `Contact`.
-- Events Manager Test Events debe mostrar Browser + Server deduplicado para `Contact` cuando `META_PIXEL_ID`, `META_ENABLED`, `META_DATASET_ID` y `META_ACCESS_TOKEN` esten configurados.
+WhatsApp o el sistema operativo pueden mostrar su propia pantalla `Abrir aplicación / Continuar en WhatsApp Web`; esa confirmación pertenece a WhatsApp/WebView y no se controla desde la landing.
