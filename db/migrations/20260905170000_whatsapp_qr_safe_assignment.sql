@@ -151,6 +151,8 @@ $$;
 
 revoke all on function public.assign_username_by_phone_qr_v1(text, text, text, text, text, text, text) from public;
 revoke all on function public.assign_username_to_platform_owner_pair_qr_v1(uuid, text, text, text, text) from public;
+revoke all on function public.assign_username_by_phone_qr_v1(text, text, text, text, text, text, text) from anon, authenticated;
+revoke all on function public.assign_username_to_platform_owner_pair_qr_v1(uuid, text, text, text, text) from anon, authenticated;
 grant execute on function public.assign_username_by_phone_qr_v1(text, text, text, text, text, text, text) to service_role;
 grant execute on function public.assign_username_to_platform_owner_pair_qr_v1(uuid, text, text, text, text) to service_role;
 

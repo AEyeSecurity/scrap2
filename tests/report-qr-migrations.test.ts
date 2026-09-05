@@ -115,6 +115,7 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).toContain('pg_advisory_xact_lock');
     expect(sql).toContain('qr_username_already_assigned_to_other_phone');
     expect(sql).toContain('qr_phone_already_assigned_to_other_username');
+    expect(sql).toContain('from anon, authenticated');
     expect(sql).toContain('grant execute');
   });
 });
