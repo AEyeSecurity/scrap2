@@ -139,6 +139,14 @@ export class WhatsappQrRecheckWorker {
     ]);
 
     const monthClient = monthClients.find((client) => client.phoneE164 === row.phoneE164);
+    if (!monthClient) {
+      await this.store.updateRecheck(row.id, {
+        status: 'done',
+        attempts: row.attempts + 1,
+        lastError: 'phone_not_in_month_portfolio'
+      });
+      return;
+    }
     if (monthClient?.assignedUsername) {
       await this.store.updateRecheck(row.id, {
         status: 'done',
@@ -149,18 +157,12 @@ export class WhatsappQrRecheckWorker {
     }
 
     const phoneMatches = matches.filter((match) => match.clientPhoneE164 === row.phoneE164);
-    const assignedMatch = phoneMatches.find((match) => match.status === 'assigned');
-    if (assignedMatch) {
-      await this.store.updateRecheck(row.id, {
-        status: 'done',
-        attempts: row.attempts + 1,
-        lastError: null
-      });
-      return;
-    }
-
     const reusableMatch =
-      pickLatestMatch(phoneMatches.filter((match) => match.status === 'candidate' || match.status === 'error')) ??
+      pickLatestMatch(
+        phoneMatches.filter((match) =>
+          match.status === 'assigned' || match.status === 'validated' || match.status === 'candidate' || match.status === 'error'
+        )
+      ) ??
       pickLatestMatch(
         messages
           .filter((message) => message.clientPhoneE164 === row.phoneE164 && message.candidateUsername && message.matchSource)
@@ -285,7 +287,7 @@ export class WhatsappQrRecheckWorker {
         appConfig: this.appConfig,
         logger: this.logger
       });
-      await this.playerPhoneStore.assignUsernameByPhone({
+      await this.playerPhoneStore.assignUsernameByPhoneFromQr({
         pagina: owner.pagina,
         jugadorUsername: username,
         telefono: row.phoneE164,

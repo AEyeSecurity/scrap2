@@ -34,6 +34,7 @@ export interface WhatsappQrMessageEvent {
   text?: string | null;
   messageTimestamp?: string | null;
   sourceContext?: import('./types').MetaSourceContext | null;
+  isHistory?: boolean;
 }
 
 export interface WhatsappQrProcessResult {
@@ -66,6 +67,16 @@ function getBuenosAiresMonthStart(input = new Date()): string {
 
 function addMinutes(date: Date, minutes: number): Date {
   return new Date(date.getTime() + minutes * 60_000);
+}
+
+function isOperationalBotContactName(value: string | null | undefined): boolean {
+  return (value ?? '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+    .includes('bot');
 }
 
 export class WhatsappQrAutoAssignService {
@@ -261,12 +272,19 @@ export class WhatsappQrAutoAssignService {
       return { message: null, match: null, matches: [], resolvedOwners: [], routeStatus: null };
     }
 
+    const isHistorical = event.isHistory === true;
     const contactCandidate =
-      event.direction === 'inbound' || event.direction === 'contact_sync'
+      !isHistorical && (event.direction === 'inbound' || event.direction === 'contact_sync')
         ? extractUsernameFromContactName(event.contactName)
         : null;
+    const isOperationalBotConversation =
+      !isHistorical &&
+      event.direction === 'outbound' &&
+      (isOperationalBotContactName(event.contactName) || isOperationalBotContactName(event.pushName));
     const outboundCandidate =
-      event.direction === 'outbound' ? extractUsernameFromOutboundMessage(event.text) : null;
+      !isHistorical && !isOperationalBotConversation && event.direction === 'outbound'
+        ? extractUsernameFromOutboundMessage(event.text)
+        : null;
     const candidateUsername = contactCandidate ?? outboundCandidate;
     const matchSource = contactCandidate ? 'contact_name' : outboundCandidate ? 'outbound_message' : null;
     // Baileys contact-sync events do not carry a WhatsApp message id and may be
@@ -291,6 +309,18 @@ export class WhatsappQrAutoAssignService {
       messageTimestamp: event.messageTimestamp ?? null,
       sourceContext: event.sourceContext ?? null
     });
+
+    // Baileys replays old conversations after reconnecting even when full
+    // history sync is disabled. Keep a redacted audit row, but never turn a
+    // replay into routing, intake, validation, recheck or assignment work.
+    if (isHistorical) {
+      return { message, match: null, matches: [], resolvedOwners: [], routeStatus: null };
+    }
+
+    if (isOperationalBotConversation) {
+      message = await this.setRoutes(message, 'conflict', [], 'operational_bot_conversation');
+      return { message, match: null, matches: [], resolvedOwners: [], routeStatus: 'conflict' };
+    }
 
     const routes = await this.routesFor(event);
     const phoneRoute = await this.routeFromExistingPhone(routes, clientPhoneE164);
@@ -346,7 +376,7 @@ export class WhatsappQrAutoAssignService {
       if (pair) {
         const validatedAt = new Date().toISOString();
         try {
-          await this.options.playerPhoneStore.assignUsernameToPlatformOwnerPair({
+          await this.options.playerPhoneStore.assignUsernameToPlatformOwnerPairFromQr({
             pairId: pair.id,
             telefono: clientPhoneE164,
             jugadorUsername: candidateUsername,
@@ -417,7 +447,7 @@ export class WhatsappQrAutoAssignService {
 
     const validatedAt = new Date().toISOString();
     try {
-      await this.options.playerPhoneStore.assignUsernameByPhone({
+      await this.options.playerPhoneStore.assignUsernameByPhoneFromQr({
         pagina: selected.owner.pagina,
         jugadorUsername: candidateUsername,
         telefono: clientPhoneE164,

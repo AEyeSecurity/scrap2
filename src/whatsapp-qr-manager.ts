@@ -911,6 +911,15 @@ export class WhatsappQrManager {
               if (!phone) {
                 return;
               }
+              if (message.isHistory) {
+                await this.options.autoAssignService.processMessage({
+                  owner,
+                  session: currentSession,
+                  ...message,
+                  clientPhoneE164: phone
+                });
+                return;
+              }
               if (typeof this.options.store.listSessionRoutes !== 'function') {
                 const state = await this.recordChatMessage(owner, phone, message);
                 if (!this.isCurrentMonthChat(state)) {

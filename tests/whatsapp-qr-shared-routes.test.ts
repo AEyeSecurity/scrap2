@@ -185,8 +185,8 @@ function buildService(input: {
       )
       : null
   );
-  const assignUsernameByPhone = vi.fn(async () => ({}));
-  const assignUsernameToPlatformOwnerPair = vi.fn(async () => {
+  const assignUsernameByPhoneFromQr = vi.fn(async () => ({}));
+  const assignUsernameToPlatformOwnerPairFromQr = vi.fn(async () => {
     if (input.dualAssignFails) throw new Error('pair transaction rolled back');
     return [
       { ownerId: rdaOwner.ownerId, pagina: 'RdA', ownerKey: rdaOwner.ownerKey },
@@ -198,8 +198,8 @@ function buildService(input: {
     logger,
     store: store as unknown as WhatsappQrStore,
     playerPhoneStore: {
-      assignUsernameByPhone,
-      assignUsernameToPlatformOwnerPair,
+      assignUsernameByPhoneFromQr,
+      assignUsernameToPlatformOwnerPairFromQr,
       resolveOwnerContextByPhone: vi.fn(async ({ pagina }: { pagina: 'ASN' | 'RdA' }) => {
         if (input.existingPhonePagina !== pagina && input.existingPhonePagina !== 'both') return null;
         const routeOwner = pagina === 'ASN' ? asnOwner : rdaOwner;
@@ -214,7 +214,12 @@ function buildService(input: {
       if (!input.asnFound) throw new AsnUserCheckError('NOT_FOUND', `${usuario} missing`);
     })
   });
-  return { service, store, assignUsernameByPhone, assignUsernameToPlatformOwnerPair };
+  return {
+    service,
+    store,
+    assignUsernameByPhone: assignUsernameByPhoneFromQr,
+    assignUsernameToPlatformOwnerPair: assignUsernameToPlatformOwnerPairFromQr
+  };
 }
 
 describe('WhatsApp QR shared session routing', () => {

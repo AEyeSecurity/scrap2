@@ -168,7 +168,15 @@ export interface PlayerPhoneStore {
   assignPendingUsername(input: AssignPhoneInput): Promise<void>;
   assignPhone(input: AssignPhoneInput): Promise<void>;
   assignUsernameByPhone(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
+  assignUsernameByPhoneFromQr(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult>;
   assignUsernameToPlatformOwnerPair(input: {
+    pairId: string;
+    telefono: string;
+    jugadorUsername: string;
+    actorAlias?: string | null;
+    actorPhone?: string | null;
+  }): Promise<Array<{ ownerId: string; pagina: PaginaCode; ownerKey: string }>>;
+  assignUsernameToPlatformOwnerPairFromQr(input: {
     pairId: string;
     telefono: string;
     jugadorUsername: string;
@@ -385,6 +393,18 @@ export function mapAssignUsernameByPhoneRpcError(error: PostgrestError): PlayerP
   const code = error.code ?? '';
   const message = error.message || 'could not assign username by phone';
   const normalizedMessage = message.toLowerCase();
+
+  if (code === 'P0001' && normalizedMessage.includes('qr_username_already_assigned_to_other_phone')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'Ese usuario ya esta vinculado a otro numero dentro de este panel', {
+      reason: 'USERNAME_ALREADY_EXISTS_IN_PAGINA'
+    });
+  }
+
+  if (code === 'P0001' && normalizedMessage.includes('qr_phone_already_assigned_to_other_username')) {
+    return new PlayerPhoneStoreError('CONFLICT', 'Ese numero ya tiene otro usuario asignado para este cajero', {
+      reason: 'PHONE_ALREADY_ASSIGNED_FOR_OWNER'
+    });
+  }
 
   if (code === 'P0001' && normalizedMessage.includes('username assigned to other owner')) {
     return new PlayerPhoneStoreError('CONFLICT', 'El usuario ya esta asignado a otro cajero', {
@@ -745,6 +765,34 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     return result;
   }
 
+  async assignUsernameByPhoneFromQr(input: AssignPhoneInput): Promise<AssignUsernameByPhoneResult> {
+    const pagina = input.pagina;
+    const telefono = normalizePhone(input.telefono);
+    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
+    const ownerContext = requireOwnerContext(input.ownerContext);
+
+    const { data, error } = await this.client.rpc('assign_username_by_phone_qr_v1', {
+      p_owner_key: ownerContext.ownerKey,
+      p_cliente_telefono: telefono,
+      p_username: jugadorUsername,
+      p_pagina: pagina,
+      p_owner_label: ownerContext.ownerLabel,
+      p_actor_alias: ownerContext.actorAlias,
+      p_actor_phone: ownerContext.actorPhone
+    });
+
+    if (error) {
+      throw mapAssignUsernameByPhoneRpcError(error);
+    }
+
+    const result = asAssignUsernameByPhoneResult(data);
+    if (result.ownerId) {
+      await this.refreshMonthlyFacts(result.ownerId);
+    }
+
+    return result;
+  }
+
   async assignUsernameToPlatformOwnerPair(input: {
     pairId: string;
     telefono: string;
@@ -755,6 +803,34 @@ class SupabasePlayerPhoneStore implements PlayerPhoneStore {
     const telefono = normalizePhone(input.telefono);
     const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
     const { data, error } = await this.client.rpc('assign_username_to_platform_owner_pair_v1', {
+      p_pair_id: input.pairId,
+      p_cliente_telefono: telefono,
+      p_username: jugadorUsername,
+      p_actor_alias: input.actorAlias ?? null,
+      p_actor_phone: input.actorPhone ?? null
+    });
+    if (error) {
+      throw mapAssignUsernameByPhoneRpcError(error);
+    }
+    const rows = ((data as any[] | null) ?? []).map((row) => ({
+      ownerId: String(row.owner_id),
+      pagina: row.pagina === 'ASN' ? ('ASN' as const) : ('RdA' as const),
+      ownerKey: String(row.owner_key)
+    }));
+    await Promise.all(rows.map((row) => this.refreshMonthlyFacts(row.ownerId)));
+    return rows;
+  }
+
+  async assignUsernameToPlatformOwnerPairFromQr(input: {
+    pairId: string;
+    telefono: string;
+    jugadorUsername: string;
+    actorAlias?: string | null;
+    actorPhone?: string | null;
+  }): Promise<Array<{ ownerId: string; pagina: PaginaCode; ownerKey: string }>> {
+    const telefono = normalizePhone(input.telefono);
+    const jugadorUsername = normalizeUsername(input.jugadorUsername, 'usuario');
+    const { data, error } = await this.client.rpc('assign_username_to_platform_owner_pair_qr_v1', {
       p_pair_id: input.pairId,
       p_cliente_telefono: telefono,
       p_username: jugadorUsername,

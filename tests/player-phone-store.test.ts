@@ -67,6 +67,24 @@ describe('player-phone-store helpers', () => {
     expect(error.code).toBe('CONFLICT');
   });
 
+  it('maps QR username moves to a conflict instead of allowing an automatic reassignment', () => {
+    const error = mapAssignUsernameByPhoneRpcError({
+      code: 'P0001',
+      message: 'QR_USERNAME_ALREADY_ASSIGNED_TO_OTHER_PHONE'
+    } as any);
+    expect(error.code).toBe('CONFLICT');
+    expect(error.reason).toBe('USERNAME_ALREADY_EXISTS_IN_PAGINA');
+  });
+
+  it('maps QR phone overwrites to a conflict instead of replacing its current username', () => {
+    const error = mapAssignUsernameByPhoneRpcError({
+      code: 'P0001',
+      message: 'QR_PHONE_ALREADY_ASSIGNED_TO_OTHER_USERNAME'
+    } as any);
+    expect(error.code).toBe('CONFLICT');
+    expect(error.reason).toBe('PHONE_ALREADY_ASSIGNED_FOR_OWNER');
+  });
+
   it('maps assign_username_by_phone RPC validation errors to VALIDATION', () => {
     const error = mapAssignUsernameByPhoneRpcError({
       code: '22023',

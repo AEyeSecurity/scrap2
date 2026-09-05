@@ -197,9 +197,69 @@ https://reydeases.com/`)
 });
 
 describe('WhatsApp QR autoassign', () => {
+  it('records history replays as non-actionable evidence', async () => {
+    const store = new FakeWhatsappQrStore();
+    const assignUsernameByPhoneFromQr = vi.fn();
+    const rdaUserExistsChecker = vi.fn();
+    const service = new WhatsappQrAutoAssignService({
+      appConfig,
+      logger,
+      store: store as WhatsappQrStore,
+      playerPhoneStore: { assignUsernameByPhoneFromQr } as any,
+      rdaUserExistsChecker
+    });
+
+    const result = await service.processMessage({
+      owner,
+      session,
+      direction: 'outbound',
+      remoteJid: '5493511234567@s.whatsapp.net',
+      messageId: 'history-message-1',
+      text: 'Crear usuario 3Replay999',
+      isHistory: true
+    });
+
+    expect(result.routeStatus).toBeNull();
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0]?.candidateUsername).toBeNull();
+    expect(store.messages[0]?.matchSource).toBeNull();
+    expect(store.matches).toHaveLength(0);
+    expect(rdaUserExistsChecker).not.toHaveBeenCalled();
+    expect(assignUsernameByPhoneFromQr).not.toHaveBeenCalled();
+  });
+
+  it('never treats outbound commands to an operational bot contact as a player assignment', async () => {
+    const store = new FakeWhatsappQrStore();
+    const assignUsernameByPhoneFromQr = vi.fn();
+    const rdaUserExistsChecker = vi.fn();
+    const service = new WhatsappQrAutoAssignService({
+      appConfig,
+      logger,
+      store: store as WhatsappQrStore,
+      playerPhoneStore: { assignUsernameByPhoneFromQr } as any,
+      rdaUserExistsChecker
+    });
+
+    const result = await service.processMessage({
+      owner,
+      session,
+      direction: 'outbound',
+      remoteJid: '5493510009999@s.whatsapp.net',
+      contactName: 'BOT RdA',
+      text: 'Crear usuario 3Foo123'
+    });
+
+    expect(result.routeStatus).toBe('conflict');
+    expect(result.message?.routeResolution).toBe('operational_bot_conversation');
+    expect(result.message?.candidateUsername).toBeNull();
+    expect(store.matches).toHaveLength(0);
+    expect(rdaUserExistsChecker).not.toHaveBeenCalled();
+    expect(assignUsernameByPhoneFromQr).not.toHaveBeenCalled();
+  });
+
   it('validates outbound Usuario messages and assigns the phone without storing the password', async () => {
     const store = new FakeWhatsappQrStore();
-    const assignUsernameByPhone = vi.fn(async () => ({
+    const assignUsernameByPhoneFromQr = vi.fn(async () => ({
       previousUsername: null,
       currentUsername: 'player_123',
       overwritten: false,
@@ -213,7 +273,7 @@ describe('WhatsApp QR autoassign', () => {
       appConfig,
       logger,
       store: store as WhatsappQrStore,
-      playerPhoneStore: { assignUsernameByPhone } as any,
+      playerPhoneStore: { assignUsernameByPhoneFromQr } as any,
       rdaUserExistsChecker
     });
 
@@ -233,7 +293,7 @@ describe('WhatsApp QR autoassign', () => {
         contrasenaAgente: 'clave-agente'
       })
     );
-    expect(assignUsernameByPhone).toHaveBeenCalledWith(
+    expect(assignUsernameByPhoneFromQr).toHaveBeenCalledWith(
       expect.objectContaining({
         pagina: 'RdA',
         jugadorUsername: 'player_123',
@@ -246,14 +306,14 @@ describe('WhatsApp QR autoassign', () => {
 
   it('leaves conflicts for review and does not overwrite ownership', async () => {
     const store = new FakeWhatsappQrStore();
-    const assignUsernameByPhone = vi.fn(async () => {
+    const assignUsernameByPhoneFromQr = vi.fn(async () => {
       throw new PlayerPhoneStoreError('CONFLICT', 'username already linked to another phone');
     });
     const service = new WhatsappQrAutoAssignService({
       appConfig,
       logger,
       store: store as WhatsappQrStore,
-      playerPhoneStore: { assignUsernameByPhone } as any,
+      playerPhoneStore: { assignUsernameByPhoneFromQr } as any,
       rdaUserExistsChecker: vi.fn(async () => undefined)
     });
 
@@ -267,12 +327,12 @@ describe('WhatsApp QR autoassign', () => {
     });
 
     expect(result.match?.status).toBe('conflict');
-    expect(assignUsernameByPhone).toHaveBeenCalledTimes(1);
+    expect(assignUsernameByPhoneFromQr).toHaveBeenCalledTimes(1);
   });
 
   it('matches saved contact names during QR contact sync', async () => {
     const store = new FakeWhatsappQrStore();
-    const assignUsernameByPhone = vi.fn(async () => ({
+    const assignUsernameByPhoneFromQr = vi.fn(async () => ({
       previousUsername: null,
       currentUsername: 'player_123',
       overwritten: false,
@@ -285,7 +345,7 @@ describe('WhatsApp QR autoassign', () => {
       appConfig,
       logger,
       store: store as WhatsappQrStore,
-      playerPhoneStore: { assignUsernameByPhone } as any,
+      playerPhoneStore: { assignUsernameByPhoneFromQr } as any,
       rdaUserExistsChecker: vi.fn(async () => undefined)
     });
 

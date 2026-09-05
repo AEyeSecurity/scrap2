@@ -107,4 +107,14 @@ describe('RdA/ASN report and QR migrations', () => {
     expect(sql).toContain("jsonb_build_object('intaketransport', 'whatsapp_qr')");
     expect(sql).not.toContain("coalesce(events.payload -> 'source_context' ->> 'intaketransport', 'whatsapp_qr')");
   });
+
+  it('prevents QR automation from moving an existing username or overwriting a phone', () => {
+    const sql = migration('20260905170000_whatsapp_qr_safe_assignment.sql');
+    expect(sql).toContain('assign_username_by_phone_qr_v1');
+    expect(sql).toContain('assign_username_to_platform_owner_pair_qr_v1');
+    expect(sql).toContain('pg_advisory_xact_lock');
+    expect(sql).toContain('qr_username_already_assigned_to_other_phone');
+    expect(sql).toContain('qr_phone_already_assigned_to_other_username');
+    expect(sql).toContain('grant execute');
+  });
 });
